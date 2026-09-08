@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Attempt handoff prototype</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #172033; background: #f5f7fb; }
+    body { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 0; font-size: 1.1rem; }
+    .card { background: white; border: 1px solid #dce2ec; border-radius: 12px; padding: 20px; margin-top: 20px; }
+    .state { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+    .field { background: #f7f9fc; border-radius: 8px; padding: 10px 12px; }
+    .field strong { display: block; color: #596579; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+    .field span { overflow-wrap: anywhere; }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; margin: 4px; background: #2457d6; color: white; cursor: pointer; }
+    button.secondary { background: #e9eef9; color: #243a68; }
+    button:disabled { opacity: .45; cursor: default; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+    .tabs button[aria-selected="true"] { background: #173e9e; }
+    .steps button { display: block; width: 100%; margin: 8px 0; text-align: left; }
+    .steps button.done { background: #2f7d4c; }
+    .notice { border-left: 4px solid #2457d6; padding: 8px 12px; background: #eef3ff; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #111827; color: #e5e7eb; padding: 16px; border-radius: 8px; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <h1>Agent Attempt handoff</h1>
+  <p>This prototype tests when a Sandcastle-run Codex attempt may hand a local worktree back to the runner.</p>
+
+  <section class="card">
+    <h2>Current state</h2>
+    <div id="state" class="state"></div>
+    <p id="notice" class="notice"></p>
+  </section>
+
+  <section class="card">
+    <h2>Free play</h2>
+    <div id="actions"></div>
+  </section>
+
+  <section class="card">
+    <h2>Guided walkthroughs</h2>
+    <div id="tabs" class="tabs"></div>
+    <p id="scenario-description"></p>
+    <div id="steps" class="steps"></div>
+  </section>
+
+  <section class="card">
+    <h2>Prompt shape</h2>
+    <p>The runner fills this Markdown template after it creates the worktree and updates its main base.</p>
+    <pre># TASK
+
+Implement Delivery Ticket {{TICKET_NUMBER}}: {{TICKET_TITLE}}
+
+Use [$implement]({{IMPLEMENT_SKILL_PATH}}). Only work on this Delivery Ticket.
+
+# WORKTREE
+
+- Path: {{WORKTREE_PATH}}
+- Branch: {{BRANCH}}
+- Fresh main commit: {{BASE_SHA}}
+
+The runner already created this worktree from the latest main commit. Work only in this path.
+
+# DELIVERY BOUNDARY
+
+Run the appropriate checks and commit local changes. Do not push, create or update a pull request,
+merge, close the ticket, or modify tracker state. The runner owns those operations.
+
+# RESULT
+
+End with exactly one &lt;agent_attempt_result&gt; tag containing JSON with this shape:
+
+{
+  "outcome": "committed | no_change | blocked",
+  "summary": "what happened and why",
+  "commits": [{ "sha": "claimed commit SHA", "message": "subject" }],
+  "checks": [{ "command": "command", "status": "passed | failed | not_run", "details": "result" }],
+  "blocker": "required when outcome is blocked; otherwise null"
+}
+
+Explain no_change or blocked fully. The runner independently verifies Git state and commits.</pre>
+  </section>
+
+  <script>
+    const initial = () => ({
+      phase: "not prepared",
+      worktree: "—",
+      sandcastle: "not started",
+      report: "none",
+      actualCommits: 0,
+      formatRetries: 0,
+      gitConfig: "not allocated",
+      worktreeClean: "unknown",
+      decision: "waiting",
+      note: "Prepare a runner-owned worktree before starting an Agent Attempt."
+    });
+
+    const reduce = (state, action) => {
+      const next = { ...state };
+      if (action === "prepare") Object.assign(next, {
+        phase: "prepared", worktree: "fresh main → delivery/42", gitConfig: "isolated for this attempt",
+        decision: "waiting", note: "The runner recorded the worktree path, branch, base commit, and isolated Git global config."
+      });
+      if (action === "start" && state.phase === "prepared") Object.assign(next, {
+        phase: "running", sandcastle: "running", note: "Sandcastle owns the Codex process lifecycle."
+      });
+      if (action === "commitReport" && state.phase === "running") Object.assign(next, {
+        report: "committed: implementation complete", actualCommits: 1,
+        note: "The JSON report is a claim until Sandcastle settles and Git is verified."
+      });
+      if (action === "noChangeReport" && state.phase === "running") Object.assign(next, {
+        report: "no_change: existing code already satisfies ticket", actualCommits: 0,
+        note: "The explanation is available to downstream recovery policy."
+      });
+      if (action === "blockedReport" && state.phase === "running") Object.assign(next, {
+        report: "blocked: acceptance criterion is ambiguous", actualCommits: 0,
+        note: "The runner preserves the explanation and stops publication."
+      });
+      if (action === "malformedReport" && state.phase === "running") Object.assign(next, {
+        report: "invalid JSON", note: "Sandcastle rejects output that does not match the schema."
+      });
+      if (action === "retryReport" && state.phase === "running" && state.report === "invalid JSON" && state.formatRetries === 0) Object.assign(next, {
+        report: "committed: corrected structured result", actualCommits: 1, formatRetries: 1,
+        note: "The same session gets one format-only retry."
+      });
+      if (action === "settle" && state.phase === "running" && state.report !== "invalid JSON") Object.assign(next, {
+        phase: "reported", sandcastle: "settled successfully",
+        note: "The runner can now validate the report against the actual worktree."
+      });
+      if (action === "fail" && state.phase === "running") Object.assign(next, {
+        phase: "failed", sandcastle: "failed", decision: "stop",
+        note: "A process failure wins over any partial agent report."
+      });
+      if (action === "clean" && state.phase === "reported") Object.assign(next, {
+        worktreeClean: "yes",
+        decision: state.report.startsWith("committed") && state.actualCommits > 0 ? "accept handoff" :
+          "needs attention",
+        phase: "verified",
+        note: state.report.startsWith("committed") && state.actualCommits > 0
+          ? "The actual commit and clean worktree satisfy the handoff gate."
+          : "The report is preserved, but it does not prove delivery."
+      });
+      if (action === "dirty" && state.phase === "reported") Object.assign(next, {
+        worktreeClean: "no", decision: "needs attention", phase: "verified",
+        note: "Uncommitted changes make the handoff incomplete."
+      });
+      if (action === "missingCommit" && state.phase === "reported") Object.assign(next, {
+        actualCommits: 0, worktreeClean: "yes", decision: "needs attention", phase: "verified",
+        note: "A committed report without an actual commit is rejected."
+      });
+      return next;
+    };
+
+    const actions = [
+      ["prepare", "Prepare fresh worktree"], ["start", "Start Agent Attempt"],
+      ["commitReport", "Report committed"], ["noChangeReport", "Report no change"],
+      ["blockedReport", "Report blocked"], ["malformedReport", "Emit malformed JSON"],
+      ["retryReport", "Retry structured result"],
+      ["settle", "Sandcastle settles"], ["fail", "Sandcastle fails"],
+      ["clean", "Verify clean worktree"], ["dirty", "Find uncommitted changes"],
+      ["missingCommit", "Find missing commit"]
+    ];
+
+    const scenarios = [
+      {
+        name: "Local commit",
+        description: "A normal implementation produces a structured report and one verified local commit.",
+        steps: ["prepare", "start", "commitReport", "settle", "clean"]
+      },
+      {
+        name: "No change",
+        description: "The attempt explains why no commit exists; downstream policy decides what happens next.",
+        steps: ["prepare", "start", "noChangeReport", "settle", "clean"]
+      },
+      {
+        name: "False claim",
+        description: "The agent reports success, but independent Git verification finds no commit.",
+        steps: ["prepare", "start", "commitReport", "settle", "missingCommit"]
+      },
+      {
+        name: "Format repair",
+        description: "Malformed JSON receives one same-session retry before the attempt is failed.",
+        steps: ["prepare", "start", "malformedReport", "retryReport", "settle", "clean"]
+      },
+      {
+        name: "Process failure",
+        description: "Sandcastle fails after partial output; the attempt is not handed off.",
+        steps: ["prepare", "start", "commitReport", "fail"]
+      }
+    ];
+
+    let state = initial();
+    let activeScenario = 0;
+    let stepIndex = 0;
+
+    const labelFor = id => actions.find(([key]) => key === id)?.[1] ?? id;
+    const dispatch = action => { state = action === "reset" ? initial() : reduce(state, action); render(); };
+
+    function render() {
+      const fields = [
+        ["Phase", state.phase], ["Worktree", state.worktree], ["Sandcastle", state.sandcastle],
+        ["Agent report", state.report], ["Actual commits", state.actualCommits],
+        ["Format retries", state.formatRetries], ["Git global config", state.gitConfig],
+        ["Worktree clean", state.worktreeClean], ["Runner decision", state.decision]
+      ];
+      document.querySelector("#state").innerHTML = fields.map(([name, value]) =>
+        `<div class="field"><strong>${name}</strong><span>${value}</span></div>`).join("");
+      document.querySelector("#notice").textContent = state.note;
+      document.querySelector("#actions").innerHTML = actions.map(([id, label]) =>
+        `<button class="secondary" data-action="${id}">${label}</button>`).join("") +
+        '<button class="secondary" data-action="reset">Reset</button>';
+      document.querySelectorAll("#actions button").forEach(button =>
+        button.onclick = () => dispatch(button.dataset.action));
+
+      document.querySelector("#tabs").innerHTML = scenarios.map((scenario, index) =>
+        `<button aria-selected="${index === activeScenario}" data-tab="${index}">${scenario.name}</button>`).join("");
+      document.querySelectorAll("#tabs button").forEach(button => button.onclick = () => {
+        activeScenario = Number(button.dataset.tab); stepIndex = 0; state = initial(); render();
+      });
+      const scenario = scenarios[activeScenario];
+      document.querySelector("#scenario-description").textContent = scenario.description;
+      document.querySelector("#steps").innerHTML = scenario.steps.map((action, index) =>
+        `<button class="${index < stepIndex ? "done" : ""}" data-step="${index}" ${index !== stepIndex ? "disabled" : ""}>${index + 1}. ${labelFor(action)}</button>`).join("");
+      const current = document.querySelector(`#steps button[data-step="${stepIndex}"]`);
+      if (current) current.onclick = () => { dispatch(scenario.steps[stepIndex]); stepIndex++; render(); };
+    }
+
+    render();
+  </script>
+</body>
+</html>
