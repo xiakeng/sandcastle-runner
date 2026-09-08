@@ -1,6 +1,6 @@
 # Wayfinder Map Draft
 
-This is a review artifact. It is not the canonical GitHub Wayfinder map.
+This is the reviewed source for the canonical GitHub map: [Define the V1 Sandcastle Runner orchestration contract](https://github.com/xiakeng/sandcastle-runner/issues/1).
 
 ## Destination
 
@@ -40,6 +40,8 @@ Resolve the V1 behavior, configuration, state transitions, failure recovery, and
 
 ### Define Delivery Ticket discovery, reservation, and completion
 
+Canonical ticket: [Define Delivery Ticket discovery, reservation, and completion](https://github.com/xiakeng/sandcastle-runner/issues/2)
+
 Type: `wayfinder:grilling`
 
 Question: Define the exact child scope, ordering, eligibility, blocking and cancellation semantics, concurrent-Run exclusion, reservation mechanism, newly-added-child behavior, and the condition under which a Parent Ticket has no remaining Delivery Tickets.
@@ -48,6 +50,8 @@ Blockers: none.
 
 ### Choose the supervised Codex execution boundary
 
+Canonical ticket: [Choose the supervised Codex execution boundary](https://github.com/xiakeng/sandcastle-runner/issues/3)
+
 Type: `wayfinder:prototype`
 
 Question: Choose and validate the smallest execution boundary that preserves Sandcastle while reliably supervises no-sandbox Codex process trees, isolates concurrent Git configuration, supplies skills and model settings, and produces a verifiable local-commit handoff for implementation and repair Agent Attempts.
@@ -55,6 +59,8 @@ Question: Choose and validate the smallest execution boundary that preserves San
 Blockers: none.
 
 ### Define pull-request readiness and serial integration
+
+Canonical ticket: [Define pull-request readiness and serial integration](https://github.com/xiakeng/sandcastle-runner/issues/4)
 
 Type: `wayfinder:grilling`
 
@@ -67,6 +73,8 @@ Blockers:
 
 ### Define document-maintenance scheduling and delivery
 
+Canonical ticket: [Define document-maintenance scheduling and delivery](https://github.com/xiakeng/sandcastle-runner/issues/5)
+
 Type: `wayfinder:grilling`
 
 Question: Define the counter scope, trigger deduplication, context supplied without tracker links, label and standalone-ticket behavior, interaction with Batches, failure handling, and completion semantics for document-maintenance work.
@@ -78,6 +86,8 @@ Blockers:
 
 ### Define durable Run state, configuration, and mock verification
 
+Canonical ticket: [Define durable Run state, configuration, and mock verification](https://github.com/xiakeng/sandcastle-runner/issues/6)
+
 Type: `wayfinder:grilling`
 
 Question: Define persisted identities and transitions, restart idempotency, timeouts and retry ceilings, Project configuration and credentials references, adapter boundaries, fake contracts, deterministic clock/process control, and the minimum scenario matrix proving the complete orchestration without live services.
@@ -88,4 +98,3 @@ Blockers:
 - Choose the supervised Codex execution boundary.
 - Define pull-request readiness and serial integration.
 - Define document-maintenance scheduling and delivery.
-

@@ -71,4 +71,4 @@ The exact acceptance scenarios, operational diagnostics, and deployment/package 
 
 The user selected a new public GitHub repository under `xiakeng` and English issues. [xiakeng/sandcastle-runner](https://github.com/xiakeng/sandcastle-runner) has been created and configured as local `origin`. Local documents and GitHub issues use English; conversation uses Chinese. The local repository still has no commits.
 
-No canonical Wayfinder map has been created yet. The destination and initial scope are confirmed. A five-ticket map and dependency graph are drafted in [wayfinder-map-draft.md](../planning/wayfinder-map-draft.md) for approval before GitHub publication.
+The canonical [Wayfinder map](https://github.com/xiakeng/sandcastle-runner/issues/1) and five decision tickets have been published with native GitHub sub-issue and dependency relationships. The initial frontier contains [Define Delivery Ticket discovery, reservation, and completion](https://github.com/xiakeng/sandcastle-runner/issues/2) and [Choose the supervised Codex execution boundary](https://github.com/xiakeng/sandcastle-runner/issues/3).
