@@ -1,0 +1,307 @@
+{
+  "repository": "xiakeng/sandcastle-runner",
+  "parent": 8,
+  "status": "published_and_verified",
+  "verified_at": "2026-09-08T22:38:34.817566+00:00",
+  "issues": [
+    {
+      "ticket": "T1",
+      "number": 9,
+      "id": 5392624429,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/9",
+      "title": "Run a configured Project through supervised no-delivery outcomes",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "01-supervised-no-delivery-run.md",
+      "source_sha256": "ee57ec9d68221b5cc42d15751b523b59f32145f26ce7f56f1ba91864ccdaca6c",
+      "body_sha256": "17d66fff5c700118e0024392e8f7ff5c612143922d7090ae7e3af501d383119e",
+      "blocked_by": [],
+      "blocked_by_ids": []
+    },
+    {
+      "ticket": "T2",
+      "number": 10,
+      "id": 5392624648,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/10",
+      "title": "Select and reserve eligible Delivery Tickets",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "02-discover-and-reserve.md",
+      "source_sha256": "9526716ed56e8aa9994028eeb0541e339a72f9fd623bd2e72be61305447cff03",
+      "body_sha256": "4b603f2283e161876993df14e02367a7fa9a8d0fc2f541ddf3bce64b4667f508",
+      "blocked_by": [
+        9
+      ],
+      "blocked_by_ids": [
+        5392624429
+      ]
+    },
+    {
+      "ticket": "T3",
+      "number": 11,
+      "id": 5392624902,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/11",
+      "title": "Implement a reserved Delivery Ticket to a Verified Handoff",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "03-verified-agent-handoff.md",
+      "source_sha256": "78003a74fda4700acec3d352fe92d494a4a733f32e08d55f86d7cfa3075854ec",
+      "body_sha256": "cf7b31e2867cfef2c53ae6f189ef7e416cd3276ecd59d1863937c21f2be22c49",
+      "blocked_by": [
+        10
+      ],
+      "blocked_by_ids": [
+        5392624648
+      ]
+    },
+    {
+      "ticket": "T4",
+      "number": 12,
+      "id": 5392625112,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/12",
+      "title": "Publish a Verified Handoff and observe required CI readiness",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "04-publish-ci-ready-pr.md",
+      "source_sha256": "5ee230954310abb73f71eca5ae798217b80aa4ff75061ca4f7c1b0b51a2f16f8",
+      "body_sha256": "11678a90fbe0e88043a27d4c0ef80be821bdd8f183a22ed9cfdec3487358bd88",
+      "blocked_by": [
+        11
+      ],
+      "blocked_by_ids": [
+        5392624902
+      ]
+    },
+    {
+      "ticket": "T5",
+      "number": 13,
+      "id": 5392625326,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/13",
+      "title": "Squash-merge a CI-ready Pull Request and confirm delivery",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "05-merge-and-confirm-delivery.md",
+      "source_sha256": "391a7a13c605d4b1a872360301b422529ee89dd089dc4be1eea9c4e194b1914b",
+      "body_sha256": "8c305563ccb7484fd4f7000a986515bb6dfec6628069493c959d71c2edad8b99",
+      "blocked_by": [
+        12
+      ],
+      "blocked_by_ids": [
+        5392625112
+      ]
+    },
+    {
+      "ticket": "T6",
+      "number": 14,
+      "id": 5392625684,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/14",
+      "title": "Deliver dependency-driven Batches behind CI barriers",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "06-concurrent-batch.md",
+      "source_sha256": "b8c28dd60dc90466ad4bc13150c613b45e0e91f7f12ca4c728574dafcbf84f20",
+      "body_sha256": "b90458535d3515779080bcdf0f908058be9d550d3b5e80e5be5f3cfbf03c5bcd",
+      "blocked_by": [
+        13
+      ],
+      "blocked_by_ids": [
+        5392625326
+      ]
+    },
+    {
+      "ticket": "T7",
+      "number": 15,
+      "id": 5392625873,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/15",
+      "title": "Repair failed required CI on the existing Pull Request",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "07-ci-repair.md",
+      "source_sha256": "e01bf814b5d0dc8a13c2630368afcb127956ecbcd40f509a42742030a3c4100e",
+      "body_sha256": "545e844624f76a72079898f03cdf2f296c85a62ff562910ad27deb48f17fece2",
+      "blocked_by": [
+        12
+      ],
+      "blocked_by_ids": [
+        5392625112
+      ]
+    },
+    {
+      "ticket": "T8",
+      "number": 16,
+      "id": 5392626081,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/16",
+      "title": "Repair merge conflicts without replacing delivery identity",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "08-conflict-repair.md",
+      "source_sha256": "7f13516d6eb50ce73da275edbf53ab0d4e903d47d6d0943a5e77a18f15f184ab",
+      "body_sha256": "e89e27f05d4fd7538b82a4c6f77e5116448177c50d44f425dabca620676c7e5e",
+      "blocked_by": [
+        13,
+        15
+      ],
+      "blocked_by_ids": [
+        5392625326,
+        5392625873
+      ]
+    },
+    {
+      "ticket": "T9",
+      "number": 17,
+      "id": 5392626390,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/17",
+      "title": "Deliver standalone Documentation Maintenance between Batches",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "09-documentation-maintenance.md",
+      "source_sha256": "37581037119f1001940423a8d1c78dd74f75f7e358d6e16949cf8615dbf45f22",
+      "body_sha256": "e21368f3312ee8fb9411b702acbdbb96f8b8f8a118352b39ed58645efdfce41a",
+      "blocked_by": [
+        14,
+        16
+      ],
+      "blocked_by_ids": [
+        5392625684,
+        5392626081
+      ]
+    },
+    {
+      "ticket": "T10",
+      "number": 18,
+      "id": 5392626800,
+      "url": "https://github.com/xiakeng/sandcastle-runner/issues/18",
+      "title": "Verify the complete Run contract through the two five-ticket scenarios",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "source": "10-full-contract-scenarios.md",
+      "source_sha256": "fda1547403d6dd65b49d76ee8a56cac3dee9198b2f6acabeedb928a473721ae4",
+      "body_sha256": "1432d58cd49a89a45c66cb3e2b45f0f12b96bc35f8441ccd6ccc7eaf4fd1323e",
+      "blocked_by": [
+        17
+      ],
+      "blocked_by_ids": [
+        5392626390
+      ]
+    }
+  ],
+  "native_children": [
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "native_blocking_edges": [
+    {
+      "blocked": 10,
+      "blocked_by": 9
+    },
+    {
+      "blocked": 11,
+      "blocked_by": 10
+    },
+    {
+      "blocked": 12,
+      "blocked_by": 11
+    },
+    {
+      "blocked": 13,
+      "blocked_by": 12
+    },
+    {
+      "blocked": 14,
+      "blocked_by": 13
+    },
+    {
+      "blocked": 15,
+      "blocked_by": 12
+    },
+    {
+      "blocked": 16,
+      "blocked_by": 13
+    },
+    {
+      "blocked": 16,
+      "blocked_by": 15
+    },
+    {
+      "blocked": 17,
+      "blocked_by": 14
+    },
+    {
+      "blocked": 17,
+      "blocked_by": 16
+    },
+    {
+      "blocked": 18,
+      "blocked_by": 17
+    }
+  ],
+  "frontier": [
+    9
+  ],
+  "verification": {
+    "issue_count": 10,
+    "native_child_count": 10,
+    "native_blocking_edge_count": 11,
+    "exact_approved_titles_and_bodies": true,
+    "approved_sources_unchanged": true,
+    "no_extra_blockers": true,
+    "no_duplicate_issues": true,
+    "parent_preserved": true,
+    "parent_before": {
+      "number": 8,
+      "title": "Sandcastle Runner V1: ticket delivery orchestration",
+      "body_sha256": "41d293e2b5f83cafb0f97d590dd75f05550c0284ca2350a16649fad9663a345d",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "state": "open",
+      "state_reason": null,
+      "comment_count": 0,
+      "comments_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "parent_after": {
+      "number": 8,
+      "title": "Sandcastle Runner V1: ticket delivery orchestration",
+      "body_sha256": "41d293e2b5f83cafb0f97d590dd75f05550c0284ca2350a16649fad9663a345d",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "state": "open",
+      "state_reason": null,
+      "comment_count": 0,
+      "comments_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "api_documentation": [
+    "https://docs.github.com/en/rest/issues/sub-issues",
+    "https://docs.github.com/en/rest/issues/issue-dependencies"
+  ]
+}
