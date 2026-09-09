@@ -95,12 +95,14 @@ export class GitHubCodeHost implements CodeHost {
         "--repo",
         repository,
         "--json",
-        "headRefOid,state,mergedAt",
+        "headRefOid,createdAt,state,mergedAt",
       ]),
     ) as Record<string, unknown>;
     if (
       typeof value.headRefOid !== "string" ||
       value.headRefOid.length === 0 ||
+      typeof value.createdAt !== "string" ||
+      value.createdAt.length === 0 ||
       (value.state !== "OPEN" &&
         value.state !== "CLOSED" &&
         value.state !== "MERGED") ||
@@ -111,6 +113,7 @@ export class GitHubCodeHost implements CodeHost {
     const merged = value.state === "MERGED" || value.mergedAt !== null;
     return {
       headSha: value.headRefOid,
+      createdAt: value.createdAt,
       merged,
       mergeFailure:
         value.state === "CLOSED" && !merged

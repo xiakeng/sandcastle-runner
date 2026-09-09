@@ -82,6 +82,7 @@ export interface PullRequestIdentity {
 
 export interface PullRequestState {
   headSha: string;
+  createdAt: string;
   merged: boolean;
   mergeFailure: string | null;
 }

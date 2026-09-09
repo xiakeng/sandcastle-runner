@@ -23,6 +23,7 @@ export interface DiscoveryInput {
   ) => (attempt: number) => Omit<AuditEvent, "result" | "error">;
   runnerAccount: string;
   reservationLabel: string;
+  hadChildren?: boolean;
 }
 
 export type DiscoveryResult =
@@ -619,7 +620,10 @@ export async function discoverAndReserve(
           ],
         };
   }
-  if (children.length === 0) return { outcome: "no_work", reasons: [] };
+  if (children.length === 0)
+    return input.hadChildren
+      ? { outcome: "close_parent", reasons: [] }
+      : { outcome: "no_work", reasons: [] };
 
   let selection = await inspect(input, children, "discover");
   const attempted = new Set<number>();

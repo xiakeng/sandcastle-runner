@@ -20,17 +20,23 @@ import {
 } from "./discovery.ts";
 import {
   externalRead,
-  OperatorCancelled,
   pauseForOperator,
   recordOperatorOverride,
+  serializeOperator,
   workflowWrite,
 } from "./operations.ts";
 
 export interface PullRequestObservation extends PullRequestIdentity {
   ticket: number;
   branch: string;
-  readiness: "ready" | "failed";
+  readiness: "ready" | "failed" | "stopped";
   failedChecks: RequiredCheck[];
+}
+
+export interface PublishedHandoff {
+  handoff: VerifiedHandoff;
+  pullRequest: PullRequestIdentity;
+  observation: PullRequestObservation;
 }
 
 export interface ReadinessInput extends DiscoveryInput {
@@ -48,16 +54,16 @@ interface PublicationInput extends ReadinessInput {
 }
 
 export interface PublicationResult {
-  outcome: "incomplete" | "cancelled" | "failed";
+  outcome: "succeeded" | "incomplete" | "cancelled" | "failed";
   reasons: string[];
   pullRequests: PullRequestObservation[];
-  completedTickets: number[];
+  published: PublishedHandoff[];
 }
 
 function stopped(
   result: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>,
   pullRequests: PullRequestObservation[],
-  completedTickets: number[],
+  published: PublishedHandoff[],
 ): PublicationResult {
   return {
     outcome:
@@ -68,7 +74,7 @@ function stopped(
           : "incomplete",
     reasons: [result.reason],
     pullRequests,
-    completedTickets,
+    published,
   };
 }
 
@@ -77,6 +83,8 @@ function pullRequestStateOverride(value: string): PullRequestState {
   if (
     typeof parsed.headSha !== "string" ||
     parsed.headSha.length === 0 ||
+    typeof parsed.createdAt !== "string" ||
+    parsed.createdAt.length === 0 ||
     typeof parsed.merged !== "boolean" ||
     (parsed.mergeFailure !== null && typeof parsed.mergeFailure !== "string")
   ) {
@@ -84,13 +92,14 @@ function pullRequestStateOverride(value: string): PullRequestState {
   }
   return {
     headSha: parsed.headSha,
+    createdAt: parsed.createdAt,
     merged: parsed.merged,
     mergeFailure: parsed.mergeFailure ?? null,
   };
 }
 
-async function readPullRequest(
-  input: PublicationInput,
+export async function observePullRequestForIntegration(
+  input: ReadinessInput,
   pullRequest: number,
 ): Promise<PullRequestState> {
   return externalRead({
@@ -115,7 +124,10 @@ async function waitForMerge(
   for (;;) {
     const deadline = input.clock.now().getTime() + input.mergeQueueTimeoutMs;
     for (;;) {
-      const state = await readPullRequest(input, pullRequest.number);
+      const state = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+      );
       if (state.merged) return "merged";
       const boundary = await revalidateReservedDeliveryTicket(
         input,
@@ -259,10 +271,11 @@ async function confirmCompletion(
   }
 }
 
-async function integratePullRequest(
+export async function integratePullRequest(
   input: PublicationInput,
   handoff: VerifiedHandoff,
   pullRequest: PullRequestIdentity,
+  observed: PullRequestState,
 ): Promise<
   | { outcome: "completed"; ticket: Ticket }
   | { outcome: "conflict"; reason: string }
@@ -273,7 +286,6 @@ async function integratePullRequest(
     handoff.ticket,
   );
   if (boundary.outcome !== "ready") return boundary;
-  const observed = await readPullRequest(input, pullRequest.number);
   if (!observed.merged) {
     let request: MergeRequestResult;
     try {
@@ -437,93 +449,115 @@ export async function observeRequiredChecks(
 export async function publishVerifiedHandoffs(
   input: PublicationInput,
 ): Promise<PublicationResult> {
-  const pullRequests: PullRequestObservation[] = [];
-  const completedTickets: number[] = [];
-  const reasons: string[] = [];
-  for (const handoff of input.handoffs) {
-    let boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
-    if (boundary.outcome !== "ready")
-      return stopped(boundary, pullRequests, completedTickets);
-    await workflowWrite({
-      action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
-      audit: input.audit,
-      event: () =>
-        input.event("publish", "push_branch", `ticket:${handoff.ticket}`)(1),
-      operator: input.operator,
-    });
+  const controller = new AbortController();
+  const concurrentInput = {
+    ...input,
+    operator: serializeOperator(input.operator, controller),
+  };
+  interface PublicationAttempt {
+    published?: PublishedHandoff;
+    boundary?: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+  }
+  const publications = input.handoffs.map(
+    async (handoff): Promise<PublicationAttempt> => {
+      let boundary = await revalidateReservedDeliveryTicket(
+        concurrentInput,
+        handoff.ticket,
+      );
+      if (boundary.outcome !== "ready") return { boundary };
+      await workflowWrite({
+        action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
+        audit: input.audit,
+        event: () =>
+          input.event("publish", "push_branch", `ticket:${handoff.ticket}`)(1),
+        operator: concurrentInput.operator,
+      });
 
-    boundary = await revalidateReservedDeliveryTicket(input, handoff.ticket);
-    if (boundary.outcome !== "ready")
-      return stopped(boundary, pullRequests, completedTickets);
-    const pullRequest = await workflowWrite({
-      action: () =>
-        input.codeHost.createPullRequest({
-          repository: input.repository,
-          targetBranch: input.targetBranch,
-          branch: handoff.branch,
-          title: handoff.prTitle,
-          body: handoff.prBody,
-        }),
-      parseOverride: pullRequestOverride,
-      audit: input.audit,
-      event: () =>
-        input.event(
-          "publish",
-          "create_pull_request",
-          `ticket:${handoff.ticket}`,
-        )(1),
-      operator: input.operator,
-    });
-    const readiness = await observeRequiredChecks(input, handoff, pullRequest);
-    if ("outcome" in readiness)
-      return stopped(readiness, pullRequests, completedTickets);
-    const observation = {
-      ticket: handoff.ticket,
-      branch: handoff.branch,
-      ...pullRequest,
-      ...readiness,
-    };
-    pullRequests.push(observation);
-    if (readiness.readiness === "ready") {
-      const integration = await integratePullRequest(
-        input,
+      boundary = await revalidateReservedDeliveryTicket(
+        concurrentInput,
+        handoff.ticket,
+      );
+      if (boundary.outcome !== "ready") return { boundary };
+      const pullRequest = await workflowWrite({
+        action: () =>
+          input.codeHost.createPullRequest({
+            repository: input.repository,
+            targetBranch: input.targetBranch,
+            branch: handoff.branch,
+            title: handoff.prTitle,
+            body: handoff.prBody,
+          }),
+        parseOverride: pullRequestOverride,
+        audit: input.audit,
+        event: () =>
+          input.event(
+            "publish",
+            "create_pull_request",
+            `ticket:${handoff.ticket}`,
+          )(1),
+        operator: concurrentInput.operator,
+      });
+      const readiness = await observeRequiredChecks(
+        concurrentInput,
         handoff,
         pullRequest,
       );
-      if (integration.outcome === "completed") {
-        completedTickets.push(handoff.ticket);
-        try {
-          await releaseTerminalReservation(input, integration.ticket);
-        } catch (error) {
-          if (!(error instanceof OperatorCancelled)) throw error;
-          return {
-            outcome: "cancelled",
-            reasons: ["operator cancelled"],
-            pullRequests,
-            completedTickets,
-          };
-        }
-      } else if (integration.outcome === "conflict") {
+      if ("outcome" in readiness) {
         return {
-          outcome: "incomplete",
-          reasons: [integration.reason],
-          pullRequests,
-          completedTickets,
+          boundary: readiness,
+          published: {
+            handoff,
+            pullRequest,
+            observation: {
+              ticket: handoff.ticket,
+              branch: handoff.branch,
+              ...pullRequest,
+              readiness: "stopped",
+              failedChecks: [],
+            },
+          },
         };
-      } else {
-        return stopped(integration, pullRequests, completedTickets);
       }
-    }
-    reasons.push(
-      completedTickets.includes(handoff.ticket)
-        ? `Completed Delivery Ticket ${handoff.ticket} through Pull Request ${pullRequest.number}`
-        : `Required checks failed for Pull Request ${pullRequest.number}: ${readiness.failedChecks
-            .map(({ name, state }) => `${name} (${state})`)
-            .join(", ")}`,
-    );
+      return {
+        published: {
+          handoff,
+          pullRequest,
+          observation: {
+            ticket: handoff.ticket,
+            branch: handoff.branch,
+            ...pullRequest,
+            ...readiness,
+          },
+        },
+      };
+    },
+  );
+  let published: Awaited<(typeof publications)[number]>[];
+  try {
+    published = await Promise.all(publications);
+  } catch (error) {
+    controller.abort(error);
+    await Promise.allSettled(publications);
+    throw error;
   }
-  return { outcome: "incomplete", reasons, pullRequests, completedTickets };
+  const publishedHandoffs = published.flatMap(({ published }) =>
+    published ? [published] : [],
+  );
+  const pullRequests = publishedHandoffs.map(({ observation }) => observation);
+  const changed = published.find(({ boundary }) => boundary)?.boundary;
+  if (changed) return stopped(changed, pullRequests, publishedHandoffs);
+  const failed = publishedHandoffs.filter(
+    ({ observation }) => observation.readiness === "failed",
+  );
+  return {
+    outcome: "succeeded",
+    reasons: failed.map(
+      ({ observation }) =>
+        `Required checks failed for Pull Request ${observation.number}: ${observation.failedChecks
+          .map(({ name, state }) => `${name} (${state})`)
+          .join(", ")}`,
+    ),
+    pullRequests,
+    published: publishedHandoffs,
+  };
 }

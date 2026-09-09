@@ -88,22 +88,28 @@ Worktree for each Delivery Ticket at that exact commit, and starts the Agent Att
 Each Attempt gets an isolated temporary `GIT_CONFIG_GLOBAL`, the configured model, effort and agent
 timeout, and the caller-owned implementation prompt. The temporary Git configuration is removed after
 Sandcastle settles; unresolved branches and Worktrees remain for operator action. Verified Handoffs
-are pushed with the configured code-host credential and published as non-draft Pull Requests using
-their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls required checks
-through GitHub CLI semantics. Empty, passing, or skipped required-check sets are CI-ready; pending
-checks are polled every 10 seconds; failed or cancelled checks remain associated with the Pull
-Request as CI-repair evidence. Read failures use the common retry policy, and the configured
-required-check timeout enters Operator Pause.
+are pushed with the configured code-host credential and published concurrently as non-draft Pull
+Requests using their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls
+each Pull Request's required checks through GitHub CLI semantics. Empty, passing, or skipped
+required-check sets are CI-ready; pending checks are polled every 10 seconds; failed or cancelled
+checks remain associated with the Pull Request as CI-repair evidence. Read failures use the common
+retry policy, and the configured required-check timeout enters Operator Pause.
 
-For each CI-ready Pull Request, the Runner observes its head SHA and requests a squash merge with
-the configured admin setting. Queue acceptance is not delivery: the Runner waits up to
-`mergeQueueMinutes` for confirmed merge state. Under `runner`, it then closes the Delivery Ticket;
-under `code_host`, it waits 10 seconds and, if necessary, another 30 seconds for GitHub closure.
-Only `closed/completed` records completion credit. Rejections, queue timeout, closure failure, and
-missing completion evidence use Operator Pause; completed merges are never rolled back.
+No Pull Request in a Batch is merged until every selected Agent Attempt produced a Verified Handoff
+and every published Pull Request is CI-ready. The Runner then orders the Batch by Pull Request
+`createdAt`, using the Pull Request number as the tie-breaker, and integrates one at a time. It
+observes each head SHA and requests a squash merge with the configured admin setting. Queue
+acceptance is not delivery: the Runner waits up to `mergeQueueMinutes` for confirmed merge state
+before advancing. Under `runner`, it then closes the Delivery Ticket; under `code_host`, it waits 10
+seconds and, if necessary, another 30 seconds for GitHub closure. Only `closed/completed` records
+completion credit. Rejections, queue timeout, closure failure, and missing completion evidence use
+Operator Pause; completed merges are never rolled back and an earlier unresolved merge cannot be
+overtaken.
 
-Before reporting exhaustion or closing the Parent, the Run performs a final complete scan so newly
-visible work can be selected.
+After every successful Batch, the same Run performs a complete rescan so newly visible or newly
+unblocked work can be selected. Before reporting exhaustion or closing the Parent, it performs a
+final complete scan. Only an initially empty Parent returns `no_work`; if a Parent had children
+earlier in the Run and a later scan becomes empty, that scan proceeds through Parent closeout.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any
