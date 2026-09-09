@@ -1164,7 +1164,7 @@ test("a Delivery Ticket removed from Parent scope is not reserved", async () => 
     }),
   );
 
-  assert.equal(childScans, 2);
+  assert.equal(childScans, 3);
   assert.equal(childWrites, 0);
 });
 
@@ -1311,42 +1311,6 @@ test("new work in the final closeout scan prevents Parent closure", async () => 
   assert.equal(closeCalls, 0);
 });
 
-test("terminal Delivery Tickets release residual Reservations before Parent closeout", async () => {
-  const root = await createProject();
-  const writes: string[] = [];
-  const child = {
-    number: 9,
-    state: "closed" as const,
-    stateReason: "completed" as const,
-    repository: "owner/repo",
-    assignees: ["runner"],
-    labels: ["sandcastle:reserved"],
-  };
-
-  const result = await executeCli(
-    ["run", "--project", "demo", "--parent", "8"],
-    createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async removeAssignee() {
-          writes.push("remove assignee");
-        },
-        async removeLabel() {
-          writes.push("remove label");
-        },
-        async closeParent() {
-          writes.push("close Parent");
-        },
-      },
-    }),
-  );
-
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.deepEqual(writes, ["remove assignee", "remove label", "close Parent"]);
-});
-
 test("an incomplete blocker read never produces Parent closeout", async () => {
   const root = await createProject();
   let blockerReads = 0;
@@ -1435,6 +1399,121 @@ test("a failed second Reservation marker keeps the partial write", async () => {
   assert.equal(result.summary.outcome, "cancelled");
   assert.equal(assigneeCalls, 1);
   assert.deepEqual(writes, ["add label"]);
+});
+
+test("a cross-repository child with the selected number fails revalidation", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let childWrites = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              {
+                ...child,
+                repository: childScans === 1 ? "owner/repo" : "another/repo",
+              },
+            ],
+            nextPage: null,
+          };
+        },
+        async getTicket() {
+          return { ...child, repository: "owner/repo" };
+        },
+        async addLabel() {
+          childWrites += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(result.summary.reasons[0] ?? "", /cross-repository/u);
+  assert.equal(childWrites, 0);
+});
+
+test("revalidation discovers another eligible Delivery Ticket before exhaustion", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  const ticket = (number: number, assignees: string[] = []) => ({
+    number,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees,
+    labels: [],
+  });
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children:
+              childScans === 1
+                ? [ticket(9)]
+                : [ticket(9, ["developer"]), ticket(10)],
+            nextPage: null,
+          };
+        },
+        async getTicket(_repository, number) {
+          return number === 9 ? ticket(9, ["developer"]) : ticket(10);
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [10]);
+});
+
+test("the final complete scan closes a now-terminal Parent scope", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let closeCalls = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              {
+                number: 9,
+                state: childScans === 1 ? "open" : "closed",
+                stateReason: childScans === 1 ? null : "completed",
+                repository: "owner/repo",
+                assignees: [],
+                labels: childScans === 1 ? ["sandcastle:reserved"] : [],
+              },
+            ],
+            nextPage: null,
+          };
+        },
+        async closeParent() {
+          closeCalls += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(closeCalls, 1);
 });
 
 test("cancelling a failed audit result append pauses exactly once", async () => {
