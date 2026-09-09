@@ -2342,6 +2342,52 @@ test("an open code_host ticket after both closure reads enters Operator Pause wi
   assert.match(pauseMessage, /not closed as completed/u);
 });
 
+test("trusted completion releases the observed Reservation unless the Parent was cancelled", async () => {
+  for (const cancelParent of [false, true]) {
+    const root = await createProject();
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+    );
+    const delivery = createCommittedDelivery();
+    let parentCancelled = false;
+    let releases = 0;
+
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        ...delivery,
+        tracker: {
+          ...delivery.tracker,
+          async getParent() {
+            return parentCancelled
+              ? { number: 8, state: "closed", stateReason: "not_planned" }
+              : { number: 8, state: "open", stateReason: null };
+          },
+          async removeAssignee() {
+            releases += 1;
+          },
+          async removeLabel() {
+            releases += 1;
+          },
+        },
+        operator: {
+          async pause() {
+            parentCancelled = cancelParent;
+            return "trusted completion";
+          },
+        },
+      }),
+    );
+
+    assert.deepEqual(
+      result.summary.completedTickets ?? [],
+      cancelParent ? [] : [9],
+    );
+    assert.equal(releases, cancelParent ? 0 : 2);
+  }
+});
+
 test("Parent cancellation after merge confirmation prevents ticket closure mutations", async () => {
   const root = await createProject();
   const delivery = createCommittedDelivery();

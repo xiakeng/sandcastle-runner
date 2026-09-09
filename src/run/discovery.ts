@@ -365,7 +365,9 @@ export type DeliveryBoundaryResult =
   | { outcome: "cancelled" | "failed" | "stopped"; reason: string };
 
 export type MergedDeliveryBoundaryResult =
-  DeliveryBoundaryResult | { outcome: "terminal"; ticket: Ticket };
+  | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
+  | { outcome: "ready"; ticket: Ticket }
+  | { outcome: "terminal"; ticket: Ticket };
 
 async function revalidateReserved(
   input: DiscoveryInput,
@@ -411,7 +413,7 @@ async function revalidateReserved(
       reason: `Delivery Ticket ${ticketNumber} no longer has a complete Reservation`,
     };
   }
-  return { outcome: "ready" };
+  return { outcome: "ready", ticket: result.ticket };
 }
 
 export async function revalidateReservedDeliveryTicket(
@@ -426,7 +428,7 @@ export async function revalidateReservedDeliveryTicket(
       reason: `Delivery Ticket ${ticketNumber} became terminal`,
     };
   }
-  return result;
+  return result.outcome === "ready" ? { outcome: "ready" } : result;
 }
 
 export function revalidateMergedDeliveryTicket(

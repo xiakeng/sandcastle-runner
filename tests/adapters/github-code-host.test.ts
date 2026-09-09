@@ -162,7 +162,7 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
 
 test("GitHubCodeHost confirms a merged Pull Request from either merged field", async () => {
   for (const response of [
-    '{"headRefOid":"abc123","state":"MERGED","mergedAt":"2026-09-09T00:00:00Z"}',
+    '{"headRefOid":"abc123","state":"MERGED","mergedAt":null}',
     '{"headRefOid":"abc123","state":"CLOSED","mergedAt":"2026-09-09T00:00:00Z"}',
   ]) {
     const codeHost = new GitHubCodeHost(

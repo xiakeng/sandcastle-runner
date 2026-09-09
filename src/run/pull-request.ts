@@ -145,19 +145,9 @@ async function waitForMerge(
         input,
         handoff.ticket,
       );
-      if (
-        afterOverride.outcome !== "ready" &&
-        !(
-          afterOverride.outcome === "terminal" &&
-          afterOverride.ticket.stateReason === "completed"
-        )
-      ) {
-        return afterOverride.outcome === "terminal"
-          ? {
-              outcome: "stopped",
-              reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
-            }
-          : afterOverride;
+      if (afterOverride.outcome !== "ready") {
+        const changed = await completedOrStopped(input, handoff, afterOverride);
+        if (changed.outcome !== "completed") return changed;
       }
       await recordOperatorOverride(input.audit, event, input.operator);
       return "merged";
@@ -257,14 +247,14 @@ async function confirmCompletion(
       `Merged Delivery Ticket ${handoff.ticket} is not closed as completed. Enter to retry, q to cancel, or acknowledge trusted completion.`,
     );
     if (response === "") continue;
+    boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
+    if (boundary.outcome !== "ready") {
+      return completedOrStopped(input, handoff, boundary);
+    }
     await recordOperatorOverride(input.audit, event, input.operator);
     return {
       outcome: "completed",
-      ticket: {
-        number: handoff.ticket,
-        state: "closed",
-        stateReason: "completed",
-      },
+      ticket: boundary.ticket,
     };
   }
 }
