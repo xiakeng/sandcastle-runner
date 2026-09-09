@@ -146,11 +146,12 @@ function trustedHandoff(
 async function runAgentOperation(
   input: AgentOperationInput,
   operation: {
-    phase: "implement" | "ci_repair";
+    phase: "implement" | "ci_repair" | "conflict_repair";
     ticket: number;
     worktree: string;
     branch: string;
     base: string;
+    requiredAncestor?: string;
     promptFile: string;
     promptArgs: Record<string, string | number>;
     pullRequestMetadata: "required" | "ignored";
@@ -210,6 +211,9 @@ async function runAgentOperation(
       const observed = await input.gitWorkspace.inspect({
         worktree: operation.worktree,
         base: operation.base,
+        ...(operation.requiredAncestor === undefined
+          ? {}
+          : { requiredAncestor: operation.requiredAncestor }),
       });
       if (
         observed.worktree !== path.resolve(operation.worktree) ||
@@ -394,6 +398,65 @@ export async function runCiRepairAttempt(
             link,
           })),
         ),
+      },
+      pullRequestMetadata: "ignored",
+      existingPrMetadata: input.handoff,
+      agent: input.agent,
+      signal: input.signal,
+      attemptCounter: input.attemptCounter,
+    });
+    return typeof result === "string"
+      ? { outcome: "consumed", reason: result }
+      : { outcome: "handoff", handoff: result };
+  } catch (error) {
+    if (error instanceof BoundaryStop) {
+      return { outcome: "boundary", boundary: error.result };
+    }
+    throw error;
+  }
+}
+
+export async function runConflictRepairAttempt(
+  input: AgentOperationInput & {
+    handoff: VerifiedHandoff;
+    base: string;
+    targetBase: string;
+    pullRequest: PullRequestIdentity;
+    conflict: string;
+    promptFile: string;
+    agent: AgentConfig;
+    signal: AbortSignal;
+    attemptCounter: { value: number };
+  },
+): Promise<
+  | { outcome: "handoff"; handoff: VerifiedHandoff }
+  | { outcome: "consumed"; reason: string }
+  | {
+      outcome: "boundary";
+      boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+    }
+> {
+  try {
+    const result = await runAgentOperation(input, {
+      phase: "conflict_repair",
+      ticket: input.handoff.ticket,
+      worktree: input.handoff.worktree,
+      branch: input.handoff.branch,
+      base: input.base,
+      requiredAncestor: input.targetBase,
+      promptFile: input.promptFile,
+      promptArgs: {
+        TICKET_NUMBER: input.handoff.ticket,
+        TICKET_REFERENCE: `${input.repository}#${input.handoff.ticket}`,
+        IMPLEMENT_SKILL: "$implement",
+        WORKTREE_PATH: input.handoff.worktree,
+        BRANCH: input.handoff.branch,
+        BASE_SHA: input.base,
+        TARGET_BRANCH: input.targetBranch,
+        TARGET_BRANCH_SHA: input.targetBase,
+        PULL_REQUEST_NUMBER: input.pullRequest.number,
+        PULL_REQUEST_URL: input.pullRequest.url,
+        MERGE_CONFLICT: input.conflict,
       },
       pullRequestMetadata: "ignored",
       existingPrMetadata: input.handoff,

@@ -157,6 +157,7 @@ export interface GitWorkspace {
   inspect(input: {
     worktree: string;
     base: string;
+    requiredAncestor?: string;
   }): Promise<WorkspaceEvidence>;
   push(worktree: string, branch: string): Promise<void>;
 }

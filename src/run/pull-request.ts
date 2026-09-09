@@ -1,5 +1,9 @@
 import type { AgentConfig } from "../config.ts";
-import { runCiRepairAttempt, type VerifiedHandoff } from "./attempt.ts";
+import {
+  runCiRepairAttempt,
+  runConflictRepairAttempt,
+  type VerifiedHandoff,
+} from "./attempt.ts";
 import type {
   AgentExecutor,
   CodeHost,
@@ -49,9 +53,12 @@ export interface ReadinessInput extends DiscoveryInput {
 interface PublicationInput extends ReadinessInput {
   runId: string;
   targetBranch: string;
+  checkout: string;
   projectDirectory: string;
   ciRepairPrompt: string;
   ciRepairAgent: AgentConfig;
+  conflictRepairPrompt: string;
+  conflictRepairAgent: AgentConfig;
   agentTimeoutMs: number;
   handoffs: VerifiedHandoff[];
   gitWorkspace: GitWorkspace;
@@ -296,15 +303,17 @@ export async function integratePullRequest(
   observed: PullRequestState,
 ): Promise<
   | { outcome: "completed"; ticket: Ticket }
-  | { outcome: "conflict"; reason: string }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
-  const boundary = await revalidateReservedDeliveryTicket(
-    input,
-    handoff.ticket,
-  );
-  if (boundary.outcome !== "ready") return boundary;
-  if (!observed.merged) {
+  const conflictBudget = { consumed: 0, attempts: { value: 0 } };
+  let current = observed;
+  for (;;) {
+    const boundary = await revalidateReservedDeliveryTicket(
+      input,
+      handoff.ticket,
+    );
+    if (boundary.outcome !== "ready") return boundary;
+    if (current.merged) return confirmCompletion(input, handoff);
     let request: MergeRequestResult;
     try {
       request = await workflowWrite<MergeRequestResult>({
@@ -312,7 +321,7 @@ export async function integratePullRequest(
           const result = await input.codeHost.requestSquashMerge({
             repository: input.repository,
             pullRequest: pullRequest.number,
-            headSha: observed.headSha,
+            headSha: current.headSha,
             admin: input.adminMerge,
           });
           if (result.outcome === "rejected") throw new Error(result.error);
@@ -347,15 +356,21 @@ export async function integratePullRequest(
         : error.boundary;
     }
     if (request.outcome === "conflict") {
-      return {
-        outcome: "conflict",
-        reason: `Pull Request ${pullRequest.number} has merge conflicts: ${request.error}`,
-      };
+      const repair = await repairMergeConflict(
+        input,
+        handoff,
+        pullRequest,
+        request.error,
+        conflictBudget,
+      );
+      if ("outcome" in repair) return repair;
+      current = repair.state;
+      continue;
     }
     const confirmation = await waitForMerge(input, handoff, pullRequest);
     if (confirmation !== "merged") return confirmation;
+    return confirmCompletion(input, handoff);
   }
-  return confirmCompletion(input, handoff);
 }
 
 function pullRequestOverride(value: string): PullRequestIdentity {
@@ -568,6 +583,177 @@ async function repairRequiredChecks(
     if (boundary.outcome !== "ready") return boundary;
     await recordOperatorOverride(input.audit, event, input.operator);
     return { readiness: "ready", failedChecks: [] };
+  }
+}
+
+async function repairMergeConflict(
+  input: PublicationInput,
+  handoff: VerifiedHandoff,
+  pullRequest: PullRequestIdentity,
+  conflict: string,
+  budget: { consumed: number; attempts: { value: number } },
+): Promise<
+  | { state: PullRequestState }
+  | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
+> {
+  const controller = new AbortController();
+  for (;;) {
+    while (budget.consumed < 2) {
+      const beforeRepair = await revalidateReservedDeliveryTicket(
+        input,
+        handoff.ticket,
+      );
+      if (beforeRepair.outcome !== "ready") return beforeRepair;
+      const state = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "conflict_repair",
+      );
+      if (state.merged) return { state };
+      const targetBase = await externalRead({
+        action: () =>
+          input.gitWorkspace.fetchTargetBranch(
+            input.checkout,
+            input.targetBranch,
+          ),
+        parseOverride: (value) => {
+          const parsed = JSON.parse(value) as { base?: unknown };
+          if (
+            typeof parsed.base !== "string" ||
+            !/^[0-9a-f]{40,64}$/u.test(parsed.base)
+          ) {
+            throw new Error("override has no full Target Branch SHA");
+          }
+          return parsed.base;
+        },
+        audit: input.audit,
+        event: input.event(
+          "conflict_repair",
+          "fetch_target_branch",
+          input.targetBranch,
+        ),
+        clock: input.clock,
+        operator: input.operator,
+      });
+      const repair = await runConflictRepairAttempt({
+        ...input,
+        handoff,
+        base: state.headSha,
+        targetBase,
+        pullRequest,
+        conflict,
+        promptFile: input.conflictRepairPrompt,
+        agent: input.conflictRepairAgent,
+        timeoutMs: input.agentTimeoutMs,
+        signal: controller.signal,
+        attemptCounter: budget.attempts,
+      });
+      if (repair.outcome === "boundary") return repair.boundary;
+      budget.consumed += 1;
+      if (repair.outcome === "consumed") continue;
+
+      const current = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "conflict_repair",
+      );
+      if (current.merged) return { state: current };
+      const boundary = await revalidateReservedDeliveryTicket(
+        input,
+        handoff.ticket,
+      );
+      if (boundary.outcome !== "ready") return boundary;
+      try {
+        await workflowWrite({
+          action: () =>
+            input.gitWorkspace.push(handoff.worktree, handoff.branch),
+          beforeRetry: async () => {
+            const changed = await revalidateReservedDeliveryTicket(
+              input,
+              handoff.ticket,
+            );
+            if (changed.outcome !== "ready") {
+              throw new ReservedBoundaryChanged(changed);
+            }
+          },
+          audit: input.audit,
+          event: () =>
+            input.event(
+              "conflict_repair",
+              "push_repair",
+              `pull_request:${pullRequest.number}`,
+            )(budget.consumed),
+          operator: input.operator,
+        });
+      } catch (error) {
+        if (!(error instanceof ReservedBoundaryChanged)) throw error;
+        return error.boundary;
+      }
+      let readiness = await observeRequiredChecks(
+        input,
+        repair.handoff,
+        pullRequest,
+      );
+      if (!("outcome" in readiness) && readiness.readiness === "failed") {
+        readiness = await repairRequiredChecks(
+          input,
+          repair.handoff,
+          pullRequest,
+          readiness.failedChecks,
+          controller.signal,
+        );
+      }
+      if ("outcome" in readiness) return readiness;
+      if (readiness.readiness === "ready") {
+        return {
+          state: await observePullRequestForIntegration(
+            input,
+            pullRequest.number,
+            "conflict_repair",
+          ),
+        };
+      }
+    }
+
+    const event = input.event(
+      "conflict_repair",
+      "repair_budget_exhausted",
+      `pull_request:${pullRequest.number}`,
+    )(budget.consumed);
+    const response = await pauseForOperator(
+      input.audit,
+      event,
+      input.operator,
+      "Conflict repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge a trusted repair.",
+    );
+    if (response === "") {
+      budget.consumed = 0;
+      continue;
+    }
+    const boundary = await revalidateReservedDeliveryTicket(
+      input,
+      handoff.ticket,
+    );
+    if (boundary.outcome !== "ready") return boundary;
+    await recordOperatorOverride(input.audit, event, input.operator);
+    let readiness = await observeRequiredChecks(input, handoff, pullRequest);
+    if (!("outcome" in readiness) && readiness.readiness === "failed") {
+      readiness = await repairRequiredChecks(
+        input,
+        handoff,
+        pullRequest,
+        readiness.failedChecks,
+        controller.signal,
+      );
+    }
+    if ("outcome" in readiness) return readiness;
+    return {
+      state: await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "conflict_repair",
+      ),
+    };
   }
 }
 

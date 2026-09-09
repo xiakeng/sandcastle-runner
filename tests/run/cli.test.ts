@@ -2128,57 +2128,578 @@ test("a queued merge receives no completion credit until timeout recovery confir
   assert.equal(closeCalls, 1);
 });
 
-test("merge conflict evidence is retained while other merge rejections enter Operator Pause", async () => {
-  for (const scenario of [
-    {
-      outcome: "conflict" as const,
-      error: "GitHub reported a merge conflict in src/run.ts",
-      expectedOutcome: "incomplete",
-      pauses: 0,
-    },
-    {
-      outcome: "rejected" as const,
-      error: "GitHub rejected admin bypass",
-      expectedOutcome: "cancelled",
-      pauses: 1,
-    },
-  ]) {
-    const root = await createProject();
-    const delivery = createCommittedDelivery();
-    let pauses = 0;
-    const result = await executeCli(
-      ["run", "--project", "demo", "--parent", "8"],
-      createCliDependencies(root, {
-        ...delivery,
-        codeHost: {
-          async getPullRequest() {
-            return {
-              headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              createdAt: "2026-09-09T00:00:00Z",
-              merged: false,
-              mergeFailure: null,
-            };
-          },
-          async requestSquashMerge() {
-            return { outcome: scenario.outcome, error: scenario.error };
-          },
+test("a non-conflict merge rejection enters Operator Pause without conflict repair", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  const rejection = "GitHub rejected admin bypass";
+  let pauses = 0;
+  let agentCalls = 0;
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      agentExecutor: {
+        async execute(input) {
+          agentCalls += 1;
+          return delivery.agentExecutor.execute!(input);
         },
-        operator: {
-          async pause() {
-            pauses += 1;
-            return "q";
-          },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: false,
+            mergeFailure: null,
+          };
         },
-      }),
-    );
+        async requestSquashMerge() {
+          return { outcome: "rejected", error: rejection };
+        },
+      },
+      operator: {
+        async pause() {
+          pauses += 1;
+          return "q";
+        },
+      },
+    }),
+  );
 
-    assert.equal(result.summary.outcome, scenario.expectedOutcome);
-    assert.deepEqual(result.summary.completedTickets ?? [], []);
-    assert.equal(pauses, scenario.pauses);
-    assert.ok(result.logPath);
-    const evidence = `${result.summary.reasons.join(" ")} ${await readFile(result.logPath, "utf8")}`;
-    assert.match(evidence, new RegExp(scenario.error));
-  }
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(result.summary.completedTickets ?? [], []);
+  assert.equal(pauses, 1);
+  assert.equal(agentCalls, 1);
+  assert.ok(result.logPath);
+  assert.match(await readFile(result.logPath, "utf8"), new RegExp(rejection));
+});
+
+test("an explicit merge conflict is repaired on the original branch and Pull Request", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({
+      ...validConfig,
+      agents: {
+        ...validConfig.agents,
+        conflictRepair: { model: "gpt-5.5", reasoningEffort: "medium" },
+      },
+    }),
+  );
+  const { tracker } = createAttemptTracker(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const conflictRepair = {
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+    message: "fix: merge conflict",
+  };
+  const ciRepair = {
+    sha: "dddddddddddddddddddddddddddddddddddddddd",
+    message: "fix: checks after conflict repair",
+  };
+  const targetBase = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const conflict = "GitHub reported a merge conflict in src/run.ts";
+  const agentInputs: Parameters<AgentExecutor["execute"]>[0][] = [];
+  let branch = "";
+  let fetches = 0;
+  let pushes = 0;
+  let pullRequests = 0;
+  let checkReads = 0;
+  let mergeRequests = 0;
+  let headSha = implementation.sha;
+  let merged = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          fetches += 1;
+          return fetches === 1
+            ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            : targetBase;
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base, requiredAncestor }) {
+          assert.equal(
+            requiredAncestor,
+            base === implementation.sha ? targetBase : undefined,
+          );
+          const commits =
+            base === implementation.sha
+              ? [conflictRepair]
+              : base === conflictRepair.sha
+                ? [ciRepair]
+                : [implementation];
+          return { worktree, branch, base, commits, clean: true };
+        },
+        async push() {
+          pushes += 1;
+          if (pushes === 2) headSha = conflictRepair.sha;
+          if (pushes === 3) headSha = ciRepair.sha;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          agentInputs.push(input);
+          const commit = [implementation, conflictRepair, ciRepair][
+            agentInputs.length - 1
+          ]!;
+          return {
+            outcome: "committed",
+            summary: commit.message,
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest() {
+          pullRequests += 1;
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+        async getRequiredChecks() {
+          checkReads += 1;
+          return checkReads === 2
+            ? [
+                {
+                  name: "checks",
+                  state: "FAILURE",
+                  link: "https://github.com/owner/repo/actions/runs/1",
+                  bucket: "fail",
+                },
+              ]
+            : [];
+        },
+        async getPullRequest() {
+          return {
+            headSha,
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          if (mergeRequests === 1)
+            return { outcome: "conflict", error: conflict };
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(fetches, 2);
+  assert.equal(pushes, 3);
+  assert.equal(pullRequests, 1);
+  assert.equal(mergeRequests, 2);
+  assert.equal(agentInputs.length, 3);
+  assert.equal(
+    agentInputs[1]?.promptFile,
+    path.join(root, "projects/demo/prompts/conflict-repair.md"),
+  );
+  assert.equal(agentInputs[1]?.model, "gpt-5.5");
+  assert.equal(agentInputs[1]?.effort, "medium");
+  assert.equal(agentInputs[1]?.branch, branch);
+  assert.equal(agentInputs[1]?.base, implementation.sha);
+  assert.deepEqual(agentInputs[1]?.promptArgs, {
+    TICKET_NUMBER: 9,
+    TICKET_REFERENCE: "owner/repo#9",
+    IMPLEMENT_SKILL: "$implement",
+    WORKTREE_PATH: agentInputs[0]?.worktree,
+    BRANCH: branch,
+    BASE_SHA: implementation.sha,
+    TARGET_BRANCH: "main",
+    TARGET_BRANCH_SHA: targetBase,
+    PULL_REQUEST_NUMBER: 41,
+    PULL_REQUEST_URL: "https://github.com/owner/repo/pull/41",
+    MERGE_CONFLICT: conflict,
+  });
+  assert.equal(
+    agentInputs[2]?.promptFile,
+    path.join(root, "projects/demo/prompts/ci-repair.md"),
+  );
+  assert.equal(agentInputs[2]?.branch, branch);
+  assert.ok(result.logPath);
+  const conflictOperations = (await readFile(result.logPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((event) => event.phase === "conflict_repair")
+    .map((event) => event.operation);
+  assert.ok(conflictOperations.includes("fetch_target_branch"));
+  assert.ok(conflictOperations.includes("agent_attempt"));
+  assert.ok(conflictOperations.includes("push_repair"));
+});
+
+test("a trusted conflict-repair override repeats required-check discovery", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  let branch = "";
+  let agentCalls = 0;
+  let checkReads = 0;
+  let mergeRequests = 0;
+  let merged = false;
+  const pauses: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits: agentCalls === 3 ? [] : [implementation],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          if (agentCalls === 2) {
+            return {
+              outcome: "blocked",
+              summary: "conflict remains",
+              commits: [],
+              checks: [],
+              blocker: "conflict remains",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          if (agentCalls === 3) {
+            return {
+              outcome: "no_change",
+              summary: "no safe resolution",
+              commits: [],
+              checks: [],
+              blocker: null,
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          return {
+            outcome: "committed",
+            summary: implementation.message,
+            commits: [implementation],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async getRequiredChecks() {
+          checkReads += 1;
+          return [];
+        },
+        async getPullRequest() {
+          return {
+            headSha: implementation.sha,
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          if (mergeRequests === 1) {
+            return { outcome: "conflict", error: "merge conflict" };
+          }
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          pauses.push(message);
+          return "trusted repair";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(agentCalls, 3);
+  assert.equal(checkReads, 2);
+  assert.equal(mergeRequests, 2);
+  assert.deepEqual(pauses, [
+    "Conflict repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge a trusted repair.",
+  ]);
+});
+
+test("blocked and no_change conflict repairs consume two attempts before an empty-input reset", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const repair = {
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+    message: "fix: merge conflict",
+  };
+  let branch = "";
+  let agentCalls = 0;
+  let mergeRequests = 0;
+  let headSha = implementation.sha;
+  let merged = false;
+  const pauses: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits:
+              agentCalls === 3
+                ? []
+                : agentCalls === 4
+                  ? [repair]
+                  : [implementation],
+            clean: true,
+          };
+        },
+        async push() {
+          if (agentCalls === 4) headSha = repair.sha;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          if (agentCalls === 2) {
+            return {
+              outcome: "blocked",
+              summary: "conflict remains",
+              commits: [],
+              checks: [],
+              blocker: "conflict remains",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          if (agentCalls === 3) {
+            return {
+              outcome: "no_change",
+              summary: "no safe resolution",
+              commits: [],
+              checks: [],
+              blocker: null,
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          const commit = agentCalls === 1 ? implementation : repair;
+          return {
+            outcome: "committed",
+            summary: commit.message,
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha,
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          if (mergeRequests === 1) {
+            return { outcome: "conflict", error: "merge conflict" };
+          }
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          pauses.push(message);
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(agentCalls, 4);
+  assert.equal(mergeRequests, 2);
+  assert.deepEqual(pauses, [
+    "Conflict repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge a trusted repair.",
+  ]);
+  assert.ok(result.logPath);
+  const attempts = (await readFile(result.logPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter(
+      (event) =>
+        event.phase === "conflict_repair" &&
+        event.operation === "agent_attempt" &&
+        event.result === "started",
+    )
+    .map((event) => event.attempt);
+  assert.deepEqual(attempts, [1, 2, 3]);
+});
+
+test("invalid conflict-repair handoffs do not consume the automatic budget", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const firstRepair = {
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+    message: "fix: first merge conflict",
+  };
+  const secondRepair = {
+    sha: "dddddddddddddddddddddddddddddddddddddddd",
+    message: "fix: second merge conflict",
+  };
+  const falseClaim = {
+    sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    message: "fix: false claim",
+  };
+  let branch = "";
+  let agentCalls = 0;
+  let pushes = 0;
+  let mergeRequests = 0;
+  let headSha = implementation.sha;
+  let merged = false;
+  const pauses: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits:
+              agentCalls === 2
+                ? []
+                : agentCalls === 3
+                  ? [firstRepair]
+                  : agentCalls === 4
+                    ? [secondRepair]
+                    : [implementation],
+            clean: true,
+          };
+        },
+        async push() {
+          pushes += 1;
+          if (pushes === 2) headSha = firstRepair.sha;
+          if (pushes === 3) headSha = secondRepair.sha;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          const commit =
+            agentCalls === 1
+              ? implementation
+              : agentCalls === 2
+                ? falseClaim
+                : agentCalls === 3
+                  ? firstRepair
+                  : secondRepair;
+          return {
+            outcome: "committed",
+            summary: commit.message,
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha,
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          if (mergeRequests < 3) {
+            return { outcome: "conflict", error: "merge conflict" };
+          }
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          pauses.push(message);
+          return pauses.length === 1 ? "" : "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(agentCalls, 4);
+  assert.equal(mergeRequests, 3);
+  assert.equal(pauses.length, 1);
+  assert.match(pauses[0]!, /Agent Attempt failed/u);
 });
 
 test("Parent cancellation during a merge rejection pause prevents the authorized retry", async () => {
@@ -4291,7 +4812,7 @@ test("a boundary stop after PR creation keeps its identity", async () => {
   ]);
 });
 
-test("partial Batch integration keeps credit and does not overtake a conflict", async () => {
+test("partial Batch integration keeps credit and ordering through a repaired conflict", async () => {
   const root = await createProject();
   const delivery = createCommittedBatch(9, 10, 11);
   const merged = new Set<number>();
@@ -4323,7 +4844,10 @@ test("partial Batch integration keeps credit and does not overtake a conflict", 
         },
         async requestSquashMerge({ pullRequest }) {
           mergeRequests.push(pullRequest);
-          if (pullRequest === 110) {
+          if (
+            pullRequest === 110 &&
+            mergeRequests.filter((number) => number === 110).length === 1
+          ) {
             return { outcome: "conflict", error: "conflict in run.ts" };
           }
           merged.add(pullRequest);
@@ -4333,12 +4857,12 @@ test("partial Batch integration keeps credit and does not overtake a conflict", 
     }),
   );
 
-  assert.equal(result.summary.outcome, "incomplete");
-  assert.deepEqual(mergeRequests, [109, 110]);
-  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(mergeRequests, [109, 110, 110, 111]);
+  assert.deepEqual(result.summary.completedTickets, [9, 10, 11]);
   assert.equal(delivery.tickets[0]!.stateReason, "completed");
-  assert.equal(delivery.tickets[1]!.state, "open");
-  assert.equal(delivery.tickets[2]!.state, "open");
+  assert.equal(delivery.tickets[1]!.stateReason, "completed");
+  assert.equal(delivery.tickets[2]!.stateReason, "completed");
 });
 
 test("cancelling a later merge keeps earlier Batch completion credit", async () => {
