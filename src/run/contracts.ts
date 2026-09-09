@@ -6,10 +6,17 @@ export interface Ticket {
   state: TicketState;
   stateReason: ClosureReason;
   repository?: string;
+  assignees?: string[];
+  labels?: string[];
 }
 
 export interface ChildPage {
   children: Ticket[];
+  nextPage: number | null;
+}
+
+export interface BlockerPage {
+  blockers: Ticket[];
   nextPage: number | null;
 }
 
@@ -20,6 +27,24 @@ export interface Tracker {
     parentTicket: number,
     page: number,
   ): Promise<ChildPage>;
+  getTicket(repository: string, ticket: number): Promise<Ticket>;
+  listBlockersPage(
+    repository: string,
+    ticket: number,
+    page: number,
+  ): Promise<BlockerPage>;
+  addLabel(repository: string, ticket: number, label: string): Promise<void>;
+  addAssignee(
+    repository: string,
+    ticket: number,
+    assignee: string,
+  ): Promise<void>;
+  removeLabel(repository: string, ticket: number, label: string): Promise<void>;
+  removeAssignee(
+    repository: string,
+    ticket: number,
+    assignee: string,
+  ): Promise<void>;
   closeParent(repository: string, parentTicket: number): Promise<void>;
 }
 

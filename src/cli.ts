@@ -109,6 +109,8 @@ export async function executeCli(
       codeHost,
       clock: dependencies.clock,
       operator: dependencies.operator,
+      runnerAccount: loaded.config.tracker.runnerAccount,
+      reservationLabel: loaded.config.tracker.reservationLabel,
     });
   } catch (error) {
     summary = {

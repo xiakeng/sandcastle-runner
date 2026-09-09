@@ -1,12 +1,12 @@
 import type { AuditLog } from "../audit.ts";
 import type {
-  ChildPage,
   Clock,
   CodeHost,
   OperatorIO,
   Ticket,
   Tracker,
 } from "./contracts.ts";
+import { readChildren, revalidateTicket, selectBatch } from "./discovery.ts";
 import { externalRead, workflowWrite } from "./operations.ts";
 
 export type RunOutcome =
@@ -18,6 +18,7 @@ export interface RunSummary {
   parentTicket: number;
   targetBranch: string;
   reasons: string[];
+  batch?: number[];
 }
 
 interface RunInput {
@@ -31,6 +32,8 @@ interface RunInput {
   codeHost: CodeHost;
   clock: Clock;
   operator: OperatorIO;
+  runnerAccount: string;
+  reservationLabel: string;
 }
 
 function overrideRecord(value: unknown): Record<string, unknown> {
@@ -61,38 +64,6 @@ function parseParentOverride(value: string, parentTicket: number): Ticket {
   return {
     number: parentTicket,
     ...overrideState(overrideRecord(JSON.parse(value) as unknown)),
-  };
-}
-
-function parseChildOverride(value: unknown): Ticket {
-  const ticket = overrideRecord(value);
-  if (!Number.isSafeInteger(ticket.number) || (ticket.number as number) <= 0) {
-    throw new Error("override has no ticket number");
-  }
-  if (typeof ticket.repository !== "string" || ticket.repository.length === 0) {
-    throw new Error("override has no usable repository");
-  }
-  return {
-    number: ticket.number as number,
-    ...overrideState(ticket),
-    repository: ticket.repository,
-  };
-}
-
-function parseChildPageOverride(value: string): ChildPage {
-  const page = JSON.parse(value) as unknown;
-  if (typeof page !== "object" || page === null || Array.isArray(page)) {
-    throw new Error("override is not a child page");
-  }
-  const input = page as Record<string, unknown>;
-  if (!Array.isArray(input.children))
-    throw new Error("override has no children");
-  if (input.nextPage !== null && !Number.isSafeInteger(input.nextPage)) {
-    throw new Error("override has no usable next page");
-  }
-  return {
-    children: input.children.map(parseChildOverride),
-    nextPage: input.nextPage as number | null,
   };
 }
 
@@ -128,14 +99,51 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       clock: input.clock,
       operator: input.operator,
     }));
-  const parent = await externalRead({
-    action: () => input.tracker.getParent(input.repository, input.parentTicket),
-    parseOverride: (value) => parseParentOverride(value, input.parentTicket),
-    audit: input.audit,
-    event: event("discover", "read_parent", `parent:${input.parentTicket}`),
-    clock: input.clock,
-    operator: input.operator,
-  });
+  const readParent = () =>
+    externalRead({
+      action: () =>
+        input.tracker.getParent(input.repository, input.parentTicket),
+      parseOverride: (value) => parseParentOverride(value, input.parentTicket),
+      audit: input.audit,
+      event: event("discover", "read_parent", `parent:${input.parentTicket}`),
+      clock: input.clock,
+      operator: input.operator,
+    });
+  const releaseReservation = async (
+    ticket: number,
+    removeAssignee: boolean,
+    removeLabel: boolean,
+  ) => {
+    if (removeAssignee) {
+      await workflowWrite({
+        action: () =>
+          input.tracker.removeAssignee(
+            input.repository,
+            ticket,
+            input.runnerAccount,
+          ),
+        audit: input.audit,
+        event: () =>
+          event("release", "remove_runner_assignee", `ticket:${ticket}`)(1),
+        operator: input.operator,
+      });
+    }
+    if (removeLabel) {
+      await workflowWrite({
+        action: () =>
+          input.tracker.removeLabel(
+            input.repository,
+            ticket,
+            input.reservationLabel,
+          ),
+        audit: input.audit,
+        event: () =>
+          event("release", "remove_reservation_label", `ticket:${ticket}`)(1),
+        operator: input.operator,
+      });
+    }
+  };
+  const parent = await readParent();
   if (parent.state === "closed" && parent.stateReason === "not_planned") {
     return {
       outcome: "cancelled",
@@ -154,30 +162,17 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       reasons: ["closed Parent Ticket has no supported closure reason"],
     };
   }
-  const children = [];
-  let pageNumber: number | null = 1;
-  while (pageNumber !== null) {
-    const currentPage = pageNumber;
-    const page: ChildPage = await externalRead<ChildPage>({
-      action: () =>
-        input.tracker.listChildrenPage(
-          input.repository,
-          input.parentTicket,
-          currentPage,
-        ),
-      parseOverride: parseChildPageOverride,
-      audit: input.audit,
-      event: event(
-        "discover",
-        "read_children",
-        `parent:${input.parentTicket}:page:${currentPage}`,
-      ),
-      clock: input.clock,
-      operator: input.operator,
-    });
-    children.push(...page.children);
-    pageNumber = page.nextPage;
-  }
+  let children = await readChildren({
+    repository: input.repository,
+    parentTicket: input.parentTicket,
+    tracker: input.tracker,
+    audit: input.audit,
+    clock: input.clock,
+    operator: input.operator,
+    event: (operation, target) => event("discover", operation, target),
+    runnerAccount: input.runnerAccount,
+    reservationLabel: input.reservationLabel,
+  });
 
   const crossRepositoryChild = children.find(
     (child) =>
@@ -219,6 +214,19 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       reasons: [],
     };
   }
+  const inspect = (tickets: Ticket[], phase: string) =>
+    selectBatch({
+      repository: input.repository,
+      children: tickets,
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event: (operation, target) => event(phase, operation, target),
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+    });
+  let selection = await inspect(children, "discover");
   if (
     parent.state === "open" &&
     children.every(
@@ -228,36 +236,342 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
           child.stateReason === "not_planned"),
     )
   ) {
-    await workflowWrite({
-      action: () =>
-        input.tracker.closeParent(input.repository, input.parentTicket),
-      audit: input.audit,
-      event: () =>
-        event(
-          "close_parent",
-          "close_parent",
-          `parent:${input.parentTicket}`,
-        )(1),
-      operator: input.operator,
-    });
-    return {
-      outcome: "succeeded",
-      project: input.project,
+    const finalParent = await readParent();
+    children = await readChildren({
+      repository: input.repository,
       parentTicket: input.parentTicket,
-      targetBranch,
-      reasons: [],
-    };
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event: (operation, target) => event("final_scan", operation, target),
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+    });
+    const finalCrossRepositoryChild = children.find(
+      (child) => child.repository !== input.repository,
+    );
+    if (finalCrossRepositoryChild) {
+      return {
+        outcome: "failed",
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons: [
+          `cross-repository child ${finalCrossRepositoryChild.repository}#${finalCrossRepositoryChild.number} is unsupported`,
+        ],
+      };
+    }
+    if (
+      finalParent.state === "closed" &&
+      finalParent.stateReason === "not_planned"
+    ) {
+      return {
+        outcome: "cancelled",
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons: ["Parent Ticket is cancelled"],
+      };
+    }
+    selection = await inspect(children, "final_scan");
+    if (finalParent.state === "closed") {
+      const openChildren = children.filter((child) => child.state === "open");
+      return {
+        outcome: openChildren.length === 0 ? "succeeded" : "failed",
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons:
+          openChildren.length === 0
+            ? []
+            : [
+                `completed Parent Ticket has open children: ${openChildren.map(({ number }) => number).join(", ")}`,
+              ],
+      };
+    }
+    if (
+      children.some(
+        (child) =>
+          child.state !== "closed" ||
+          (child.stateReason !== "completed" &&
+            child.stateReason !== "not_planned"),
+      )
+    ) {
+      // Newly visible work must pass through ordinary selection below.
+    } else {
+      for (const child of children) {
+        await releaseReservation(
+          child.number,
+          (child.assignees ?? []).includes(input.runnerAccount),
+          (child.labels ?? []).includes(input.reservationLabel),
+        );
+      }
+      await workflowWrite({
+        action: () =>
+          input.tracker.closeParent(input.repository, input.parentTicket),
+        audit: input.audit,
+        event: () =>
+          event(
+            "close_parent",
+            "close_parent",
+            `parent:${input.parentTicket}`,
+          )(1),
+        operator: input.operator,
+      });
+      return {
+        outcome: "succeeded",
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons: [],
+      };
+    }
   }
   const openChildren = children.filter((child) => child.state === "open");
   if (openChildren.length > 0) {
+    if (selection.batch.length === 0) {
+      const finalParent = await readParent();
+      if (
+        finalParent.state === "closed" &&
+        finalParent.stateReason === "not_planned"
+      ) {
+        return {
+          outcome: "cancelled",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket is cancelled"],
+        };
+      }
+      if (finalParent.state === "closed") {
+        return {
+          outcome: "failed",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket changed to a terminal state"],
+        };
+      }
+      const finalChildren = await readChildren({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        event: (operation, target) => event("final_scan", operation, target),
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+      });
+      const finalCrossRepositoryChild = finalChildren.find(
+        (child) => child.repository !== input.repository,
+      );
+      if (finalCrossRepositoryChild) {
+        return {
+          outcome: "failed",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: [
+            `cross-repository child ${finalCrossRepositoryChild.repository}#${finalCrossRepositoryChild.number} is unsupported`,
+          ],
+        };
+      }
+      selection = await inspect(finalChildren, "final_scan");
+    }
+    const reservedBatch: number[] = [];
+    for (const child of selection.batch) {
+      const revalidatedParent = await readParent();
+      if (
+        revalidatedParent.state === "closed" &&
+        revalidatedParent.stateReason === "not_planned"
+      ) {
+        return {
+          outcome: "cancelled",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket is cancelled"],
+        };
+      }
+      if (revalidatedParent.state === "closed") {
+        return {
+          outcome: "failed",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket changed to a terminal state"],
+        };
+      }
+      const beforeLabel = await revalidateTicket({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        ticket: child.number,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        event: (operation, target) => event("revalidate", operation, target),
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+      });
+      if (
+        !beforeLabel.inScope ||
+        beforeLabel.ticket.state !== "open" ||
+        beforeLabel.blocked ||
+        (beforeLabel.ticket.assignees ?? []).length > 0 ||
+        (beforeLabel.ticket.labels ?? []).includes(input.reservationLabel)
+      ) {
+        continue;
+      }
+      await workflowWrite({
+        action: () =>
+          input.tracker.addLabel(
+            input.repository,
+            child.number,
+            input.reservationLabel,
+          ),
+        audit: input.audit,
+        event: () =>
+          event(
+            "reserve",
+            "add_reservation_label",
+            `ticket:${child.number}`,
+          )(1),
+        operator: input.operator,
+      });
+      const parentBeforeAssignee = await readParent();
+      if (
+        parentBeforeAssignee.state === "closed" &&
+        parentBeforeAssignee.stateReason === "not_planned"
+      ) {
+        return {
+          outcome: "cancelled",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket is cancelled"],
+        };
+      }
+      if (parentBeforeAssignee.state === "closed") {
+        return {
+          outcome: "failed",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket changed to a terminal state"],
+        };
+      }
+      const beforeAssignee = await revalidateTicket({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        ticket: child.number,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        event: (operation, target) => event("revalidate", operation, target),
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+      });
+      if (!beforeAssignee.inScope) continue;
+      if (beforeAssignee.ticket.state === "closed") {
+        await releaseReservation(child.number, false, true);
+        continue;
+      }
+      if (
+        beforeAssignee.blocked ||
+        (beforeAssignee.ticket.assignees ?? []).some(
+          (assignee) => assignee !== input.runnerAccount,
+        ) ||
+        (beforeAssignee.ticket.assignees ?? []).includes(input.runnerAccount)
+      ) {
+        continue;
+      }
+      await workflowWrite({
+        action: () =>
+          input.tracker.addAssignee(
+            input.repository,
+            child.number,
+            input.runnerAccount,
+          ),
+        audit: input.audit,
+        event: () =>
+          event("reserve", "add_runner_assignee", `ticket:${child.number}`)(1),
+        operator: input.operator,
+      });
+      const parentBeforeCheckpoint = await readParent();
+      if (
+        parentBeforeCheckpoint.state === "closed" &&
+        parentBeforeCheckpoint.stateReason === "not_planned"
+      ) {
+        return {
+          outcome: "cancelled",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket is cancelled"],
+        };
+      }
+      if (parentBeforeCheckpoint.state === "closed") {
+        return {
+          outcome: "failed",
+          project: input.project,
+          parentTicket: input.parentTicket,
+          targetBranch,
+          reasons: ["Parent Ticket changed to a terminal state"],
+        };
+      }
+      const atCheckpoint = await revalidateTicket({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        ticket: child.number,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        event: (operation, target) => event("revalidate", operation, target),
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+      });
+      if (!atCheckpoint.inScope) continue;
+      if (atCheckpoint.ticket.state === "closed") {
+        await releaseReservation(child.number, true, true);
+        continue;
+      }
+      if (
+        atCheckpoint.blocked ||
+        (atCheckpoint.ticket.assignees ?? []).some(
+          (assignee) => assignee !== input.runnerAccount,
+        )
+      ) {
+        continue;
+      }
+      reservedBatch.push(child.number);
+    }
     return {
       outcome: "incomplete",
       project: input.project,
       parentTicket: input.parentTicket,
       targetBranch,
       reasons: [
-        `open Delivery Tickets: ${openChildren.map(({ number }) => number).join(", ")}`,
+        ...(reservedBatch.length > 0
+          ? [`reserved Delivery Tickets: ${reservedBatch.join(", ")}`]
+          : []),
+        ...(selection.blocked.length > 0
+          ? [`blocked Delivery Tickets: ${selection.blocked.join(", ")}`]
+          : []),
+        ...(selection.externallyOwned.length > 0
+          ? [
+              `externally owned Delivery Tickets: ${selection.externallyOwned.join(", ")}`,
+            ]
+          : []),
+        ...(selection.reservations.length > 0
+          ? [`existing Reservations: ${selection.reservations.join(", ")}`]
+          : []),
       ],
+      batch: reservedBatch,
     };
   }
   return {
