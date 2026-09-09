@@ -155,5 +155,24 @@ Logs are never read as recovery state, and a new invocation does not adopt or re
 ## Verify
 
 ```sh
+# The two composed five-ticket acceptance scenarios
+node --test tests/run/full-contract.test.ts
+
+# The complete behavioral, adapter, formatting, lint, and type-check suite
 npm run verify
 ```
+
+The acceptance suite uses the real CLI and Run orchestration with scripted `Tracker`, `CodeHost`,
+`GitWorkspace`, `AgentExecutor`, `Clock`, and `OperatorIO` boundaries plus temporary real Project
+configuration and JSONL log directories. It performs no authenticated Codex/Sandcastle execution,
+live GitHub mutation, or remote Git mutation.
+
+| V1 contract evidence | Runnable scenarios |
+| --- | --- |
+| Complete first-try and longest practical recovery Runs | `five Delivery Tickets complete through both maintenance barriers on the first try`; `the five-ticket topology succeeds through the composed recovery path` |
+| Startup, read/write retry, Operator Pause, and audit gaps | `startup validation errors return a failed summary without workflow or pause`; `an external read succeeds on the fifth call with fixed delays`; `a failed Parent close pauses immediately and retries only after empty input`; `an accepted audit creation gap does not suppress later appends` |
+| Discovery, blockers, Reservations, revalidation, and closeout | `eligibility reports ownership and Reservations after complete blocker pagination`; `successive revalidation changes cannot hide newly eligible work`; `the final complete scan closes a now-terminal Parent scope` |
+| Agent process failure, result correction, Verified Handoff failure, and override | `the five-ticket topology succeeds through the composed recovery path`; `SandcastleAgentExecutor supplies the complete controlled Codex invocation`; `empty input starts a fresh Agent Attempt with a new Git configuration`; `a trusted committed override extracts only downstream metadata and bypasses Git verification` |
+| Publication, CI repair, conflict repair, merge confirmation, and closure | `a Verified Handoff is published unchanged and becomes CI-ready after check discovery`; `failed required checks are repaired on the existing branch and Pull Request`; `an explicit merge conflict is repaired on the original branch and Pull Request`; `a CI-ready Pull Request is delivered only after its merge and completed closure are confirmed` |
+| Batch concurrency, all-ready barrier, ordered integration, rescans, and maintenance | `a reserved Batch runs its Agent Attempts concurrently`; `a Batch publishes every PR before merging by creation order`; both five-ticket scenarios; `Documentation Maintenance reuses CI and conflict repair on its original Pull Request` |
+| Focused terminal outcomes and no restart/adoption | `q and EOF at an exhausted external read cancel the Run`; `valid no_change and blocked results stay unresolved without handoffs`; `a cross-repository child fails explicitly without Operator Pause`; `a completed Parent with an open child fails as contradictory`; `open children return an actionable incomplete summary`; `blocked Documentation Maintenance is preserved but ignored by a later Run`; `a fresh Run ignores existing audit logs` |
