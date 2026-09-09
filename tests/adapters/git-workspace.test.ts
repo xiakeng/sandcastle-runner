@@ -11,6 +11,7 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
   const worktree = path.join(root, "worktrees", "ticket-9");
   const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const targetBase = "cccccccccccccccccccccccccccccccccccccccc";
   const calls: {
     cwd: string;
     args: string[];
@@ -29,6 +30,8 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
         return `${worktree}\n`;
       if (args.join(" ") === "branch --show-current")
         return "sandcastle/run-id/ticket-9\n";
+      if (args.join(" ") === `merge-base --is-ancestor ${targetBase} HEAD`)
+        return "";
       if (args[0] === "merge-base") return `${base}\n`;
       if (args[0] === "log") return `${commit}\0feat: implementation\n`;
       if (args[0] === "status") return "";
@@ -44,13 +47,20 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
       branch: "sandcastle/run-id/ticket-9",
       base,
     });
-    assert.deepEqual(await workspace.inspect({ worktree, base }), {
-      worktree,
-      branch: "sandcastle/run-id/ticket-9",
-      base,
-      commits: [{ sha: commit, message: "feat: implementation" }],
-      clean: true,
-    });
+    assert.deepEqual(
+      await workspace.inspect({
+        worktree,
+        base,
+        requiredAncestor: targetBase,
+      }),
+      {
+        worktree,
+        branch: "sandcastle/run-id/ticket-9",
+        base,
+        commits: [{ sha: commit, message: "feat: implementation" }],
+        clean: true,
+      },
+    );
     await workspace.push(worktree, "sandcastle/run-id/ticket-9");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -89,6 +99,19 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
       ({ args }) => args.includes("remove") || args.includes("delete"),
     ),
     false,
+  );
+  assert.ok(
+    calls.some(
+      ({ args }) =>
+        args.join(" ") === `merge-base --is-ancestor ${targetBase} HEAD`,
+    ),
+  );
+  assert.ok(
+    calls.some(
+      ({ args }) =>
+        args.join(" ") ===
+        `log --first-parent --reverse --format=%H%x00%s ${base}..HEAD`,
+    ),
   );
   assert.deepEqual(calls.at(-1), {
     cwd: worktree,

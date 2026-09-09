@@ -57,6 +57,8 @@ interface RunInput {
   implementationAgent: AgentConfig;
   ciRepairPrompt: string;
   ciRepairAgent: AgentConfig;
+  conflictRepairPrompt: string;
+  conflictRepairAgent: AgentConfig;
   agentTimeoutMs: number;
   requiredChecksTimeoutMs: number;
   mergeQueueTimeoutMs: number;
@@ -191,15 +193,19 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       runnerAccount: input.runnerAccount,
       reservationLabel: input.reservationLabel,
       targetBranch,
+      checkout: input.checkout,
       runId: input.runId,
       projectDirectory: input.projectDirectory,
       ciRepairPrompt: input.ciRepairPrompt,
       ciRepairAgent: input.ciRepairAgent,
+      conflictRepairPrompt: input.conflictRepairPrompt,
+      conflictRepairAgent: input.conflictRepairAgent,
       agentTimeoutMs: input.agentTimeoutMs,
       requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
       mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
       adminMerge: input.adminMerge,
       ticketClosure: input.ticketClosure,
+      ciRepairBudgets: new Map(),
       handoffs: attempts.handoffs,
       gitWorkspace: input.gitWorkspace,
       codeHost: input.codeHost,

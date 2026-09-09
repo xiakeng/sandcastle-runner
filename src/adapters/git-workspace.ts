@@ -103,7 +103,15 @@ export class LocalGitWorkspace implements GitWorkspace {
     );
   }
 
-  async inspect({ worktree, base }: { worktree: string; base: string }) {
+  async inspect({
+    worktree,
+    base,
+    requiredAncestor,
+  }: {
+    worktree: string;
+    base: string;
+    requiredAncestor?: string;
+  }) {
     const [actualPath, branch, actualBase, commitList, status] =
       await Promise.all([
         this.command(worktree, ["rev-parse", "--show-toplevel"], {
@@ -117,12 +125,27 @@ export class LocalGitWorkspace implements GitWorkspace {
         }),
         this.command(
           worktree,
-          ["log", "--reverse", "--format=%H%x00%s", `${base}..HEAD`],
+          [
+            "log",
+            ...(requiredAncestor ? ["--first-parent"] : []),
+            "--reverse",
+            "--format=%H%x00%s",
+            `${base}..HEAD`,
+          ],
           { timeout: 60_000 },
         ),
         this.command(worktree, ["status", "--porcelain"], {
           timeout: 60_000,
         }),
+        ...(requiredAncestor
+          ? [
+              this.command(
+                worktree,
+                ["merge-base", "--is-ancestor", requiredAncestor, "HEAD"],
+                { timeout: 60_000 },
+              ),
+            ]
+          : []),
       ]);
     return {
       worktree: path.resolve(actualPath.trim()),

@@ -3,9 +3,9 @@
 Sandcastle Runner is a local CLI for delivering a configured GitHub Parent Ticket. The current
 implementation supports supervised startup, complete Delivery Ticket and blocker discovery,
 Reservations, Sandcastle-backed implementation through independently Verified Handoffs, and
-publication through required CI readiness observation. It repairs failed required checks on their
-existing branches and Pull Requests, then counts delivery only after both the merge and completed
-ticket closure are confirmed.
+publication through required CI readiness observation. It repairs failed required checks and
+explicit merge conflicts on their existing branches and Pull Requests, then counts delivery only
+after both the merge and completed ticket closure are confirmed.
 
 ## Project configuration
 
@@ -30,6 +30,9 @@ Agent Attempt to checks and local commits and request one `<agent_attempt_result
 The CI-repair prompt receives the same arguments plus `{{PULL_REQUEST_NUMBER}}`,
 `{{PULL_REQUEST_URL}}`, and `{{FAILED_CHECKS}}`, a JSON array of failing check names, states, and
 links. Repair PR metadata is ignored because the Runner retains the original Pull Request.
+The conflict-repair prompt receives the Pull Request arguments plus `{{TARGET_BRANCH_SHA}}` and
+`{{MERGE_CONFLICT}}`. The first is the freshly fetched Target Branch commit; the second is the
+explicit conflict reported by the merge request.
 
 ```json
 {
@@ -105,6 +108,14 @@ Each CI-repair operation automatically consumes at most two valid `blocked`, `no
 repair results. Agent execution and handoff failures pause without consuming that budget; empty input
 retries with a fresh Agent Attempt. Exhaustion enters Operator Pause, where empty input starts a fresh
 two-attempt budget, nonempty input acknowledges trusted readiness, and `q` or EOF cancels the Run.
+
+Only an explicit merge conflict starts conflict repair; an advanced Target Branch or ordinary merge
+rejection does not. The Runner freshly fetches the Target Branch, starts a conflict-repair Agent
+Attempt on the existing Worktree and branch, independently verifies and pushes its commit, and
+confirms the fetched Target Branch commit is an ancestor before pushing. It then repeats
+required-check discovery on the original Pull Request before retrying its ordered merge.
+Conflict repair has its own two-consumed-attempt budget with the same reset, override, and
+cancellation behavior as CI repair. A CI failure after conflict repair uses only the CI budget.
 
 No Pull Request in a Batch is merged until every selected Agent Attempt produced a Verified Handoff
 and every published Pull Request is CI-ready. The Runner then orders the Batch by Pull Request
