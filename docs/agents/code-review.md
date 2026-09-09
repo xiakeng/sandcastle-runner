@@ -4,41 +4,13 @@ Use this contract for code, tests, tools, and build configuration.
 
 ## Prepare
 
-1. Inspect the complete diff within the supplied base/head scope using default
-   diff context. Do not expand it with `--unified`; read targeted source ranges
-   when a specific question needs more context.
-2. Read the governing issue or specification's relevant requirements, non-goals,
+1. Read the governing issue or specification's relevant requirements, non-goals,
    and explicit exceptions. Resolve missing or ambiguous details at the source.
-3. Apply `docs/agents/code-standards.md`.
-4. Inspect affected functionalities and tests.
+2. Apply `docs/agents/code-standards.md`.
+3. Inspect affected functionalities and tests.
 
 Preparation is complete when every changed behavior maps to the requested
 contract or is identified as unintended scope.
-
-## Incremental /code-review rule
-
-Within one `/implementation` task, the first `/code-review` reviews the complete
-branch diff against its original fixed point and runs both Standards and Spec.
-
-After that review, record the reviewed `HEAD` commit as the review checkpoint.
-For every subsequent review:
-
-1. Review only `git diff <last-reviewed-head>..HEAD` and its commits.
-2. Review only the affected axis:
-   - Run Standards for changes made solely to resolve Standards findings.
-   - Run Spec for changes made solely to resolve Spec findings or acceptance
-     requirements.
-   - Run both only when the new changes affect both axes.
-3. Do not re-review unchanged hunks from before the checkpoint. Read unchanged
-   code only as context for the new diff or to verify an outstanding finding.
-4. After the required review axes pass, advance the checkpoint to the current
-   `HEAD`. Retain unresolved findings until verified as fixed or explicitly
-   dispositioned; an empty incremental diff does not clear them.
-
-This incremental-review rule overrides `/code-review`'s default full-diff,
-two-axis behavior for repeated reviews within the same implementation task.
-If the checkpoint is missing, is not an ancestor of `HEAD`, or the review scope
-is uncertain, perform the complete two-axis review again.
 
 ## Review
 
