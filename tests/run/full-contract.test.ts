@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
 import { executeCli, type CliDependencies } from "../../src/cli.ts";
 import type {
   AgentAttemptInput,
@@ -13,6 +14,12 @@ import type {
 } from "../../src/run/contracts.ts";
 
 const projectRoots = new Set<string>();
+
+function object(value: unknown): Record<string, unknown> {
+  assert.equal(typeof value, "object");
+  assert.notEqual(value, null);
+  return value as Record<string, unknown>;
+}
 
 test.afterEach(async () => {
   await Promise.all(
@@ -103,6 +110,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
   let nextMaintenanceTicket = 101;
   let nextPullRequest = 1_001;
   let resolveTargetBranchCalls = 0;
+  let correctionSessions = 0;
   let trustedOverrideTicket: number | undefined;
   let activeAgents = 0;
   let maxActiveAgents = 0;
@@ -299,7 +307,36 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
           } else {
             commits.set(input.ticket, [commit]);
           }
-          return result(input, commit);
+          const attemptResult = result(input, commit);
+          if (recovery && purpose === "implement" && input.ticket === 2) {
+            const executor = new SandcastleAgentExecutor(async (options) => {
+              correctionSessions += 1;
+              const definition = object(options.output);
+              assert.equal(definition.maxRetries, 1);
+              const standard = object(object(definition.schema)["~standard"]);
+              const validate = standard.validate;
+              if (typeof validate !== "function")
+                assert.fail("result schema must validate");
+              operations.push("agent:malformed:2");
+              assert.ok(
+                object(await validate({ ...attemptResult, summary: "" }))
+                  .issues,
+              );
+              operations.push("agent:corrected-in-session:2");
+              assert.deepEqual(await validate(attemptResult), {
+                value: attemptResult,
+              });
+              return {
+                iterations: [{ sessionId: "ticket-2-session" }],
+                stdout: `<agent_attempt_result>${JSON.stringify(attemptResult)}</agent_attempt_result>`,
+                commits: attemptResult.commits,
+                branch: input.branch,
+                output: attemptResult,
+              };
+            });
+            return executor.execute(input);
+          }
+          return attemptResult;
         } finally {
           activeAgents -= 1;
         }
@@ -420,6 +457,9 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
     get resolveTargetBranchCalls() {
       return resolveTargetBranchCalls;
     },
+    get correctionSessions() {
+      return correctionSessions;
+    },
   };
 }
 
@@ -538,6 +578,15 @@ test(
     assert.equal(scenario.agentCalls.get("implement:1"), 2);
     assert.equal(scenario.agentCalls.get("implement:3"), 2);
     assert.equal(scenario.agentCalls.get("implement:4"), 1);
+    assert.equal(scenario.correctionSessions, 1);
+    assert.deepEqual(
+      scenario.operations.filter(
+        (operation) =>
+          operation.startsWith("agent:malformed:") ||
+          operation.startsWith("agent:corrected-in-session:"),
+      ),
+      ["agent:malformed:2", "agent:corrected-in-session:2"],
+    );
     assert.equal(scenario.agentCalls.get("ci:1"), 1);
     assert.equal(scenario.agentCalls.get("conflict:3"), 1);
     assert.equal(scenario.agentCalls.get("ci:101"), 1);
