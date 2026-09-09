@@ -221,6 +221,7 @@ async function inspect(
   input: DiscoveryInput,
   children: Ticket[],
   phase: string,
+  excluded = new Set<number>(),
 ): Promise<Selection> {
   const eligible: Ticket[] = [];
   const blocked: number[] = [];
@@ -256,7 +257,13 @@ async function inspect(
       });
     }
     if (hasOpenBlocker) blocked.push(child.number);
-    if (!hasExternalOwner && !hasRunner && !hasLabel && !hasOpenBlocker) {
+    if (
+      !excluded.has(child.number) &&
+      !hasExternalOwner &&
+      !hasRunner &&
+      !hasLabel &&
+      !hasOpenBlocker
+    ) {
       eligible.push(child);
     }
   }
@@ -467,12 +474,13 @@ async function reserve(
 
 async function finalScan(
   input: DiscoveryInput,
+  excluded: Set<number>,
 ): Promise<DiscoveryResult | { outcome: "eligible"; selection: Selection }> {
   const parent = await readParent(input);
   const stopped = boundaryResult(parent);
   if (stopped) return stopped;
   const children = await readChildren(input, "final_scan");
-  const selection = await inspect(input, children, "final_scan");
+  const selection = await inspect(input, children, "final_scan", excluded);
   if (selection.batch.length > 0) return { outcome: "eligible", selection };
   if (
     children.every(
@@ -484,7 +492,17 @@ async function finalScan(
   ) {
     return { outcome: "close_parent", reasons: [] };
   }
-  return { outcome: "incomplete", batch: [], reasons: reasons(selection, []) };
+  const remainingReasons = reasons(selection, []);
+  return {
+    outcome: "incomplete",
+    batch: [],
+    reasons:
+      remainingReasons.length > 0
+        ? remainingReasons
+        : [
+            `Delivery Tickets changed during reservation: ${[...excluded].sort((left, right) => left - right).join(", ")}`,
+          ],
+  };
 }
 
 export async function discoverAndReserve(
@@ -515,21 +533,15 @@ export async function discoverAndReserve(
   if (children.length === 0) return { outcome: "no_work", reasons: [] };
 
   let selection = await inspect(input, children, "discover");
-  for (let round = 0; round < 2; round += 1) {
+  const attempted = new Set<number>();
+  for (;;) {
     if (selection.batch.length > 0) {
+      for (const { number } of selection.batch) attempted.add(number);
       const result = await reserve(input, selection);
       if (result) return result;
     }
-    const scanned = await finalScan(input);
+    const scanned = await finalScan(input, attempted);
     if (scanned.outcome !== "eligible") return scanned;
     selection = scanned.selection;
   }
-  return {
-    outcome: "incomplete",
-    batch: [],
-    reasons: [
-      ...reasons(selection, []),
-      `eligible Delivery Tickets changed during reservation: ${selection.batch.map(({ number }) => number).join(", ")}`,
-    ],
-  };
 }

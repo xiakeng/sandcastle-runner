@@ -1164,7 +1164,6 @@ test("a Delivery Ticket removed from Parent scope is not reserved", async () => 
     }),
   );
 
-  assert.equal(childScans, 3);
   assert.equal(childWrites, 0);
 });
 
@@ -1444,7 +1443,7 @@ test("a cross-repository child with the selected number fails revalidation", asy
   assert.equal(childWrites, 0);
 });
 
-test("revalidation discovers another eligible Delivery Ticket before exhaustion", async () => {
+test("successive revalidation changes cannot hide newly eligible work", async () => {
   const root = await createProject();
   let childScans = 0;
   const ticket = (number: number, assignees: string[] = []) => ({
@@ -1462,22 +1461,26 @@ test("revalidation discovers another eligible Delivery Ticket before exhaustion"
       tracker: {
         async listChildrenPage() {
           childScans += 1;
-          return {
-            children:
-              childScans === 1
-                ? [ticket(9)]
-                : [ticket(9, ["developer"]), ticket(10)],
-            nextPage: null,
-          };
+          const children =
+            childScans === 1
+              ? [ticket(9)]
+              : childScans < 4
+                ? [ticket(9, ["developer"]), ticket(10)]
+                : [
+                    ticket(9, ["developer"]),
+                    ticket(10, ["developer"]),
+                    ticket(11),
+                  ];
+          return { children, nextPage: null };
         },
         async getTicket(_repository, number) {
-          return number === 9 ? ticket(9, ["developer"]) : ticket(10);
+          return number === 11 ? ticket(11) : ticket(number, ["developer"]);
         },
       },
     }),
   );
 
-  assert.deepEqual(result.summary.batch, [10]);
+  assert.deepEqual(result.summary.batch, [11]);
 });
 
 test("the final complete scan closes a now-terminal Parent scope", async () => {
