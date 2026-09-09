@@ -20,9 +20,9 @@ import {
   type DeliveryBoundaryResult,
   type DiscoveryInput,
   type MergedDeliveryBoundaryResult,
-  releaseTerminalReservation,
-  revalidateMergedDeliveryTicket,
-  revalidateReservedDeliveryTicket,
+  releaseTerminalTicket,
+  revalidateActiveTicket,
+  revalidateMergedTicket,
 } from "./discovery.ts";
 import {
   externalRead,
@@ -50,7 +50,7 @@ export interface ReadinessInput extends DiscoveryInput {
   codeHost: CodeHost;
 }
 
-interface PublicationInput extends ReadinessInput {
+export interface PublicationInput extends ReadinessInput {
   runId: string;
   targetBranch: string;
   checkout: string;
@@ -151,10 +151,7 @@ async function waitForMerge(
         pullRequest.number,
       );
       if (state.merged) return "merged";
-      const boundary = await revalidateReservedDeliveryTicket(
-        input,
-        handoff.ticket,
-      );
+      const boundary = await revalidateActiveTicket(input, handoff.ticket);
       if (boundary.outcome !== "ready") return boundary;
       const remaining = deadline - input.clock.now().getTime();
       if (state.mergeFailure === null && remaining > 0) {
@@ -175,10 +172,7 @@ async function waitForMerge(
           "Merge confirmation timed out. Enter to retry, q to cancel, or acknowledge a trusted merge.",
       );
       if (response === "") break;
-      const afterOverride = await revalidateMergedDeliveryTicket(
-        input,
-        handoff.ticket,
-      );
+      const afterOverride = await revalidateMergedTicket(input, handoff.ticket);
       if (afterOverride.outcome !== "ready") {
         const changed = await completedOrStopped(input, handoff, afterOverride);
         if (changed.outcome !== "completed") return changed;
@@ -206,10 +200,10 @@ async function completedOrStopped(
   if (boundary.ticket.stateReason === "completed") {
     return { outcome: "completed", ticket: boundary.ticket };
   }
-  await releaseTerminalReservation(input, boundary.ticket);
+  await releaseTerminalTicket(input, boundary.ticket);
   return {
     outcome: "stopped",
-    reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
+    reason: `${input.ticketKind ?? "Delivery Ticket"} ${handoff.ticket} was cancelled after merge`,
   };
 }
 
@@ -238,19 +232,13 @@ async function pushRepair(
   phase: "ci_repair" | "conflict_repair",
   attempt: number,
 ): Promise<Exclude<DeliveryBoundaryResult, { outcome: "ready" }> | null> {
-  const boundary = await revalidateReservedDeliveryTicket(
-    input,
-    handoff.ticket,
-  );
+  const boundary = await revalidateActiveTicket(input, handoff.ticket);
   if (boundary.outcome !== "ready") return boundary;
   try {
     await workflowWrite({
       action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
       beforeRetry: async () => {
-        const changed = await revalidateReservedDeliveryTicket(
-          input,
-          handoff.ticket,
-        );
+        const changed = await revalidateActiveTicket(input, handoff.ticket);
         if (changed.outcome !== "ready") {
           throw new ReservedBoundaryChanged(changed);
         }
@@ -277,7 +265,7 @@ async function confirmCompletion(
 ): Promise<CompletionResult> {
   for (;;) {
     if (input.ticketClosure === "code_host") await input.clock.sleep(10_000);
-    let boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
+    let boundary = await revalidateMergedTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") {
       return completedOrStopped(input, handoff, boundary);
     }
@@ -288,10 +276,7 @@ async function confirmCompletion(
           action: () =>
             input.tracker.closeTicket(input.repository, handoff.ticket),
           beforeRetry: async () => {
-            const changed = await revalidateMergedDeliveryTicket(
-              input,
-              handoff.ticket,
-            );
+            const changed = await revalidateMergedTicket(input, handoff.ticket);
             if (changed.outcome !== "ready") {
               throw new DeliveryBoundaryChanged(changed);
             }
@@ -313,7 +298,7 @@ async function confirmCompletion(
       await input.clock.sleep(30_000);
     }
 
-    boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
+    boundary = await revalidateMergedTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") {
       return completedOrStopped(input, handoff, boundary);
     }
@@ -327,10 +312,10 @@ async function confirmCompletion(
       input.audit,
       event,
       input.operator,
-      `Merged Delivery Ticket ${handoff.ticket} is not closed as completed. Enter to retry, q to cancel, or acknowledge trusted completion.`,
+      `Merged ${input.ticketKind ?? "Delivery Ticket"} ${handoff.ticket} is not closed as completed. Enter to retry, q to cancel, or acknowledge trusted completion.`,
     );
     if (response === "") continue;
-    boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
+    boundary = await revalidateMergedTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") {
       return completedOrStopped(input, handoff, boundary);
     }
@@ -354,10 +339,7 @@ export async function integratePullRequest(
   const conflictBudget = { consumed: 0, attempts: { value: 0 } };
   let current = observed;
   for (;;) {
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
+    const boundary = await revalidateActiveTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") return boundary;
     if (current.merged) return confirmCompletion(input, handoff);
     let request: MergeRequestResult;
@@ -375,10 +357,7 @@ export async function integratePullRequest(
         },
         parseOverride: () => ({ outcome: "accepted" }),
         beforeRetry: async () => {
-          const changed = await revalidateReservedDeliveryTicket(
-            input,
-            handoff.ticket,
-          );
+          const changed = await revalidateActiveTicket(input, handoff.ticket);
           if (changed.outcome !== "ready") {
             throw new DeliveryBoundaryChanged(changed);
           }
@@ -397,7 +376,7 @@ export async function integratePullRequest(
       return error.boundary.outcome === "terminal"
         ? {
             outcome: "stopped",
-            reason: `Delivery Ticket ${handoff.ticket} became terminal`,
+            reason: `${input.ticketKind ?? "Delivery Ticket"} ${handoff.ticket} became terminal`,
           }
         : error.boundary;
     }
@@ -475,10 +454,7 @@ export async function observeRequiredChecks(
     const deadline =
       input.clock.now().getTime() + input.requiredChecksTimeoutMs;
     for (;;) {
-      const boundary = await revalidateReservedDeliveryTicket(
-        input,
-        handoff.ticket,
-      );
+      const boundary = await revalidateActiveTicket(input, handoff.ticket);
       if (boundary.outcome !== "ready") return boundary;
       const checks = await externalRead({
         action: () =>
@@ -515,10 +491,7 @@ export async function observeRequiredChecks(
       "Required checks timed out. Enter to retry, q to cancel, or acknowledge trusted readiness.",
     );
     if (response === "") continue;
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
+    const boundary = await revalidateActiveTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") return boundary;
     await recordOperatorOverride(input.audit, event, input.operator);
     return { readiness: "ready", failedChecks: [] };
@@ -607,10 +580,7 @@ async function repairRequiredChecks(
       budget.consumed = 0;
       continue;
     }
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
+    const boundary = await revalidateActiveTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") return boundary;
     await recordOperatorOverride(input.audit, event, input.operator);
     return { readiness: "ready", failedChecks: [] };
@@ -630,10 +600,7 @@ async function repairMergeConflict(
   const controller = new AbortController();
   for (;;) {
     while (budget.consumed < 2) {
-      const beforeRepair = await revalidateReservedDeliveryTicket(
-        input,
-        handoff.ticket,
-      );
+      const beforeRepair = await revalidateActiveTicket(input, handoff.ticket);
       if (beforeRepair.outcome !== "ready") return beforeRepair;
       const state = await observePullRequestForIntegration(
         input,
@@ -738,10 +705,7 @@ async function repairMergeConflict(
       budget.consumed = 0;
       continue;
     }
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
+    const boundary = await revalidateActiveTicket(input, handoff.ticket);
     if (boundary.outcome !== "ready") return boundary;
     await recordOperatorOverride(input.audit, event, input.operator);
     let readiness = await observeRequiredChecks(input, handoff, pullRequest);
@@ -779,7 +743,7 @@ export async function publishVerifiedHandoffs(
   }
   const publications = input.handoffs.map(
     async (handoff): Promise<PublicationAttempt> => {
-      let boundary = await revalidateReservedDeliveryTicket(
+      let boundary = await revalidateActiveTicket(
         concurrentInput,
         handoff.ticket,
       );
@@ -792,10 +756,7 @@ export async function publishVerifiedHandoffs(
         operator: concurrentInput.operator,
       });
 
-      boundary = await revalidateReservedDeliveryTicket(
-        concurrentInput,
-        handoff.ticket,
-      );
+      boundary = await revalidateActiveTicket(concurrentInput, handoff.ticket);
       if (boundary.outcome !== "ready") return { boundary };
       const pullRequest = await workflowWrite({
         action: () =>

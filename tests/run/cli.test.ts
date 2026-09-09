@@ -19,6 +19,7 @@ import type {
   GitWorkspace,
   OperatorIO,
   RequiredCheck,
+  Ticket,
   Tracker,
 } from "../../src/run/contracts.ts";
 
@@ -44,6 +45,14 @@ function createCliDependencies(
   overrides: CliDependencyOverrides = {},
 ): CliDependencies {
   const completedTickets = new Set<number>();
+  const maintenanceTickets = new Map<number, Ticket>();
+  const maintenanceWorktrees = new Map<
+    string,
+    { branch: string; base: string }
+  >();
+  let nextMaintenanceTicket = 1_000;
+  const customMaintenance =
+    overrides.tracker?.createMaintenanceTicket !== undefined;
   const tracker: Tracker = {
     async getParent() {
       return { number: 8, state: "open", stateReason: null };
@@ -51,23 +60,68 @@ function createCliDependencies(
     async listChildrenPage() {
       return { children: [], nextPage: null };
     },
-    async getTicket(_repository, ticket) {
-      return completedTickets.has(ticket)
-        ? { number: ticket, state: "closed", stateReason: "completed" }
-        : { number: ticket, state: "open", stateReason: null };
+    async listLabelsPage() {
+      return { labels: ["doc-maintain"], nextPage: null };
     },
-    async listBlockersPage() {
-      return { blockers: [], nextPage: null };
-    },
+    async createLabel() {},
     async addLabel() {},
     async addAssignee() {},
     async removeLabel() {},
     async removeAssignee() {},
-    async closeTicket(_repository, ticket) {
-      completedTickets.add(ticket);
-    },
     async closeParent() {},
     ...overrides.tracker,
+    async getTicket(repository, ticket) {
+      const maintenance = maintenanceTickets.get(ticket);
+      if (maintenance) return maintenance;
+      return overrides.tracker?.getTicket
+        ? overrides.tracker.getTicket(repository, ticket)
+        : completedTickets.has(ticket)
+          ? { number: ticket, state: "closed", stateReason: "completed" }
+          : { number: ticket, state: "open", stateReason: null };
+    },
+    async listBlockersPage(repository, ticket, page) {
+      if (maintenanceTickets.has(ticket))
+        return { blockers: [], nextPage: null };
+      return overrides.tracker?.listBlockersPage
+        ? overrides.tracker.listBlockersPage(repository, ticket, page)
+        : { blockers: [], nextPage: null };
+    },
+    async createMaintenanceTicket(repository, title, body, label) {
+      const ticket = overrides.tracker?.createMaintenanceTicket
+        ? await overrides.tracker.createMaintenanceTicket(
+            repository,
+            title,
+            body,
+            label,
+          )
+        : ({
+            number: nextMaintenanceTicket,
+            state: "open",
+            stateReason: null,
+            assignees: [],
+            labels: [label],
+          } satisfies Ticket);
+      nextMaintenanceTicket += 1;
+      maintenanceTickets.set(ticket.number, ticket);
+      return ticket;
+    },
+    async closeTicket(repository, ticket) {
+      const maintenance = maintenanceTickets.get(ticket);
+      if (maintenance) {
+        if (customMaintenance && overrides.tracker?.closeTicket) {
+          await overrides.tracker.closeTicket(repository, ticket);
+        } else {
+          maintenance.state = "closed";
+          maintenance.stateReason = "completed";
+        }
+        return;
+      }
+      if (overrides.tracker?.closeTicket) {
+        await overrides.tracker.closeTicket(repository, ticket);
+        return;
+      }
+      completedTickets.add(ticket);
+    },
   };
   let merged = false;
   const codeHost: CodeHost = {
@@ -98,21 +152,54 @@ function createCliDependencies(
     async fetchTargetBranch() {
       return "base";
     },
-    async createWorktree() {},
-    async inspect({ worktree, base }) {
+    async push() {},
+    ...overrides.gitWorkspace,
+    async createWorktree(input) {
+      if (input.worktree.includes("/maintenance-")) {
+        maintenanceWorktrees.set(input.worktree, {
+          branch: input.branch,
+          base: input.base,
+        });
+        if (!customMaintenance) return;
+      }
+      await overrides.gitWorkspace?.createWorktree?.(input);
+    },
+    async inspect(input) {
+      const maintenance = maintenanceWorktrees.get(input.worktree);
+      if (maintenance && !customMaintenance) {
+        return {
+          worktree: input.worktree,
+          branch: maintenance.branch,
+          base: maintenance.base,
+          commits: [],
+          clean: true,
+        };
+      }
+      if (overrides.gitWorkspace?.inspect)
+        return overrides.gitWorkspace.inspect(input);
       return {
-        worktree,
+        worktree: input.worktree,
         branch: "unused",
-        base,
+        base: input.base,
         commits: [],
         clean: true,
       };
     },
-    async push() {},
-    ...overrides.gitWorkspace,
   };
   const agentExecutor: AgentExecutor = {
-    async execute() {
+    ...overrides.agentExecutor,
+    async execute(input) {
+      if (maintenanceTickets.has(input.ticket) && !customMaintenance) {
+        return {
+          outcome: "no_change",
+          summary: "documentation is current",
+          commits: [],
+          checks: [],
+          blocker: null,
+        };
+      }
+      if (overrides.agentExecutor?.execute)
+        return overrides.agentExecutor.execute(input);
       return {
         outcome: "blocked",
         summary: "not enabled for this scenario",
@@ -123,7 +210,6 @@ function createCliDependencies(
         pr_body: "unused",
       };
     },
-    ...overrides.agentExecutor,
   };
   const clock: Clock = {
     now: () => new Date("2026-09-09T00:00:00.000Z"),
@@ -366,11 +452,16 @@ test.afterEach(async () => {
 test("a complete zero-child scan returns no_work and leaves the Parent open", async () => {
   const root = await createProject();
   let closeCalls = 0;
+  let maintenanceCreates = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
       tracker: {
+        async createMaintenanceTicket() {
+          maintenanceCreates += 1;
+          return { number: 100, state: "open", stateReason: null };
+        },
         async closeParent() {
           closeCalls += 1;
         },
@@ -387,6 +478,7 @@ test("a complete zero-child scan returns no_work and leaves the Parent open", as
   assert.equal(result.summary.outcome, "no_work");
   assert.equal(result.summary.targetBranch, "main");
   assert.equal(closeCalls, 0);
+  assert.equal(maintenanceCreates, 0);
 
   assert.ok(result.logPath);
   const events = (await readFile(result.logPath, "utf8"))
@@ -413,11 +505,16 @@ test("an all-cancelled paginated scan closes the Parent as completed", async () 
   const root = await createProject();
   const pages: number[] = [];
   let closeCalls = 0;
+  let maintenanceCreates = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
       tracker: {
+        async createMaintenanceTicket() {
+          maintenanceCreates += 1;
+          return { number: 100, state: "open", stateReason: null };
+        },
         async listChildrenPage(_repository, _parent, page) {
           pages.push(page);
           return page === 1
@@ -453,6 +550,7 @@ test("an all-cancelled paginated scan closes the Parent as completed", async () 
 
   assert.deepEqual(pages, [1, 2, 1, 2]);
   assert.equal(closeCalls, 1);
+  assert.equal(maintenanceCreates, 0);
   assert.equal(result.exitCode, 0);
   assert.equal(result.summary.outcome, "succeeded");
 });
@@ -1932,6 +2030,7 @@ test("a Verified Handoff is published unchanged and becomes CI-ready after check
     "checks:owner/repo:41",
     "sleep:5000",
     "checks:owner/repo:41",
+    "fetch:/tmp/repo:main",
   ]);
 });
 
@@ -2300,7 +2399,7 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
 
   assert.equal(result.summary.outcome, "succeeded");
   assert.deepEqual(result.summary.completedTickets, [9]);
-  assert.equal(fetches, 2);
+  assert.equal(fetches, 3);
   assert.equal(pushes, 3);
   assert.equal(pullRequests, 1);
   assert.equal(mergeRequests, 2);
@@ -4832,6 +4931,587 @@ test("a Batch publishes every PR before merging by creation order", async () => 
   );
 });
 
+test("three completed Delivery Tickets trigger committed Documentation Maintenance before closeout", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
+  const delivery = createCommittedBatch(9, 10, 11);
+  const maintenance = {
+    number: 100,
+    state: "open" as "open" | "closed",
+    stateReason: null as null | "completed",
+    assignees: [] as string[],
+    labels: ["doc-maintain"],
+  };
+  const merged = new Set<number>();
+  const operations: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async listLabelsPage() {
+          operations.push("labels:read");
+          return { labels: [], nextPage: null };
+        },
+        async createLabel(_repository, label) {
+          operations.push(`label:create:${label}`);
+        },
+        async createMaintenanceTicket(_repository, title, body, label) {
+          operations.push(`maintenance:create:${title}:${body}:${label}`);
+          return maintenance;
+        },
+        async getTicket(repository, ticket) {
+          return ticket === maintenance.number
+            ? maintenance
+            : delivery.tracker.getTicket!(repository, ticket);
+        },
+        async listBlockersPage() {
+          return { blockers: [], nextPage: null };
+        },
+        async closeTicket(repository, ticket) {
+          if (ticket === maintenance.number) {
+            maintenance.state = "closed";
+            maintenance.stateReason = "completed";
+            operations.push("maintenance:close");
+            return;
+          }
+          await delivery.tracker.closeTicket!(repository, ticket);
+        },
+        async closeParent() {
+          operations.push("parent:close");
+        },
+      },
+      gitWorkspace: delivery.gitWorkspace,
+      agentExecutor: {
+        async execute(input) {
+          if (input.ticket !== maintenance.number)
+            return delivery.agentExecutor.execute(input);
+          operations.push("maintenance:agent");
+          assert.match(input.promptFile, /prompts\/documentation\.md$/u);
+          assert.deepEqual(Object.keys(input.promptArgs).sort(), [
+            "BASE_SHA",
+            "BRANCH",
+            "TARGET_BRANCH",
+            "TICKET_NUMBER",
+            "TICKET_REFERENCE",
+            "WORKTREE_PATH",
+          ]);
+          return {
+            outcome: "committed",
+            summary: "documentation updated",
+            commits: [
+              {
+                sha: "0".repeat(40),
+                message: "feat: ticket 100",
+              },
+            ],
+            checks: [],
+            blocker: null,
+            pr_title: "docs: maintain project documentation",
+            pr_body: "Maintain documentation.",
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          operations.push(`pr:create:${ticket}`);
+          return {
+            number: ticket + 100,
+            url: `https://github.com/owner/repo/pull/${ticket + 100}`,
+          };
+        },
+        async getPullRequest(_repository, pullRequest) {
+          return {
+            headSha: String(pullRequest - 100)
+              .at(-1)!
+              .repeat(40),
+            createdAt: `2026-09-09T00:00:${String(pullRequest).padStart(2, "0")}Z`,
+            merged: merged.has(pullRequest),
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          operations.push(`merge:${pullRequest}`);
+          merged.add(pullRequest);
+          if (pullRequest === 200) {
+            maintenance.state = "closed";
+            maintenance.stateReason = "completed";
+          } else {
+            const ticket = delivery.tickets.find(
+              ({ number }) => number === pullRequest - 100,
+            )!;
+            ticket.state = "closed";
+            ticket.stateReason = "completed";
+          }
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          throw new Error(`unexpected pause: ${message}`);
+        },
+      },
+    }),
+  );
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [9, 10, 11]);
+  assert.ok(
+    operations.indexOf("maintenance:agent") > operations.indexOf("merge:111"),
+  );
+  assert.ok(
+    operations.indexOf("parent:close") > operations.indexOf("merge:200"),
+  );
+  assert.deepEqual(operations.slice(operations.indexOf("labels:read"), -1), [
+    "labels:read",
+    "label:create:doc-maintain",
+    "maintenance:create:Maintain project documentation:Run the configured documentation-maintenance prompt for the current Target Branch.:doc-maintain",
+    "maintenance:agent",
+    "pr:create:100",
+    "merge:200",
+  ]);
+});
+
+test("final closeout credit triggers one clean no_change Maintenance Ticket without a Pull Request", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
+  const delivery = createCommittedDelivery(9);
+  const maintenance: Ticket = {
+    number: 100,
+    state: "open",
+    stateReason: null,
+    assignees: [],
+    labels: ["doc-maintain"],
+  };
+  let delivered = false;
+  let maintenanceBranch = "";
+  let maintenanceCreates = 0;
+  let maintenanceCloses = 0;
+  let parentCloses = 0;
+  let pullRequestCreates = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async createMaintenanceTicket() {
+          maintenanceCreates += 1;
+          return maintenance;
+        },
+        async getTicket(repository, ticket) {
+          if (ticket === 9 && delivered) {
+            return { number: 9, state: "closed", stateReason: "completed" };
+          }
+          return delivery.tracker.getTicket!(repository, ticket);
+        },
+        async closeTicket(repository, ticket) {
+          if (ticket === maintenance.number) {
+            maintenance.state = "closed";
+            maintenance.stateReason = "completed";
+            maintenanceCloses += 1;
+            return;
+          }
+          await delivery.tracker.closeTicket!(repository, ticket);
+        },
+        async closeParent() {
+          parentCloses += 1;
+        },
+      },
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async createWorktree(input) {
+          if (input.worktree.includes("/maintenance-")) {
+            maintenanceBranch = input.branch;
+            return;
+          }
+          await delivery.gitWorkspace.createWorktree!(input);
+        },
+        async inspect(input) {
+          if (input.worktree.includes("/maintenance-")) {
+            return {
+              worktree: input.worktree,
+              branch: maintenanceBranch,
+              base: input.base,
+              commits: [],
+              clean: true,
+            };
+          }
+          return delivery.gitWorkspace.inspect!(input);
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return input.ticket === maintenance.number
+            ? {
+                outcome: "no_change",
+                summary: "all documentation surfaces are current",
+                commits: [],
+                checks: [],
+                blocker: null,
+              }
+            : delivery.agentExecutor.execute!(input);
+        },
+      },
+      codeHost: {
+        async createPullRequest() {
+          pullRequestCreates += 1;
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+        async getPullRequest() {
+          return {
+            headSha: "b".repeat(40),
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: delivered,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          delivered = true;
+          delivery.tickets[0]!.state = "closed";
+          delivery.tickets[0]!.stateReason = "completed";
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(maintenanceCreates, 1);
+  assert.equal(maintenanceCloses, 1);
+  assert.equal(pullRequestCreates, 1);
+  assert.equal(parentCloses, 1);
+});
+
+test("blocked Documentation Maintenance is preserved but ignored by a later Run", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery(9);
+  const maintenance: Ticket = {
+    number: 100,
+    state: "open",
+    stateReason: null,
+    assignees: [],
+    labels: ["doc-maintain"],
+  };
+  let parentCloses = 0;
+  let maintenanceBranch = "";
+  let maintenanceCreates = 0;
+
+  const dependencies = createCliDependencies(root, {
+    tracker: {
+      ...delivery.tracker,
+      async createMaintenanceTicket() {
+        maintenanceCreates += 1;
+        return maintenance;
+      },
+      async closeParent() {
+        parentCloses += 1;
+      },
+    },
+    gitWorkspace: {
+      ...delivery.gitWorkspace,
+      async createWorktree(input) {
+        if (input.worktree.includes("/maintenance-")) {
+          maintenanceBranch = input.branch;
+          return;
+        }
+        await delivery.gitWorkspace.createWorktree!(input);
+      },
+      async inspect(input) {
+        if (input.worktree.includes("/maintenance-")) {
+          return {
+            worktree: input.worktree,
+            branch: maintenanceBranch,
+            base: input.base,
+            commits: [],
+            clean: true,
+          };
+        }
+        return delivery.gitWorkspace.inspect!(input);
+      },
+    },
+    agentExecutor: {
+      async execute(input) {
+        return input.ticket === maintenance.number
+          ? {
+              outcome: "blocked",
+              summary: "documentation instructions are incomplete",
+              commits: [],
+              checks: [],
+              blocker: "missing Documentation Base",
+            }
+          : delivery.agentExecutor.execute!(input);
+      },
+    },
+  });
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    dependencies,
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.match(
+    result.summary.reasons.join(" "),
+    /Maintenance Ticket 100 blocked/u,
+  );
+  assert.equal(maintenance.state, "open");
+  assert.equal(parentCloses, 0);
+  assert.equal(maintenanceCreates, 1);
+
+  const nextRun = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    dependencies,
+  );
+  assert.equal(nextRun.summary.outcome, "succeeded");
+  assert.equal(maintenanceCreates, 1);
+  assert.equal(parentCloses, 1);
+});
+
+test("Maintenance Ticket label reads and writes use normal supervised failure handling", async () => {
+  for (const failure of ["read", "label", "ticket"] as const) {
+    const root = await createProject();
+    const delivery = createCommittedDelivery(9);
+    let labelWrites = 0;
+    let ticketWrites = 0;
+    let labelReads = 0;
+
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker: {
+          ...delivery.tracker,
+          async listLabelsPage() {
+            labelReads += 1;
+            if (failure === "read") throw new Error("label read failed");
+            return {
+              labels: failure === "label" ? [] : ["doc-maintain"],
+              nextPage: null,
+            };
+          },
+          async createLabel() {
+            labelWrites += 1;
+            throw new Error("label write failed");
+          },
+          async createMaintenanceTicket() {
+            ticketWrites += 1;
+            throw new Error("ticket write failed");
+          },
+        },
+        gitWorkspace: delivery.gitWorkspace,
+        agentExecutor: delivery.agentExecutor,
+        operator: {
+          async pause() {
+            return "q";
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, "cancelled");
+    assert.equal(labelReads, failure === "read" ? 5 : 1);
+    assert.equal(labelWrites, failure === "label" ? 1 : 0);
+    assert.equal(ticketWrites, failure === "ticket" ? 1 : 0);
+    assert.deepEqual(result.summary.completedTickets, [9]);
+  }
+});
+
+test("Documentation Maintenance reuses CI and conflict repair on its original Pull Request", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery(9);
+  const base = "a".repeat(40);
+  const initial = "c".repeat(40);
+  const ciRepair = "d".repeat(40);
+  const conflictRepair = "e".repeat(40);
+  const maintenance: Ticket = {
+    number: 100,
+    state: "open",
+    stateReason: null,
+    assignees: [],
+    labels: ["doc-maintain"],
+  };
+  let maintenanceBranch = "";
+  let pendingHead = initial;
+  let maintenanceHead = initial;
+  let deliveryMerged = false;
+  let maintenanceMerged = false;
+  let maintenanceMergeRequests = 0;
+  let maintenancePullRequests = 0;
+  const repairPrompts: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async createMaintenanceTicket() {
+          return maintenance;
+        },
+        async closeTicket(repository, ticket) {
+          if (ticket === maintenance.number) {
+            maintenance.state = "closed";
+            maintenance.stateReason = "completed";
+            return;
+          }
+          await delivery.tracker.closeTicket!(repository, ticket);
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return base;
+        },
+        async createWorktree(input) {
+          if (input.worktree.includes("/maintenance-")) {
+            maintenanceBranch = input.branch;
+            return;
+          }
+          await delivery.gitWorkspace.createWorktree!(input);
+        },
+        async inspect(input) {
+          if (!input.worktree.includes("/maintenance-")) {
+            return delivery.gitWorkspace.inspect!(input);
+          }
+          pendingHead =
+            input.base === base
+              ? initial
+              : input.base === initial
+                ? ciRepair
+                : conflictRepair;
+          return {
+            worktree: input.worktree,
+            branch: maintenanceBranch,
+            base: input.base,
+            commits: [
+              {
+                sha: pendingHead,
+                message:
+                  pendingHead === initial
+                    ? "docs: maintain documentation"
+                    : pendingHead === ciRepair
+                      ? "fix: repair documentation CI"
+                      : "fix: repair documentation conflict",
+              },
+            ],
+            clean: true,
+          };
+        },
+        async push(worktree) {
+          if (worktree.includes("/maintenance-")) maintenanceHead = pendingHead;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          if (input.ticket !== maintenance.number)
+            return delivery.agentExecutor.execute!(input);
+          if (input.promptFile.endsWith("ci-repair.md")) {
+            repairPrompts.push("ci");
+            return {
+              outcome: "committed",
+              summary: "repaired documentation CI",
+              commits: [
+                { sha: ciRepair, message: "fix: repair documentation CI" },
+              ],
+              checks: [],
+              blocker: null,
+            };
+          }
+          if (input.promptFile.endsWith("conflict-repair.md")) {
+            repairPrompts.push("conflict");
+            return {
+              outcome: "committed",
+              summary: "repaired documentation conflict",
+              commits: [
+                {
+                  sha: conflictRepair,
+                  message: "fix: repair documentation conflict",
+                },
+              ],
+              checks: [],
+              blocker: null,
+            };
+          }
+          return {
+            outcome: "committed",
+            summary: "maintained documentation",
+            commits: [
+              { sha: initial, message: "docs: maintain documentation" },
+            ],
+            checks: [],
+            blocker: null,
+            pr_title: "docs: maintain project documentation",
+            pr_body: "Maintain documentation.",
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest(input) {
+          if (input.branch.includes("/maintenance-")) {
+            maintenancePullRequests += 1;
+            return {
+              number: 200,
+              url: "https://github.com/owner/repo/pull/200",
+            };
+          }
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+        async getRequiredChecks(_repository, pullRequest) {
+          return pullRequest === 200 && maintenanceHead === initial
+            ? [
+                {
+                  name: "checks",
+                  state: "FAILURE",
+                  link: "https://github.com/owner/repo/actions/runs/1",
+                  bucket: "fail",
+                },
+              ]
+            : [];
+        },
+        async getPullRequest(_repository, pullRequest) {
+          return pullRequest === 200
+            ? {
+                headSha: maintenanceHead,
+                createdAt: "2026-09-09T00:00:01Z",
+                merged: maintenanceMerged,
+                mergeFailure: null,
+              }
+            : {
+                headSha: "b".repeat(40),
+                createdAt: "2026-09-09T00:00:00Z",
+                merged: deliveryMerged,
+                mergeFailure: null,
+              };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          if (pullRequest === 200) {
+            maintenanceMergeRequests += 1;
+            if (maintenanceMergeRequests === 1) {
+              return { outcome: "conflict", error: "merge conflict" };
+            }
+            maintenanceMerged = true;
+          } else {
+            deliveryMerged = true;
+          }
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.deepEqual(repairPrompts, ["ci", "conflict"]);
+  assert.equal(maintenancePullRequests, 1);
+  assert.equal(maintenanceMergeRequests, 2);
+  assert.equal(maintenance.stateReason, "completed");
+});
+
 test("a successful Batch rescans added work and an emptied scope closes the Parent", async () => {
   const root = await createProject();
   const delivery = createCommittedBatch(9);
@@ -4924,7 +5604,7 @@ test("a successful Batch rescans added work and an emptied scope closes the Pare
   assert.deepEqual(attempts, [9, 10]);
   assert.deepEqual(result.summary.batch, [9, 10]);
   assert.deepEqual(result.summary.completedTickets, [9, 10]);
-  assert.equal(fetches, 2);
+  assert.equal(fetches, 3);
   assert.equal(parentClosures, 1);
 });
 
@@ -4934,11 +5614,18 @@ test("an unresolved Agent Attempt blocks integration after other Handoffs publis
   const branches = new Map<number, string>();
   let pullRequestCreates = 0;
   let mergeRequests = 0;
+  let maintenanceCreates = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker,
+      tracker: {
+        ...tracker,
+        async createMaintenanceTicket() {
+          maintenanceCreates += 1;
+          return { number: 100, state: "open", stateReason: null };
+        },
+      },
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -5009,6 +5696,7 @@ test("an unresolved Agent Attempt blocks integration after other Handoffs publis
   assert.equal(result.summary.outcome, "incomplete");
   assert.equal(pullRequestCreates, 1);
   assert.equal(mergeRequests, 0);
+  assert.equal(maintenanceCreates, 0);
   assert.deepEqual(result.summary.completedTickets ?? [], []);
   assert.match(result.summary.reasons.join(" "), /no_change.*Batch barrier/u);
 });
@@ -5116,11 +5804,19 @@ test("cancelling a later merge keeps earlier Batch completion credit", async () 
   const root = await createProject();
   const delivery = createCommittedBatch(9, 10);
   const merged = new Set<number>();
+  let maintenanceCreates = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
       ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async createMaintenanceTicket() {
+          maintenanceCreates += 1;
+          return { number: 100, state: "open", stateReason: null };
+        },
+      },
       codeHost: {
         async createPullRequest(input) {
           const ticket = Number(input.branch.split("-").at(-1));
@@ -5157,6 +5853,7 @@ test("cancelling a later merge keeps earlier Batch completion credit", async () 
 
   assert.equal(result.summary.outcome, "cancelled");
   assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(maintenanceCreates, 0);
   assert.deepEqual(
     result.summary.pullRequests?.map(({ number }) => number),
     [109, 110],

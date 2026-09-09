@@ -2,6 +2,7 @@ import type {
   BlockerPage,
   ChildPage,
   ClosureReason,
+  LabelPage,
   Ticket,
   Tracker,
 } from "../run/contracts.ts";
@@ -155,6 +156,73 @@ export class GitHubTracker implements Tracker {
       blockers: value.map((blocker) => parseTicket(blocker, true)),
       nextPage: value.length === 100 ? page + 1 : null,
     };
+  }
+
+  async listLabelsPage(repository: string, page: number): Promise<LabelPage> {
+    const value = JSON.parse(
+      await this.client.request([
+        "api",
+        "--method",
+        "GET",
+        `repos/${repository}/labels`,
+        "-f",
+        "per_page=100",
+        "-f",
+        `page=${page}`,
+      ]),
+    ) as unknown;
+    if (!Array.isArray(value))
+      throw new Error("GitHub returned an invalid label page");
+    const labels = value.map((entry) => {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        Array.isArray(entry) ||
+        typeof (entry as Record<string, unknown>).name !== "string"
+      ) {
+        throw new Error("GitHub returned an invalid label");
+      }
+      return (entry as Record<string, unknown>).name as string;
+    });
+    return { labels, nextPage: value.length === 100 ? page + 1 : null };
+  }
+
+  async createLabel(repository: string, label: string): Promise<void> {
+    await this.client.request([
+      "api",
+      "--method",
+      "POST",
+      `repos/${repository}/labels`,
+      "-f",
+      `name=${label}`,
+      "-f",
+      "color=5319e7",
+    ]);
+  }
+
+  async createMaintenanceTicket(
+    repository: string,
+    title: string,
+    body: string,
+    label: string,
+  ): Promise<Ticket> {
+    return parseTicket(
+      JSON.parse(
+        await this.client.request([
+          "api",
+          "--method",
+          "POST",
+          `repos/${repository}/issues`,
+          "-f",
+          `title=${title}`,
+          "-f",
+          `body=${body}`,
+          "-f",
+          `labels[]=${label}`,
+        ]),
+      ) as unknown,
+      false,
+    );
   }
 
   async addLabel(

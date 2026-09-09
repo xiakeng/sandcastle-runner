@@ -16,6 +16,7 @@ import {
   OperatorCancelled,
   workflowWrite,
 } from "./operations.ts";
+import { runDocumentationMaintenance } from "./maintenance.ts";
 import {
   integratePullRequest,
   observePullRequestForIntegration,
@@ -59,6 +60,8 @@ interface RunInput {
   ciRepairAgent: AgentConfig;
   conflictRepairPrompt: string;
   conflictRepairAgent: AgentConfig;
+  documentationPrompt: string;
+  documentationAgent: AgentConfig;
   agentTimeoutMs: number;
   requiredChecksTimeoutMs: number;
   mergeQueueTimeoutMs: number;
@@ -108,6 +111,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const completedTickets: number[] = [];
   const reasons: string[] = [];
   let hasBatchState = false;
+  let maintenanceCredit = 0;
   const summary = (
     outcome: RunOutcome,
     finalReasons: string[] = reasons,
@@ -121,6 +125,53 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       ? {}
       : { batch: batches, handoffs, pullRequests, completedTickets }),
   });
+
+  const maintain = async (): Promise<RunOutcome | null> => {
+    const result = await runDocumentationMaintenance({
+      repository: input.repository,
+      parentTicket: input.parentTicket,
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event,
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+      targetBranch,
+      checkout: input.checkout,
+      runId: input.runId,
+      projectDirectory: input.projectDirectory,
+      documentationPrompt: input.documentationPrompt,
+      documentationAgent: input.documentationAgent,
+      ciRepairPrompt: input.ciRepairPrompt,
+      ciRepairAgent: input.ciRepairAgent,
+      conflictRepairPrompt: input.conflictRepairPrompt,
+      conflictRepairAgent: input.conflictRepairAgent,
+      agentTimeoutMs: input.agentTimeoutMs,
+      requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
+      mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
+      adminMerge: input.adminMerge,
+      ticketClosure: input.ticketClosure,
+      gitWorkspace: input.gitWorkspace,
+      codeHost: input.codeHost,
+      agentExecutor: input.agentExecutor,
+    }).catch((error: unknown) => {
+      if (!(error instanceof OperatorCancelled)) throw error;
+      return null;
+    });
+    if (!result) {
+      reasons.push("operator cancelled");
+      return "cancelled";
+    }
+    reasons.push(...result.reasons);
+    if (result.handoff) handoffs.push(result.handoff);
+    if (result.pullRequest) pullRequests.push(result.pullRequest);
+    if (result.outcome === "succeeded") {
+      maintenanceCredit = 0;
+      return null;
+    }
+    return result.outcome;
+  };
 
   for (;;) {
     const discovery = await discoverAndReserve({
@@ -137,6 +188,11 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     });
     if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {
+      if (maintenanceCredit > 0) {
+        const outcome = await maintain();
+        if (outcome) return summary(outcome);
+        continue;
+      }
       await workflowWrite({
         action: () =>
           input.tracker.closeParent(input.repository, input.parentTicket),
@@ -268,6 +324,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       }
       if (integration.outcome === "completed") {
         completedTickets.push(handoff.ticket);
+        maintenanceCredit += 1;
         reasons.push(
           `Completed Delivery Ticket ${handoff.ticket} through Pull Request ${pullRequest.number}`,
         );
@@ -291,6 +348,10 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             ? "failed"
             : "incomplete",
       );
+    }
+    if (maintenanceCredit >= 3) {
+      const outcome = await maintain();
+      if (outcome) return summary(outcome);
     }
   }
 }

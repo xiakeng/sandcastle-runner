@@ -142,6 +142,12 @@ export async function executeCli(
         "conflict-repair.md",
       ),
       conflictRepairAgent: loaded.config.agents.conflictRepair,
+      documentationPrompt: path.join(
+        loaded.directory,
+        "prompts",
+        "documentation.md",
+      ),
+      documentationAgent: loaded.config.agents.documentation,
       agentTimeoutMs: loaded.config.timeouts.agentMinutes * 60_000,
       requiredChecksTimeoutMs:
         loaded.config.timeouts.requiredChecksMinutes * 60_000,
