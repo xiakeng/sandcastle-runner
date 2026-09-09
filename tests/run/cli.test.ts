@@ -43,6 +43,7 @@ function createCliDependencies(
   root: string,
   overrides: CliDependencyOverrides = {},
 ): CliDependencies {
+  const completedTickets = new Set<number>();
   const tracker: Tracker = {
     async getParent() {
       return { number: 8, state: "open", stateReason: null };
@@ -51,7 +52,9 @@ function createCliDependencies(
       return { children: [], nextPage: null };
     },
     async getTicket(_repository, ticket) {
-      return { number: ticket, state: "open", stateReason: null };
+      return completedTickets.has(ticket)
+        ? { number: ticket, state: "closed", stateReason: "completed" }
+        : { number: ticket, state: "open", stateReason: null };
     },
     async listBlockersPage() {
       return { blockers: [], nextPage: null };
@@ -60,9 +63,13 @@ function createCliDependencies(
     async addAssignee() {},
     async removeLabel() {},
     async removeAssignee() {},
+    async closeTicket(_repository, ticket) {
+      completedTickets.add(ticket);
+    },
     async closeParent() {},
     ...overrides.tracker,
   };
+  let merged = false;
   const codeHost: CodeHost = {
     async resolveTargetBranch() {
       return "ignored";
@@ -72,6 +79,17 @@ function createCliDependencies(
     },
     async getRequiredChecks() {
       return [];
+    },
+    async getPullRequest() {
+      return {
+        headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        merged,
+        mergeFailure: null,
+      };
+    },
+    async requestSquashMerge() {
+      merged = true;
+      return { outcome: "accepted" };
     },
     ...overrides.codeHost,
   };
@@ -135,17 +153,24 @@ function createCliDependencies(
 function createAttemptTracker(...numbers: number[]): {
   tickets: {
     number: number;
-    state: "open";
-    stateReason: null;
+    state: "open" | "closed";
+    stateReason: null | "completed" | "not_planned";
     repository: string;
     assignees: string[];
     labels: string[];
   }[];
   tracker: Partial<Tracker>;
 } {
-  const tickets = numbers.map((number) => ({
+  const tickets: {
+    number: number;
+    state: "open" | "closed";
+    stateReason: null | "completed" | "not_planned";
+    repository: string;
+    assignees: string[];
+    labels: string[];
+  }[] = numbers.map((number) => ({
     number,
-    state: "open" as const,
+    state: "open",
     stateReason: null,
     repository: "owner/repo",
     assignees: [] as string[],
@@ -167,6 +192,61 @@ function createAttemptTracker(...numbers: number[]): {
         tickets
           .find(({ number }) => number === ticket)!
           .assignees.push(assignee);
+      },
+      async removeLabel(_repository, ticket, label) {
+        const found = tickets.find(({ number }) => number === ticket)!;
+        found.labels = found.labels.filter((value) => value !== label);
+      },
+      async removeAssignee(_repository, ticket, assignee) {
+        const found = tickets.find(({ number }) => number === ticket)!;
+        found.assignees = found.assignees.filter((value) => value !== assignee);
+      },
+      async closeTicket(_repository, ticket) {
+        const found = tickets.find(({ number }) => number === ticket)!;
+        found.state = "closed";
+        found.stateReason = "completed";
+      },
+    },
+  };
+}
+
+function createCommittedDelivery(ticket = 9): {
+  tracker: Partial<Tracker>;
+  tickets: ReturnType<typeof createAttemptTracker>["tickets"];
+  gitWorkspace: Partial<GitWorkspace>;
+  agentExecutor: Partial<AgentExecutor>;
+} {
+  const { tracker, tickets } = createAttemptTracker(ticket);
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  let branch = "";
+  return {
+    tracker,
+    tickets,
+    gitWorkspace: {
+      async fetchTargetBranch() {
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      },
+      async createWorktree(input) {
+        branch = input.branch;
+      },
+      async inspect({ worktree, base }) {
+        return { worktree, branch, base, commits: [commit], clean: true };
+      },
+    },
+    agentExecutor: {
+      async execute() {
+        return {
+          outcome: "committed",
+          summary: "implemented",
+          commits: [commit],
+          checks: [],
+          blocker: null,
+          pr_title: "feat: implementation",
+          pr_body: "Implementation body.",
+        };
       },
     },
   };
@@ -1797,6 +1877,405 @@ test("a Verified Handoff is published unchanged and becomes CI-ready after check
     "sleep:5000",
     "checks:owner/repo:41",
   ]);
+});
+
+test("a CI-ready Pull Request is delivered only after its merge and completed closure are confirmed", async () => {
+  const root = await createProject();
+  const operations: string[] = [];
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const { tickets, tracker } = createAttemptTracker(9);
+  let branch = "";
+  let merged = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async closeTicket(_repository: string, ticket: number) {
+          operations.push(`close:${ticket}`);
+          const found = tickets.find(({ number }) => number === ticket)!;
+          found.state = "closed";
+          found.stateReason = "completed";
+        },
+        async removeAssignee(_repository, ticket) {
+          operations.push(`unassign:${ticket}`);
+        },
+        async removeLabel(_repository, ticket) {
+          operations.push(`unlabel:${ticket}`);
+        },
+      } as Partial<Tracker>,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return { worktree, branch, base, commits: [commit], clean: true };
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          return {
+            outcome: "committed",
+            summary: "implemented",
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          operations.push(`observe:${merged}`);
+          return {
+            headSha: commit.sha,
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge(input: {
+          pullRequest: number;
+          headSha: string;
+          admin: boolean;
+        }) {
+          operations.push(
+            `merge:${input.pullRequest}:${input.headSha}:${input.admin}`,
+          );
+          merged = true;
+          return { outcome: "accepted" as const };
+        },
+      } as Partial<CodeHost>,
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.deepEqual(operations, [
+    "observe:false",
+    `merge:1:${commit.sha}:false`,
+    "observe:true",
+    "close:9",
+    "unassign:9",
+    "unlabel:9",
+  ]);
+});
+
+test("code_host closure waits 10 seconds and then another 30 seconds while leaving closure to GitHub", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
+  const delivery = createCommittedDelivery();
+  const sleeps: number[] = [];
+  let waitedTen = false;
+  let closeCalls = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async closeTicket() {
+          closeCalls += 1;
+        },
+      },
+      clock: {
+        async sleep(milliseconds) {
+          sleeps.push(milliseconds);
+          if (milliseconds === 10_000) waitedTen = true;
+          if (milliseconds === 30_000 && waitedTen) {
+            delivery.tickets[0]!.state = "closed";
+            delivery.tickets[0]!.stateReason = "completed";
+          }
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(closeCalls, 0);
+  assert.deepEqual(sleeps, [30_000, 10_000, 30_000]);
+});
+
+test("a queued merge receives no completion credit until timeout recovery confirms success", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({
+      ...validConfig,
+      timeouts: { ...validConfig.timeouts, mergeQueueMinutes: 1 / 60_000 },
+    }),
+  );
+  const delivery = createCommittedDelivery();
+  let elapsed = 0;
+  let mergeRequests = 0;
+  let closeCalls = 0;
+  const responses = ["", "trusted merge"];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async closeTicket(_repository, ticket) {
+          closeCalls += 1;
+          const found = delivery.tickets.find(
+            ({ number }) => number === ticket,
+          )!;
+          found.state = "closed";
+          found.stateReason = "completed";
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            merged: false,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          return { outcome: "accepted" };
+        },
+      },
+      clock: {
+        now: () => new Date(elapsed),
+        async sleep(milliseconds) {
+          elapsed += milliseconds;
+        },
+      },
+      operator: {
+        async pause(message) {
+          assert.match(message, /Merge confirmation timed out/u);
+          return responses.shift() ?? "q";
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(mergeRequests, 2);
+  assert.equal(closeCalls, 1);
+});
+
+test("merge conflict evidence is retained while other merge rejections enter Operator Pause", async () => {
+  for (const scenario of [
+    {
+      outcome: "conflict" as const,
+      error: "GitHub reported a merge conflict in src/run.ts",
+      expectedOutcome: "incomplete",
+      pauses: 0,
+    },
+    {
+      outcome: "rejected" as const,
+      error: "GitHub rejected admin bypass",
+      expectedOutcome: "cancelled",
+      pauses: 1,
+    },
+  ]) {
+    const root = await createProject();
+    const delivery = createCommittedDelivery();
+    let pauses = 0;
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        ...delivery,
+        codeHost: {
+          async getPullRequest() {
+            return {
+              headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              merged: false,
+              mergeFailure: null,
+            };
+          },
+          async requestSquashMerge() {
+            return { outcome: scenario.outcome, error: scenario.error };
+          },
+        },
+        operator: {
+          async pause() {
+            pauses += 1;
+            return "q";
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, scenario.expectedOutcome);
+    assert.deepEqual(result.summary.completedTickets ?? [], []);
+    assert.equal(pauses, scenario.pauses);
+    assert.ok(result.logPath);
+    const evidence = `${result.summary.reasons.join(" ")} ${await readFile(result.logPath, "utf8")}`;
+    assert.match(evidence, new RegExp(scenario.error));
+  }
+});
+
+test("a post-merge cancellation releases its Reservation without completion credit", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
+  const delivery = createCommittedDelivery();
+  let releases = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async removeAssignee() {
+          releases += 1;
+        },
+        async removeLabel() {
+          releases += 1;
+        },
+      },
+      clock: {
+        async sleep(milliseconds) {
+          if (milliseconds === 10_000) {
+            delivery.tickets[0]!.state = "closed";
+            delivery.tickets[0]!.stateReason = "not_planned";
+          }
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.completedTickets ?? [], []);
+  assert.equal(releases, 2);
+  assert.match(result.summary.reasons.join(" "), /cancelled after merge/u);
+});
+
+test("runner closure write failure retries only after operator authorization and never replays the merge", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let closeCalls = 0;
+  let mergeCalls = 0;
+  let merged = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async closeTicket(_repository, ticket) {
+          closeCalls += 1;
+          if (closeCalls === 1) throw new Error("closure write failed");
+          const found = delivery.tickets.find(
+            ({ number }) => number === ticket,
+          )!;
+          found.state = "closed";
+          found.stateReason = "completed";
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeCalls += 1;
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause() {
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(closeCalls, 2);
+  assert.equal(mergeCalls, 1);
+});
+
+test("an open code_host ticket after both closure reads enters Operator Pause without credit", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
+  const delivery = createCommittedDelivery();
+  let pauseMessage = "";
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      operator: {
+        async pause(message) {
+          pauseMessage = message;
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(result.summary.completedTickets ?? [], []);
+  assert.match(pauseMessage, /not closed as completed/u);
+});
+
+test("Parent cancellation after merge confirmation prevents ticket closure mutations", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let merged = false;
+  let closeCalls = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return merged
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+        async closeTicket() {
+          closeCalls += 1;
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(closeCalls, 0);
 });
 
 test("required-check polling preserves terminal failure and cancellation evidence", async () => {

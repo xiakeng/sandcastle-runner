@@ -137,6 +137,9 @@ export async function executeCli(
       agentTimeoutMs: loaded.config.timeouts.agentMinutes * 60_000,
       requiredChecksTimeoutMs:
         loaded.config.timeouts.requiredChecksMinutes * 60_000,
+      mergeQueueTimeoutMs: loaded.config.timeouts.mergeQueueMinutes * 60_000,
+      adminMerge: loaded.config.codeHost.adminMerge,
+      ticketClosure: loaded.config.ticketClosure,
       gitWorkspace,
       agentExecutor,
     });
