@@ -2343,6 +2343,205 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
   assert.ok(conflictOperations.includes("push_repair"));
 });
 
+test("CI repairs before and after conflict repair share one ticket budget", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const initialCiRepair = {
+    sha: "cccccccccccccccccccccccccccccccccccccccc",
+    message: "fix: initial checks",
+  };
+  const conflictRepair = {
+    sha: "dddddddddddddddddddddddddddddddddddddddd",
+    message: "fix: merge conflict",
+  };
+  let branch = "";
+  let agentCalls = 0;
+  let checkReads = 0;
+  let pushes = 0;
+  let mergeRequests = 0;
+  let headSha = implementation.sha;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          const commits =
+            base === implementation.sha
+              ? [initialCiRepair]
+              : base === initialCiRepair.sha
+                ? [conflictRepair]
+                : [implementation];
+          return { worktree, branch, base, commits, clean: true };
+        },
+        async push() {
+          pushes += 1;
+          if (pushes === 2) headSha = initialCiRepair.sha;
+          if (pushes === 3) headSha = conflictRepair.sha;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          if (agentCalls === 4) {
+            return {
+              outcome: "blocked",
+              summary: "checks still failing",
+              commits: [],
+              checks: [],
+              blocker: "checks still failing",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          const commit = [implementation, initialCiRepair, conflictRepair][
+            agentCalls - 1
+          ]!;
+          return {
+            outcome: "committed",
+            summary: commit.message,
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async getRequiredChecks() {
+          checkReads += 1;
+          return checkReads === 2
+            ? []
+            : [
+                {
+                  name: "checks",
+                  state: "FAILURE",
+                  link: "https://github.com/owner/repo/actions/runs/1",
+                  bucket: "fail",
+                },
+              ];
+        },
+        async getPullRequest() {
+          return {
+            headSha,
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: false,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          return { outcome: "conflict", error: "merge conflict" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          assert.match(message, /CI repair failed after two attempts/u);
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(agentCalls, 4);
+  assert.equal(pushes, 3);
+  assert.equal(mergeRequests, 1);
+});
+
+test("cancelling an exhausted conflict budget stops before republishing or remerge", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let agentCalls = 0;
+  let pushes = 0;
+  let mergeRequests = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async inspect(input) {
+          const evidence = await delivery.gitWorkspace.inspect!(input);
+          return {
+            ...evidence,
+            commits: agentCalls === 3 ? [] : evidence.commits,
+          };
+        },
+        async push() {
+          pushes += 1;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          agentCalls += 1;
+          if (agentCalls === 2) {
+            return {
+              outcome: "blocked",
+              summary: "conflict remains",
+              commits: [],
+              checks: [],
+              blocker: "conflict remains",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          if (agentCalls === 3) {
+            return {
+              outcome: "no_change",
+              summary: "no safe resolution",
+              commits: [],
+              checks: [],
+              blocker: null,
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          }
+          return delivery.agentExecutor.execute!(input);
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: false,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          return { outcome: "conflict", error: "merge conflict" };
+        },
+      },
+      operator: {
+        async pause(message) {
+          assert.match(message, /Conflict repair failed after two attempts/u);
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(agentCalls, 3);
+  assert.equal(pushes, 1);
+  assert.equal(mergeRequests, 1);
+});
+
 test("a trusted conflict-repair override repeats required-check discovery", async () => {
   const root = await createProject();
   const { tracker } = createAttemptTracker(9);

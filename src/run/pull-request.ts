@@ -66,6 +66,12 @@ interface PublicationInput extends ReadinessInput {
   adminMerge: boolean;
   mergeQueueTimeoutMs: number;
   ticketClosure: TicketClosurePolicy;
+  ciRepairBudgets: Map<number, RepairBudget>;
+}
+
+interface RepairBudget {
+  consumed: number;
+  attempts: { value: number };
 }
 
 export interface PublicationResult {
@@ -222,6 +228,41 @@ class ReservedBoundaryChanged extends Error {
   constructor(boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>) {
     super("Delivery Ticket changed before operation retry");
     this.boundary = boundary;
+  }
+}
+
+async function pushRepair(
+  input: PublicationInput,
+  handoff: VerifiedHandoff,
+  pullRequest: PullRequestIdentity,
+  phase: "ci_repair" | "conflict_repair",
+  attempt: number,
+): Promise<Exclude<DeliveryBoundaryResult, { outcome: "ready" }> | null> {
+  try {
+    await workflowWrite({
+      action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
+      beforeRetry: async () => {
+        const changed = await revalidateReservedDeliveryTicket(
+          input,
+          handoff.ticket,
+        );
+        if (changed.outcome !== "ready") {
+          throw new ReservedBoundaryChanged(changed);
+        }
+      },
+      audit: input.audit,
+      event: () =>
+        input.event(
+          phase,
+          "push_repair",
+          `pull_request:${pullRequest.number}`,
+        )(attempt),
+      operator: input.operator,
+    });
+    return null;
+  } catch (error) {
+    if (!(error instanceof ReservedBoundaryChanged)) throw error;
+    return error.boundary;
   }
 }
 
@@ -490,9 +531,13 @@ async function repairRequiredChecks(
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
   let failedChecks = initialFailedChecks;
-  const attemptCounter = { value: 0 };
+  const budget = input.ciRepairBudgets.get(handoff.ticket) ?? {
+    consumed: 0,
+    attempts: { value: 0 },
+  };
+  input.ciRepairBudgets.set(handoff.ticket, budget);
   for (;;) {
-    for (let consumed = 0; consumed < 2; consumed += 1) {
+    while (budget.consumed < 2) {
       const pullRequestState = await observePullRequestForIntegration(
         input,
         pullRequest.number,
@@ -510,9 +555,10 @@ async function repairRequiredChecks(
         agent: input.ciRepairAgent,
         timeoutMs: input.agentTimeoutMs,
         signal,
-        attemptCounter,
+        attemptCounter: budget.attempts,
       });
       if (repair.outcome === "boundary") return repair.boundary;
+      budget.consumed += 1;
       if (repair.outcome === "consumed") continue;
 
       const currentPullRequestState = await observePullRequestForIntegration(
@@ -522,37 +568,14 @@ async function repairRequiredChecks(
       );
       if (currentPullRequestState.merged)
         return { readiness: "ready", failedChecks: [] };
-      const boundary = await revalidateReservedDeliveryTicket(
+      const boundary = await pushRepair(
         input,
-        handoff.ticket,
+        handoff,
+        pullRequest,
+        "ci_repair",
+        budget.consumed,
       );
-      if (boundary.outcome !== "ready") return boundary;
-      try {
-        await workflowWrite({
-          action: () =>
-            input.gitWorkspace.push(handoff.worktree, handoff.branch),
-          beforeRetry: async () => {
-            const changed = await revalidateReservedDeliveryTicket(
-              input,
-              handoff.ticket,
-            );
-            if (changed.outcome !== "ready") {
-              throw new ReservedBoundaryChanged(changed);
-            }
-          },
-          audit: input.audit,
-          event: () =>
-            input.event(
-              "ci_repair",
-              "push_repair",
-              `pull_request:${pullRequest.number}`,
-            )(consumed + 1),
-          operator: input.operator,
-        });
-      } catch (error) {
-        if (!(error instanceof ReservedBoundaryChanged)) throw error;
-        return error.boundary;
-      }
+      if (boundary) return boundary;
       const readiness = await observeRequiredChecks(
         input,
         repair.handoff,
@@ -568,14 +591,17 @@ async function repairRequiredChecks(
       "ci_repair",
       "repair_budget_exhausted",
       `pull_request:${pullRequest.number}`,
-    )(2);
+    )(budget.consumed);
     const response = await pauseForOperator(
       input.audit,
       event,
       input.operator,
       "CI repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge trusted readiness.",
     );
-    if (response === "") continue;
+    if (response === "") {
+      budget.consumed = 0;
+      continue;
+    }
     const boundary = await revalidateReservedDeliveryTicket(
       input,
       handoff.ticket,
@@ -591,7 +617,7 @@ async function repairMergeConflict(
   handoff: VerifiedHandoff,
   pullRequest: PullRequestIdentity,
   conflict: string,
-  budget: { consumed: number; attempts: { value: number } },
+  budget: RepairBudget,
 ): Promise<
   | { state: PullRequestState }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
@@ -658,37 +684,14 @@ async function repairMergeConflict(
         "conflict_repair",
       );
       if (current.merged) return { state: current };
-      const boundary = await revalidateReservedDeliveryTicket(
+      const boundary = await pushRepair(
         input,
-        handoff.ticket,
+        handoff,
+        pullRequest,
+        "conflict_repair",
+        budget.consumed,
       );
-      if (boundary.outcome !== "ready") return boundary;
-      try {
-        await workflowWrite({
-          action: () =>
-            input.gitWorkspace.push(handoff.worktree, handoff.branch),
-          beforeRetry: async () => {
-            const changed = await revalidateReservedDeliveryTicket(
-              input,
-              handoff.ticket,
-            );
-            if (changed.outcome !== "ready") {
-              throw new ReservedBoundaryChanged(changed);
-            }
-          },
-          audit: input.audit,
-          event: () =>
-            input.event(
-              "conflict_repair",
-              "push_repair",
-              `pull_request:${pullRequest.number}`,
-            )(budget.consumed),
-          operator: input.operator,
-        });
-      } catch (error) {
-        if (!(error instanceof ReservedBoundaryChanged)) throw error;
-        return error.boundary;
-      }
+      if (boundary) return boundary;
       let readiness = await observeRequiredChecks(
         input,
         repair.handoff,

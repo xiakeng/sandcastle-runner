@@ -205,6 +205,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
       adminMerge: input.adminMerge,
       ticketClosure: input.ticketClosure,
+      ciRepairBudgets: new Map(),
       handoffs: attempts.handoffs,
       gitWorkspace: input.gitWorkspace,
       codeHost: input.codeHost,
