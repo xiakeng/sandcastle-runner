@@ -215,6 +215,19 @@ export class GitHubTracker implements Tracker {
     ]);
   }
 
+  async closeTicket(repository: string, ticket: number): Promise<void> {
+    await this.client.request([
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${repository}/issues/${ticket}`,
+      "-f",
+      "state=closed",
+      "-f",
+      "state_reason=completed",
+    ]);
+  }
+
   async closeParent(repository: string, parentTicket: number): Promise<void> {
     await this.client.request([
       "api",

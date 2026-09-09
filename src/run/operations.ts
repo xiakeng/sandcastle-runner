@@ -64,6 +64,7 @@ interface WriteOperation {
   audit: AuditLog;
   event: () => Omit<AuditEvent, "result" | "error">;
   operator: OperatorIO;
+  beforeRetry?: () => Promise<void>;
 }
 
 interface VoidWriteOperation extends WriteOperation {
@@ -237,7 +238,10 @@ export async function workflowWrite<T>(
           operation.operator,
           "Operation failed. Enter to retry, q to cancel, or acknowledge a trusted successful write.",
         );
-        if (response === "") break;
+        if (response === "") {
+          await operation.beforeRetry?.();
+          break;
+        }
         let result: T | void;
         try {
           result = operation.parseOverride

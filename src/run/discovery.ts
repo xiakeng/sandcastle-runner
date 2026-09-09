@@ -364,10 +364,15 @@ export type DeliveryBoundaryResult =
   | { outcome: "ready" }
   | { outcome: "cancelled" | "failed" | "stopped"; reason: string };
 
-export async function revalidateReservedDeliveryTicket(
+export type MergedDeliveryBoundaryResult =
+  | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
+  | { outcome: "ready"; ticket: Ticket }
+  | { outcome: "terminal"; ticket: Ticket };
+
+async function revalidateReserved(
   input: DiscoveryInput,
   ticketNumber: number,
-): Promise<DeliveryBoundaryResult> {
+): Promise<MergedDeliveryBoundaryResult> {
   const parentResult = boundaryResult(await readParent(input, "revalidate"));
   if (parentResult) {
     return {
@@ -382,16 +387,7 @@ export async function revalidateReservedDeliveryTicket(
       reason: `Delivery Ticket ${ticketNumber} left Parent scope`,
     };
   if (result.ticket.state === "closed") {
-    await releaseReservation(
-      input,
-      ticketNumber,
-      (result.ticket.assignees ?? []).includes(input.runnerAccount),
-      (result.ticket.labels ?? []).includes(input.reservationLabel),
-    );
-    return {
-      outcome: "stopped",
-      reason: `Delivery Ticket ${ticketNumber} became terminal`,
-    };
+    return { outcome: "terminal", ticket: result.ticket };
   }
   if (result.blocked)
     return {
@@ -417,7 +413,41 @@ export async function revalidateReservedDeliveryTicket(
       reason: `Delivery Ticket ${ticketNumber} no longer has a complete Reservation`,
     };
   }
-  return { outcome: "ready" };
+  return { outcome: "ready", ticket: result.ticket };
+}
+
+export async function revalidateReservedDeliveryTicket(
+  input: DiscoveryInput,
+  ticketNumber: number,
+): Promise<DeliveryBoundaryResult> {
+  const result = await revalidateReserved(input, ticketNumber);
+  if (result.outcome === "terminal") {
+    await releaseTerminalReservation(input, result.ticket);
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} became terminal`,
+    };
+  }
+  return result.outcome === "ready" ? { outcome: "ready" } : result;
+}
+
+export function revalidateMergedDeliveryTicket(
+  input: DiscoveryInput,
+  ticketNumber: number,
+): Promise<MergedDeliveryBoundaryResult> {
+  return revalidateReserved(input, ticketNumber);
+}
+
+export function releaseTerminalReservation(
+  input: DiscoveryInput,
+  ticket: Ticket,
+): Promise<void> {
+  return releaseReservation(
+    input,
+    ticket.number,
+    (ticket.assignees ?? []).includes(input.runnerAccount),
+    (ticket.labels ?? []).includes(input.reservationLabel),
+  );
 }
 
 function reasons(selection: Selection, batch: number[]): string[] {

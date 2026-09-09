@@ -7,6 +7,7 @@ import type {
   CodeHost,
   GitWorkspace,
   OperatorIO,
+  TicketClosurePolicy,
   Tracker,
 } from "./contracts.ts";
 import { discoverAndReserve } from "./discovery.ts";
@@ -28,6 +29,7 @@ export interface RunSummary {
   batch?: number[];
   handoffs?: VerifiedHandoff[];
   pullRequests?: PullRequestObservation[];
+  completedTickets?: number[];
 }
 
 interface RunInput {
@@ -49,6 +51,9 @@ interface RunInput {
   implementationAgent: AgentConfig;
   agentTimeoutMs: number;
   requiredChecksTimeoutMs: number;
+  mergeQueueTimeoutMs: number;
+  adminMerge: boolean;
+  ticketClosure: TicketClosurePolicy;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
 }
@@ -155,6 +160,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             reservationLabel: input.reservationLabel,
             targetBranch,
             requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
+            mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
+            adminMerge: input.adminMerge,
+            ticketClosure: input.ticketClosure,
             handoffs: attempts.handoffs,
             gitWorkspace: input.gitWorkspace,
             codeHost: input.codeHost,

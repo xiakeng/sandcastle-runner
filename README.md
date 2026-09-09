@@ -3,8 +3,8 @@
 Sandcastle Runner is a local CLI for delivering a configured GitHub Parent Ticket. The current
 implementation supports supervised startup, complete Delivery Ticket and blocker discovery,
 Reservations, Sandcastle-backed implementation through independently Verified Handoffs, and
-publication through required CI readiness observation. A later delivery slice will integrate
-CI-ready Pull Requests.
+publication through required CI readiness observation. It squash-merges CI-ready Pull Requests and
+counts delivery only after both the merge and completed ticket closure are confirmed.
 
 ## Project configuration
 
@@ -93,7 +93,14 @@ their AI-authored title and body unchanged. The Runner waits 30 seconds, then po
 through GitHub CLI semantics. Empty, passing, or skipped required-check sets are CI-ready; pending
 checks are polled every 10 seconds; failed or cancelled checks remain associated with the Pull
 Request as CI-repair evidence. Read failures use the common retry policy, and the configured
-required-check timeout enters Operator Pause. Publication never merges or closes a Delivery Ticket.
+required-check timeout enters Operator Pause.
+
+For each CI-ready Pull Request, the Runner observes its head SHA and requests a squash merge with
+the configured admin setting. Queue acceptance is not delivery: the Runner waits up to
+`mergeQueueMinutes` for confirmed merge state. Under `runner`, it then closes the Delivery Ticket;
+under `code_host`, it waits 10 seconds and, if necessary, another 30 seconds for GitHub closure.
+Only `closed/completed` records completion credit. Rejections, queue timeout, closure failure, and
+missing completion evidence use Operator Pause; completed merges are never rolled back.
 
 Before reporting exhaustion or closing the Parent, the Run performs a final complete scan so newly
 visible work can be selected.

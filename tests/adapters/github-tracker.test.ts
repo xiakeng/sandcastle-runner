@@ -67,6 +67,7 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
     "{}",
     "{}",
     "{}",
+    "{}",
   ];
   const tracker = new GitHubTracker("configured-token", async (args) => {
     calls.push(args);
@@ -97,6 +98,7 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
   await tracker.addAssignee("owner/repo", 9, "runner");
   await tracker.removeAssignee("owner/repo", 9, "runner");
   await tracker.removeLabel("owner/repo", 9, "sandcastle:reserved");
+  await tracker.closeTicket("owner/repo", 9);
 
   assert.deepEqual(calls, [
     ["api", "--method", "GET", "repos/owner/repo/issues/9"],
@@ -139,6 +141,16 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
       "--method",
       "DELETE",
       "repos/owner/repo/issues/9/labels/sandcastle%3Areserved",
+    ],
+    [
+      "api",
+      "--method",
+      "PATCH",
+      "repos/owner/repo/issues/9",
+      "-f",
+      "state=closed",
+      "-f",
+      "state_reason=completed",
     ],
   ]);
 });

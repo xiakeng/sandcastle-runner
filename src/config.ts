@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { TicketClosurePolicy } from "./run/contracts.ts";
+
 const promptNames = [
   "implement",
   "ci-repair",
@@ -43,7 +45,7 @@ export interface ProjectConfig {
     requiredChecksMinutes: number;
     mergeQueueMinutes: number;
   };
-  ticketClosure: "runner" | "code_host";
+  ticketClosure: TicketClosurePolicy;
 }
 
 export interface LoadedProject {

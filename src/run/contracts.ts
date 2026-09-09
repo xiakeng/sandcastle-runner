@@ -1,5 +1,6 @@
 export type TicketState = "open" | "closed";
 export type ClosureReason = "completed" | "not_planned" | null;
+export type TicketClosurePolicy = "runner" | "code_host";
 
 export interface Ticket {
   number: number;
@@ -45,6 +46,7 @@ export interface Tracker {
     ticket: number,
     assignee: string,
   ): Promise<void>;
+  closeTicket(repository: string, ticket: number): Promise<void>;
   closeParent(repository: string, parentTicket: number): Promise<void>;
 }
 
@@ -61,12 +63,33 @@ export interface CodeHost {
     repository: string,
     pullRequest: number,
   ): Promise<RequiredCheck[]>;
+  getPullRequest(
+    repository: string,
+    pullRequest: number,
+  ): Promise<PullRequestState>;
+  requestSquashMerge(input: {
+    repository: string;
+    pullRequest: number;
+    headSha: string;
+    admin: boolean;
+  }): Promise<MergeRequestResult>;
 }
 
 export interface PullRequestIdentity {
   number: number;
   url: string;
 }
+
+export interface PullRequestState {
+  headSha: string;
+  merged: boolean;
+  mergeFailure: string | null;
+}
+
+export type MergeRequestResult =
+  | { outcome: "accepted" }
+  | { outcome: "conflict"; error: string }
+  | { outcome: "rejected"; error: string };
 
 export interface RequiredCheck {
   name: string;
