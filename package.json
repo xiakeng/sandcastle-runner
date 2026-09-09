@@ -1,12 +1,18 @@
 {
   "name": "sandcastle-runner",
   "private": true,
+  "type": "module",
+  "bin": {
+    "sandcastle-runner": "src/cli.ts"
+  },
   "scripts": {
+    "test": "node --test",
     "check": "npm run format:check && npm run lint && npm run typecheck",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}\" --no-error-on-unmatched-pattern",
     "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}\" --no-error-on-unmatched-pattern",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify": "npm test && npm run check"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
