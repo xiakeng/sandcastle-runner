@@ -10,6 +10,8 @@ import type {
   AgentExecutor,
   CommitEvidence,
   GitWorkspace,
+  PullRequestIdentity,
+  RequiredCheck,
 } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
@@ -37,17 +39,20 @@ export interface VerifiedHandoff {
   verification: "verified" | "operator_override";
 }
 
-interface AttemptInput extends DiscoveryInput {
-  batch: number[];
+interface AgentOperationInput extends DiscoveryInput {
   runId: string;
-  checkout: string;
   targetBranch: string;
   projectDirectory: string;
-  promptFile: string;
-  agent: AgentConfig;
   timeoutMs: number;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
+}
+
+interface AttemptInput extends AgentOperationInput {
+  batch: number[];
+  checkout: string;
+  promptFile: string;
+  agent: AgentConfig;
 }
 
 export interface AttemptBatchResult {
@@ -72,7 +77,7 @@ function fullSha(value: unknown): string {
 }
 
 async function appendOperation(
-  input: AttemptInput,
+  input: AgentOperationInput,
   event: Omit<AuditEvent, "result" | "error">,
   result: string,
   error: string | null,
@@ -83,7 +88,10 @@ async function appendOperation(
   );
 }
 
-async function boundary(input: AttemptInput, ticket: number): Promise<void> {
+async function boundary(
+  input: AgentOperationInput,
+  ticket: number,
+): Promise<void> {
   const result = await revalidateReservedDeliveryTicket(input, ticket);
   if (result.outcome !== "ready") throw new BoundaryStop(result);
 }
@@ -108,17 +116,20 @@ function trustedHandoff(
   worktree: string,
   branch: string,
   base: string,
+  existingPrMetadata?: Pick<VerifiedHandoff, "prTitle" | "prBody">,
 ): VerifiedHandoff {
-  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const parsed = existingPrMetadata
+    ? null
+    : (JSON.parse(value) as Record<string, unknown>);
   if (
-    parsed.outcome !== "committed" ||
-    typeof parsed.pr_title !== "string" ||
-    parsed.pr_title.trim() === "" ||
-    typeof parsed.pr_body !== "string" ||
-    parsed.pr_body.trim() === ""
-  ) {
+    parsed &&
+    (parsed.outcome !== "committed" ||
+      typeof parsed.pr_title !== "string" ||
+      parsed.pr_title.trim() === "" ||
+      typeof parsed.pr_body !== "string" ||
+      parsed.pr_body.trim() === "")
+  )
     throw new Error("override has no downstream PR metadata");
-  }
   return {
     ticket,
     worktree,
@@ -126,29 +137,38 @@ function trustedHandoff(
     base,
     commits: [],
     checks: [],
-    prTitle: parsed.pr_title,
-    prBody: parsed.pr_body,
+    prTitle: existingPrMetadata?.prTitle ?? (parsed?.pr_title as string),
+    prBody: existingPrMetadata?.prBody ?? (parsed?.pr_body as string),
     verification: "operator_override",
   };
 }
 
 async function runAgentOperation(
-  input: AttemptInput,
-  ticket: number,
-  worktree: string,
-  branch: string,
-  base: string,
-  signal: AbortSignal,
+  input: AgentOperationInput,
+  operation: {
+    phase: "implement" | "ci_repair";
+    ticket: number;
+    worktree: string;
+    branch: string;
+    base: string;
+    promptFile: string;
+    promptArgs: Record<string, string | number>;
+    pullRequestMetadata: "required" | "ignored";
+    existingPrMetadata?: Pick<VerifiedHandoff, "prTitle" | "prBody">;
+    agent: AgentConfig;
+    signal: AbortSignal;
+    attemptCounter: { value: number };
+  },
 ): Promise<VerifiedHandoff | string> {
-  let attemptNumber = 0;
   for (;;) {
-    await boundary(input, ticket);
-    attemptNumber += 1;
+    await boundary(input, operation.ticket);
+    operation.attemptCounter.value += 1;
+    const attemptNumber = operation.attemptCounter.value;
     const attemptId = randomUUID();
     const event = input.event(
-      "implement",
+      operation.phase,
       "agent_attempt",
-      `ticket:${ticket}`,
+      `ticket:${operation.ticket}`,
     )(attemptNumber);
     await appendOperation(input, event, "started", null);
     try {
@@ -160,45 +180,41 @@ async function runAgentOperation(
         const gitConfigGlobal = path.join(gitDirectory, "config");
         await writeFile(gitConfigGlobal, "");
         result = await input.agentExecutor.execute({
-          ticket,
-          worktree,
-          branch,
-          base,
-          promptFile: input.promptFile,
-          promptArgs: {
-            TICKET_NUMBER: ticket,
-            TICKET_REFERENCE: `${input.repository}#${ticket}`,
-            IMPLEMENT_SKILL: "$implement",
-            WORKTREE_PATH: worktree,
-            BRANCH: branch,
-            BASE_SHA: base,
-            TARGET_BRANCH: input.targetBranch,
-          },
-          model: input.agent.model,
-          effort: input.agent.reasoningEffort,
+          ticket: operation.ticket,
+          worktree: operation.worktree,
+          branch: operation.branch,
+          base: operation.base,
+          promptFile: operation.promptFile,
+          promptArgs: operation.promptArgs,
+          pullRequestMetadata: operation.pullRequestMetadata,
+          model: operation.agent.model,
+          effort: operation.agent.reasoningEffort,
           gitConfigGlobal,
           logFile: path.join(
             input.projectDirectory,
             "logs",
-            `agent-${ticket}-${attemptId}.log`,
+            `agent-${operation.ticket}-${attemptId}.log`,
           ),
           timeoutMs: input.timeoutMs,
-          signal,
+          signal: operation.signal,
         });
       } finally {
         await rm(gitDirectory, { recursive: true, force: true });
       }
 
-      await boundary(input, ticket);
+      await boundary(input, operation.ticket);
       if (result.outcome === "blocked") {
         await appendOperation(input, event, "blocked", null);
-        return `Delivery Ticket ${ticket} blocked: ${result.blocker}`;
+        return `Delivery Ticket ${operation.ticket} blocked: ${result.blocker}`;
       }
-      const observed = await input.gitWorkspace.inspect({ worktree, base });
+      const observed = await input.gitWorkspace.inspect({
+        worktree: operation.worktree,
+        base: operation.base,
+      });
       if (
-        observed.worktree !== path.resolve(worktree) ||
-        observed.branch !== branch ||
-        observed.base !== base ||
+        observed.worktree !== path.resolve(operation.worktree) ||
+        observed.branch !== operation.branch ||
+        observed.base !== operation.base ||
         !observed.clean
       ) {
         throw new Error("Agent Attempt left mismatched or dirty Git state");
@@ -207,7 +223,7 @@ async function runAgentOperation(
         if (observed.commits.length !== 0)
           throw new Error("no_change left new commits");
         await appendOperation(input, event, "no_change", null);
-        return `Delivery Ticket ${ticket} no_change: ${result.summary}`;
+        return `Delivery Ticket ${operation.ticket} no_change: ${result.summary}`;
       }
       if (
         observed.commits.length === 0 ||
@@ -215,15 +231,19 @@ async function runAgentOperation(
       ) {
         throw new Error("Agent commit claims do not match Git evidence");
       }
+      const prTitle = result.pr_title ?? operation.existingPrMetadata?.prTitle;
+      const prBody = result.pr_body ?? operation.existingPrMetadata?.prBody;
+      if (!prTitle || !prBody)
+        throw new Error("Agent Attempt result has no downstream PR metadata");
       const handoff: VerifiedHandoff = {
-        ticket,
-        worktree,
-        branch,
-        base,
+        ticket: operation.ticket,
+        worktree: operation.worktree,
+        branch: operation.branch,
+        base: operation.base,
         commits: observed.commits,
         checks: result.checks,
-        prTitle: result.pr_title,
-        prBody: result.pr_body,
+        prTitle,
+        prBody,
         verification: "verified",
       };
       await appendOperation(input, event, "succeeded", null);
@@ -250,12 +270,19 @@ async function runAgentOperation(
         if (response === "") break;
         let handoff: VerifiedHandoff;
         try {
-          handoff = trustedHandoff(response, ticket, worktree, branch, base);
+          handoff = trustedHandoff(
+            response,
+            operation.ticket,
+            operation.worktree,
+            operation.branch,
+            operation.base,
+            operation.existingPrMetadata,
+          );
         } catch {
           await appendOperation(input, event, "invalid_override", null);
           continue;
         }
-        await boundary(input, ticket);
+        await boundary(input, operation.ticket);
         await appendOperation(input, event, "operator_override", null);
         return handoff;
       }
@@ -295,17 +322,92 @@ async function implementTicket(
         )(1),
       operator: input.operator,
     });
-    return await runAgentOperation(
-      input,
+    return await runAgentOperation(input, {
+      phase: "implement",
       ticket,
       worktree,
       branch,
       base,
-      controller.signal,
-    );
+      promptFile: input.promptFile,
+      promptArgs: {
+        TICKET_NUMBER: ticket,
+        TICKET_REFERENCE: `${input.repository}#${ticket}`,
+        IMPLEMENT_SKILL: "$implement",
+        WORKTREE_PATH: worktree,
+        BRANCH: branch,
+        BASE_SHA: base,
+        TARGET_BRANCH: input.targetBranch,
+      },
+      pullRequestMetadata: "required",
+      agent: input.agent,
+      signal: controller.signal,
+      attemptCounter: { value: 0 },
+    });
   } catch (error) {
     if (error instanceof BoundaryStop && error.result.outcome === "stopped")
       return error.result.reason;
+    throw error;
+  }
+}
+
+export async function runCiRepairAttempt(
+  input: AgentOperationInput & {
+    handoff: VerifiedHandoff;
+    base: string;
+    pullRequest: PullRequestIdentity;
+    failedChecks: RequiredCheck[];
+    promptFile: string;
+    agent: AgentConfig;
+    signal: AbortSignal;
+    attemptCounter: { value: number };
+  },
+): Promise<
+  | { outcome: "handoff"; handoff: VerifiedHandoff }
+  | { outcome: "consumed"; reason: string }
+  | {
+      outcome: "boundary";
+      boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+    }
+> {
+  try {
+    const result = await runAgentOperation(input, {
+      phase: "ci_repair",
+      ticket: input.handoff.ticket,
+      worktree: input.handoff.worktree,
+      branch: input.handoff.branch,
+      base: input.base,
+      promptFile: input.promptFile,
+      promptArgs: {
+        TICKET_NUMBER: input.handoff.ticket,
+        TICKET_REFERENCE: `${input.repository}#${input.handoff.ticket}`,
+        IMPLEMENT_SKILL: "$implement",
+        WORKTREE_PATH: input.handoff.worktree,
+        BRANCH: input.handoff.branch,
+        BASE_SHA: input.base,
+        TARGET_BRANCH: input.targetBranch,
+        PULL_REQUEST_NUMBER: input.pullRequest.number,
+        PULL_REQUEST_URL: input.pullRequest.url,
+        FAILED_CHECKS: JSON.stringify(
+          input.failedChecks.map(({ name, state, link }) => ({
+            name,
+            state,
+            link,
+          })),
+        ),
+      },
+      pullRequestMetadata: "ignored",
+      existingPrMetadata: input.handoff,
+      agent: input.agent,
+      signal: input.signal,
+      attemptCounter: input.attemptCounter,
+    });
+    return typeof result === "string"
+      ? { outcome: "consumed", reason: result }
+      : { outcome: "handoff", handoff: result };
+  } catch (error) {
+    if (error instanceof BoundaryStop) {
+      return { outcome: "boundary", boundary: error.result };
+    }
     throw error;
   }
 }

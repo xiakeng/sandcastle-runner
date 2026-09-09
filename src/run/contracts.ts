@@ -167,8 +167,8 @@ export interface AgentAttemptResult {
   commits: CommitEvidence[];
   checks: CheckEvidence[];
   blocker: string | null;
-  pr_title: string;
-  pr_body: string;
+  pr_title?: string;
+  pr_body?: string;
 }
 
 export interface AgentAttemptInput {
@@ -178,6 +178,7 @@ export interface AgentAttemptInput {
   base: string;
   promptFile: string;
   promptArgs: Record<string, string | number>;
+  pullRequestMetadata: "required" | "ignored";
   model: string;
   effort: "low" | "medium" | "high" | "xhigh";
   gitConfigGlobal: string;

@@ -1,5 +1,7 @@
-import type { VerifiedHandoff } from "./attempt.ts";
+import type { AgentConfig } from "../config.ts";
+import { runCiRepairAttempt, type VerifiedHandoff } from "./attempt.ts";
 import type {
+  AgentExecutor,
   CodeHost,
   GitWorkspace,
   MergeRequestResult,
@@ -45,9 +47,15 @@ export interface ReadinessInput extends DiscoveryInput {
 }
 
 interface PublicationInput extends ReadinessInput {
+  runId: string;
   targetBranch: string;
+  projectDirectory: string;
+  ciRepairPrompt: string;
+  ciRepairAgent: AgentConfig;
+  agentTimeoutMs: number;
   handoffs: VerifiedHandoff[];
   gitWorkspace: GitWorkspace;
+  agentExecutor: AgentExecutor;
   adminMerge: boolean;
   mergeQueueTimeoutMs: number;
   ticketClosure: TicketClosurePolicy;
@@ -101,13 +109,14 @@ function pullRequestStateOverride(value: string): PullRequestState {
 export async function observePullRequestForIntegration(
   input: ReadinessInput,
   pullRequest: number,
+  phase = "merge_wait",
 ): Promise<PullRequestState> {
   return externalRead({
     action: () => input.codeHost.getPullRequest(input.repository, pullRequest),
     parseOverride: pullRequestStateOverride,
     audit: input.audit,
     event: input.event(
-      "merge_wait",
+      phase,
       "pull_request_state",
       `pull_request:${pullRequest}`,
     ),
@@ -195,6 +204,15 @@ class DeliveryBoundaryChanged extends Error {
   readonly boundary: ChangedAfterMerge;
 
   constructor(boundary: ChangedAfterMerge) {
+    super("Delivery Ticket changed before operation retry");
+    this.boundary = boundary;
+  }
+}
+
+class ReservedBoundaryChanged extends Error {
+  readonly boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+
+  constructor(boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>) {
     super("Delivery Ticket changed before operation retry");
     this.boundary = boundary;
   }
@@ -446,6 +464,113 @@ export async function observeRequiredChecks(
   }
 }
 
+async function repairRequiredChecks(
+  input: PublicationInput,
+  handoff: VerifiedHandoff,
+  pullRequest: PullRequestIdentity,
+  initialFailedChecks: RequiredCheck[],
+  signal: AbortSignal,
+): Promise<
+  | Pick<PullRequestObservation, "readiness" | "failedChecks">
+  | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
+> {
+  let failedChecks = initialFailedChecks;
+  const attemptCounter = { value: 0 };
+  for (;;) {
+    for (let consumed = 0; consumed < 2; consumed += 1) {
+      const pullRequestState = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "ci_repair",
+      );
+      if (pullRequestState.merged)
+        return { readiness: "ready", failedChecks: [] };
+      const repair = await runCiRepairAttempt({
+        ...input,
+        handoff,
+        base: pullRequestState.headSha,
+        pullRequest,
+        failedChecks,
+        promptFile: input.ciRepairPrompt,
+        agent: input.ciRepairAgent,
+        timeoutMs: input.agentTimeoutMs,
+        signal,
+        attemptCounter,
+      });
+      if (repair.outcome === "boundary") return repair.boundary;
+      if (repair.outcome === "consumed") continue;
+
+      const currentPullRequestState = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "ci_repair",
+      );
+      if (currentPullRequestState.merged)
+        return { readiness: "ready", failedChecks: [] };
+      const boundary = await revalidateReservedDeliveryTicket(
+        input,
+        handoff.ticket,
+      );
+      if (boundary.outcome !== "ready") return boundary;
+      try {
+        await workflowWrite({
+          action: () =>
+            input.gitWorkspace.push(handoff.worktree, handoff.branch),
+          beforeRetry: async () => {
+            const changed = await revalidateReservedDeliveryTicket(
+              input,
+              handoff.ticket,
+            );
+            if (changed.outcome !== "ready") {
+              throw new ReservedBoundaryChanged(changed);
+            }
+          },
+          audit: input.audit,
+          event: () =>
+            input.event(
+              "ci_repair",
+              "push_repair",
+              `pull_request:${pullRequest.number}`,
+            )(consumed + 1),
+          operator: input.operator,
+        });
+      } catch (error) {
+        if (!(error instanceof ReservedBoundaryChanged)) throw error;
+        return error.boundary;
+      }
+      const readiness = await observeRequiredChecks(
+        input,
+        repair.handoff,
+        pullRequest,
+      );
+      if ("outcome" in readiness || readiness.readiness === "ready") {
+        return readiness;
+      }
+      failedChecks = readiness.failedChecks;
+    }
+
+    const event = input.event(
+      "ci_repair",
+      "repair_budget_exhausted",
+      `pull_request:${pullRequest.number}`,
+    )(2);
+    const response = await pauseForOperator(
+      input.audit,
+      event,
+      input.operator,
+      "CI repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge trusted readiness.",
+    );
+    if (response === "") continue;
+    const boundary = await revalidateReservedDeliveryTicket(
+      input,
+      handoff.ticket,
+    );
+    if (boundary.outcome !== "ready") return boundary;
+    await recordOperatorOverride(input.audit, event, input.operator);
+    return { readiness: "ready", failedChecks: [] };
+  }
+}
+
 export async function publishVerifiedHandoffs(
   input: PublicationInput,
 ): Promise<PublicationResult> {
@@ -497,11 +622,20 @@ export async function publishVerifiedHandoffs(
           )(1),
         operator: concurrentInput.operator,
       });
-      const readiness = await observeRequiredChecks(
+      let readiness = await observeRequiredChecks(
         concurrentInput,
         handoff,
         pullRequest,
       );
+      if (!("outcome" in readiness) && readiness.readiness === "failed") {
+        readiness = await repairRequiredChecks(
+          concurrentInput,
+          handoff,
+          pullRequest,
+          readiness.failedChecks,
+          controller.signal,
+        );
+      }
       if ("outcome" in readiness) {
         return {
           boundary: readiness,
