@@ -21,5 +21,8 @@
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.0"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0"
   }
 }

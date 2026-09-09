@@ -9,7 +9,7 @@ import type {
 } from "./contracts.ts";
 import { externalRead, workflowWrite } from "./operations.ts";
 
-interface DiscoveryInput {
+export interface DiscoveryInput {
   repository: string;
   parentTicket: number;
   tracker: Tracker;
@@ -134,17 +134,16 @@ function parseBlockerPageOverride(value: string): BlockerPage {
   };
 }
 
-async function readParent(input: DiscoveryInput): Promise<Ticket> {
+async function readParent(
+  input: DiscoveryInput,
+  phase = "discover",
+): Promise<Ticket> {
   return externalRead({
     action: () => input.tracker.getParent(input.repository, input.parentTicket),
     parseOverride: (value) =>
       parseTicket(JSON.parse(value) as unknown, input.parentTicket),
     audit: input.audit,
-    event: input.event(
-      "discover",
-      "read_parent",
-      `parent:${input.parentTicket}`,
-    ),
+    event: input.event(phase, "read_parent", `parent:${input.parentTicket}`),
     clock: input.clock,
     operator: input.operator,
   });
@@ -359,6 +358,57 @@ async function releaseReservation(
       operator: input.operator,
     });
   }
+}
+
+export type DeliveryBoundaryResult =
+  | { outcome: "ready" }
+  | { outcome: "cancelled" | "failed" | "stopped"; reason: string };
+
+export async function revalidateReservedDeliveryTicket(
+  input: DiscoveryInput,
+  ticketNumber: number,
+): Promise<DeliveryBoundaryResult> {
+  const parentResult = boundaryResult(await readParent(input, "revalidate"));
+  if (parentResult) {
+    return {
+      outcome: parentResult.outcome === "cancelled" ? "cancelled" : "failed",
+      reason: parentResult.reasons[0] ?? "Parent Ticket changed",
+    };
+  }
+  const result = await revalidateTicket(input, ticketNumber);
+  if (!result.inScope)
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} left Parent scope`,
+    };
+  if (result.ticket.state === "closed") {
+    await releaseReservation(
+      input,
+      ticketNumber,
+      (result.ticket.assignees ?? []).includes(input.runnerAccount),
+      (result.ticket.labels ?? []).includes(input.reservationLabel),
+    );
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} became terminal`,
+    };
+  }
+  if (result.blocked)
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} became blocked`,
+    };
+  if (
+    (result.ticket.assignees ?? []).some(
+      (assignee) => assignee !== input.runnerAccount,
+    )
+  ) {
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} became externally owned`,
+    };
+  }
+  return { outcome: "ready" };
 }
 
 function reasons(selection: Selection, batch: number[]): string[] {

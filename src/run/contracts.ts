@@ -52,6 +52,68 @@ export interface CodeHost {
   resolveTargetBranch(repository: string): Promise<string>;
 }
 
+export interface CommitEvidence {
+  sha: string;
+  message: string;
+}
+
+export interface CheckEvidence {
+  command: string;
+  status: "passed" | "failed" | "not_run";
+  details: string;
+}
+
+export interface WorkspaceEvidence {
+  worktree: string;
+  branch: string;
+  base: string;
+  commits: CommitEvidence[];
+  clean: boolean;
+}
+
+export interface GitWorkspace {
+  fetchTargetBranch(checkout: string, targetBranch: string): Promise<string>;
+  createWorktree(input: {
+    checkout: string;
+    worktree: string;
+    branch: string;
+    base: string;
+  }): Promise<void>;
+  inspect(input: {
+    worktree: string;
+    base: string;
+  }): Promise<WorkspaceEvidence>;
+}
+
+export interface AgentAttemptResult {
+  outcome: "committed" | "no_change" | "blocked";
+  summary: string;
+  commits: CommitEvidence[];
+  checks: CheckEvidence[];
+  blocker: string | null;
+  pr_title: string;
+  pr_body: string;
+}
+
+export interface AgentAttemptInput {
+  ticket: number;
+  worktree: string;
+  branch: string;
+  base: string;
+  promptFile: string;
+  promptArgs: Record<string, string | number>;
+  model: string;
+  effort: "low" | "medium" | "high" | "xhigh";
+  gitConfigGlobal: string;
+  logFile: string;
+  timeoutMs: number;
+  signal: AbortSignal;
+}
+
+export interface AgentExecutor {
+  execute(input: AgentAttemptInput): Promise<AgentAttemptResult>;
+}
+
 export interface Clock {
   now(): Date;
   sleep(milliseconds: number): Promise<void>;

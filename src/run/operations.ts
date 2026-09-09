@@ -56,7 +56,7 @@ async function appendPauseEvent(
   );
 }
 
-async function pauseForOperator(
+export async function pauseForOperator(
   audit: AuditLog,
   event: Omit<AuditEvent, "result" | "error">,
   operator: OperatorIO,

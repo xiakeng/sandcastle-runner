@@ -1,5 +1,14 @@
 import type { AuditLog } from "../audit.ts";
-import type { Clock, CodeHost, OperatorIO, Tracker } from "./contracts.ts";
+import type { AgentConfig } from "../config.ts";
+import { implementReservedBatch, type VerifiedHandoff } from "./attempt.ts";
+import type {
+  AgentExecutor,
+  Clock,
+  CodeHost,
+  GitWorkspace,
+  OperatorIO,
+  Tracker,
+} from "./contracts.ts";
 import { discoverAndReserve } from "./discovery.ts";
 import { externalRead, workflowWrite } from "./operations.ts";
 
@@ -13,6 +22,7 @@ export interface RunSummary {
   targetBranch: string;
   reasons: string[];
   batch?: number[];
+  handoffs?: VerifiedHandoff[];
 }
 
 interface RunInput {
@@ -28,6 +38,13 @@ interface RunInput {
   operator: OperatorIO;
   runnerAccount: string;
   reservationLabel: string;
+  checkout: string;
+  projectDirectory: string;
+  implementationPrompt: string;
+  implementationAgent: AgentConfig;
+  agentTimeoutMs: number;
+  gitWorkspace: GitWorkspace;
+  agentExecutor: AgentExecutor;
 }
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -93,6 +110,37 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       parentTicket: input.parentTicket,
       targetBranch,
       reasons: [],
+    };
+  }
+  if (discovery.outcome === "incomplete" && discovery.batch.length > 0) {
+    const attempts = await implementReservedBatch({
+      repository: input.repository,
+      parentTicket: input.parentTicket,
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event,
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+      batch: discovery.batch,
+      runId: input.runId,
+      checkout: input.checkout,
+      targetBranch,
+      projectDirectory: input.projectDirectory,
+      promptFile: input.implementationPrompt,
+      agent: input.implementationAgent,
+      timeoutMs: input.agentTimeoutMs,
+      gitWorkspace: input.gitWorkspace,
+      agentExecutor: input.agentExecutor,
+    });
+    return {
+      ...attempts,
+      project: input.project,
+      parentTicket: input.parentTicket,
+      targetBranch,
+      batch: discovery.batch,
+      reasons: [...discovery.reasons, ...attempts.reasons],
     };
   }
   return {

@@ -1,8 +1,9 @@
 # Sandcastle Runner
 
 Sandcastle Runner is a local CLI for delivering a configured GitHub Parent Ticket. The current
-implementation supports supervised startup, complete Delivery Ticket and blocker discovery, and a
-deterministic Reservation checkpoint. Later delivery slices will consume the reserved Batch.
+implementation supports supervised startup, complete Delivery Ticket and blocker discovery,
+Reservations, and Sandcastle-backed implementation through independently Verified Handoffs. A later
+delivery slice will publish those handoffs.
 
 ## Project configuration
 
@@ -19,7 +20,11 @@ projects/<project-key>/
 └── logs/
 ```
 
-`logs/` is created when the Run starts. All four prompt files must exist and be nonempty.
+`logs/` is created when the Run starts. All four prompt files must exist and be nonempty. The
+implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
+`{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{BASE_SHA}}`, and `{{TARGET_BRANCH}}`. It must restrict the
+Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag with
+`outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and `pr_body`.
 
 ```json
 {
@@ -77,10 +82,15 @@ configured Reservation label before the runner-account assignee. It revalidates 
 ticket, and blockers between operations; terminal tickets release their Reservation. Failed or
 interrupted work keeps any partial marker for manual action rather than attempting rollback.
 
-The Reservation checkpoint returns `incomplete` with a `batch` array and reasons describing reserved,
-blocked, externally owned, and previously reserved work; it does not claim delivery. Before reporting
-exhaustion or closing the Parent, the Run performs a final complete scan so newly visible work can be
-selected.
+The Runner freshly fetches the Target Branch once for a reserved Batch, creates a unique branch and
+Worktree for each Delivery Ticket at that exact commit, and starts the Agent Attempts concurrently.
+Each Attempt gets an isolated temporary `GIT_CONFIG_GLOBAL`, the configured model, effort and agent
+timeout, and the caller-owned implementation prompt. The temporary Git configuration is removed after
+Sandcastle settles; unresolved branches and Worktrees remain for operator action. Verified Handoffs
+are returned in the `incomplete` summary until the publication slice consumes them.
+
+Before reporting exhaustion or closing the Parent, the Run performs a final complete scan so newly
+visible work can be selected.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any
