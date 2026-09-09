@@ -2542,6 +2542,54 @@ test("cancelling an exhausted conflict budget stops before republishing or remer
   assert.equal(mergeRequests, 1);
 });
 
+test("Parent cancellation after conflict repair verification prevents its first push", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let parentCancelled = false;
+  let pullRequestReads = 0;
+  let pushes = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return parentCancelled
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+      },
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async push() {
+          pushes += 1;
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          pullRequestReads += 1;
+          if (pullRequestReads === 3) parentCancelled = true;
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: false,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          return { outcome: "conflict", error: "merge conflict" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(pullRequestReads, 3);
+  assert.equal(pushes, 1);
+});
+
 test("a trusted conflict-repair override repeats required-check discovery", async () => {
   const root = await createProject();
   const { tracker } = createAttemptTracker(9);
