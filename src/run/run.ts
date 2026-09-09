@@ -33,37 +33,48 @@ interface RunInput {
   operator: OperatorIO;
 }
 
-function parseTicketOverride(value: unknown): Ticket {
+function overrideRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("override is not a ticket");
   }
-  const ticket = value as Record<string, unknown>;
-  if (!Number.isSafeInteger(ticket.number) || (ticket.number as number) <= 0) {
-    throw new Error("override has no ticket number");
-  }
+  return value as Record<string, unknown>;
+}
+
+function overrideState(
+  ticket: Record<string, unknown>,
+): Pick<Ticket, "state" | "stateReason"> {
   if (ticket.state !== "open" && ticket.state !== "closed") {
     throw new Error("override has no usable ticket state");
   }
+  if (ticket.state === "open") return { state: "open", stateReason: null };
   if (
-    ticket.stateReason !== null &&
     ticket.stateReason !== "completed" &&
     ticket.stateReason !== "not_planned"
   ) {
     throw new Error("override has no usable closure reason");
   }
-  if (
-    ticket.repository !== undefined &&
-    typeof ticket.repository !== "string"
-  ) {
+  return { state: "closed", stateReason: ticket.stateReason };
+}
+
+function parseParentOverride(value: string, parentTicket: number): Ticket {
+  return {
+    number: parentTicket,
+    ...overrideState(overrideRecord(JSON.parse(value) as unknown)),
+  };
+}
+
+function parseChildOverride(value: unknown): Ticket {
+  const ticket = overrideRecord(value);
+  if (!Number.isSafeInteger(ticket.number) || (ticket.number as number) <= 0) {
+    throw new Error("override has no ticket number");
+  }
+  if (typeof ticket.repository !== "string" || ticket.repository.length === 0) {
     throw new Error("override has no usable repository");
   }
   return {
     number: ticket.number as number,
-    state: ticket.state,
-    stateReason: ticket.stateReason,
-    ...(ticket.repository === undefined
-      ? {}
-      : { repository: ticket.repository }),
+    ...overrideState(ticket),
+    repository: ticket.repository,
   };
 }
 
@@ -79,7 +90,7 @@ function parseChildPageOverride(value: string): ChildPage {
     throw new Error("override has no usable next page");
   }
   return {
-    children: input.children.map(parseTicketOverride),
+    children: input.children.map(parseChildOverride),
     nextPage: input.nextPage as number | null,
   };
 }
@@ -100,7 +111,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const targetBranch =
     input.configuredTargetBranch ??
     (await externalRead({
-      action: () => input.codeHost.getDefaultBranch(input.repository),
+      action: () => input.codeHost.resolveTargetBranch(input.repository),
       parseOverride: (value) => {
         const parsed = JSON.parse(value) as { defaultBranch?: unknown };
         if (
@@ -112,13 +123,13 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
         return parsed.defaultBranch;
       },
       audit: input.audit,
-      event: event("startup", "read_default_branch", input.repository),
+      event: event("startup", "resolve_target_branch", input.repository),
       clock: input.clock,
       operator: input.operator,
     }));
   const parent = await externalRead({
     action: () => input.tracker.getParent(input.repository, input.parentTicket),
-    parseOverride: (value) => parseTicketOverride(JSON.parse(value) as unknown),
+    parseOverride: (value) => parseParentOverride(value, input.parentTicket),
     audit: input.audit,
     event: event("discover", "read_parent", `parent:${input.parentTicket}`),
     clock: input.clock,
@@ -131,6 +142,15 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       parentTicket: input.parentTicket,
       targetBranch,
       reasons: ["Parent Ticket is cancelled"],
+    };
+  }
+  if (parent.state === "closed" && parent.stateReason === null) {
+    return {
+      outcome: "failed",
+      project: input.project,
+      parentTicket: input.parentTicket,
+      targetBranch,
+      reasons: ["closed Parent Ticket has no supported closure reason"],
     };
   }
   const children = [];

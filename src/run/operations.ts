@@ -38,6 +38,40 @@ interface WriteOperation {
   operator: OperatorIO;
 }
 
+async function appendPauseEvent(
+  audit: AuditLog,
+  event: Omit<AuditEvent, "result" | "error">,
+  operator: OperatorIO,
+  result: string,
+): Promise<void> {
+  await supervisedAuditWrite(
+    () =>
+      audit.append({
+        ...event,
+        operation: "operator_pause",
+        result,
+        error: null,
+      }),
+    operator,
+  );
+}
+
+async function pauseForOperator(
+  audit: AuditLog,
+  event: Omit<AuditEvent, "result" | "error">,
+  operator: OperatorIO,
+  message: string,
+): Promise<string> {
+  await appendPauseEvent(audit, event, operator, "started");
+  const response = await operator.pause(message);
+  if (response === null || response === "q") {
+    await appendPauseEvent(audit, event, operator, "cancelled");
+    throw new OperatorCancelled("operator cancelled");
+  }
+  if (response === "") await appendPauseEvent(audit, event, operator, "retry");
+  return response;
+}
+
 export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
   for (;;) {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
@@ -77,27 +111,43 @@ export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
     }
 
     for (;;) {
-      const response = await operation.operator.pause(
+      const pauseEvent = operation.event(5);
+      const response = await pauseForOperator(
+        operation.audit,
+        pauseEvent,
+        operation.operator,
         "Operation failed. Enter to retry, q to cancel, or supply a trusted result.",
       );
-      if (response === null || response === "q")
-        throw new OperatorCancelled("operator cancelled");
       if (response === "") break;
+      let result: T;
       try {
-        const result = operation.parseOverride(response);
-        await supervisedAuditWrite(
-          () =>
-            operation.audit.append({
-              ...operation.event(1),
-              result: "operator_override",
-              error: null,
-            }),
-          operation.operator,
-        );
-        return result;
+        result = operation.parseOverride(response);
       } catch {
+        await appendPauseEvent(
+          operation.audit,
+          pauseEvent,
+          operation.operator,
+          "invalid_override",
+        );
         // An unusable trusted read result returns to the same Operator Pause.
+        continue;
       }
+      await appendPauseEvent(
+        operation.audit,
+        pauseEvent,
+        operation.operator,
+        "operator_override",
+      );
+      await supervisedAuditWrite(
+        () =>
+          operation.audit.append({
+            ...operation.event(1),
+            result: "operator_override",
+            error: null,
+          }),
+        operation.operator,
+      );
+      return result;
     }
   }
 }
@@ -123,12 +173,19 @@ export async function workflowWrite(operation: WriteOperation): Promise<void> {
           }),
         operation.operator,
       );
-      const response = await operation.operator.pause(
+      const response = await pauseForOperator(
+        operation.audit,
+        event,
+        operation.operator,
         "Operation failed. Enter to retry, q to cancel, or acknowledge a trusted successful write.",
       );
-      if (response === null || response === "q")
-        throw new OperatorCancelled("operator cancelled");
       if (response !== "") {
+        await appendPauseEvent(
+          operation.audit,
+          event,
+          operation.operator,
+          "operator_override",
+        );
         await supervisedAuditWrite(
           () =>
             operation.audit.append({

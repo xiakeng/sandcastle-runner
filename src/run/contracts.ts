@@ -24,7 +24,7 @@ export interface Tracker {
 }
 
 export interface CodeHost {
-  getDefaultBranch(repository: string): Promise<string>;
+  resolveTargetBranch(repository: string): Promise<string>;
 }
 
 export interface Clock {

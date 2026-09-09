@@ -7,6 +7,14 @@ const promptNames = [
   "conflict-repair",
   "documentation",
 ] as const;
+const supportedModels = new Set([
+  "gpt-5.2",
+  "gpt-5.5",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-6-astra",
+]);
 
 export interface AgentConfig {
   model: string;
@@ -68,7 +76,7 @@ function positive(value: unknown, name: string): number {
 function agent(value: unknown, name: string): AgentConfig {
   const input = record(value, name);
   const model = text(input.model, `${name}.model`);
-  if (!/^gpt-[a-z0-9.-]+$/u.test(model))
+  if (!supportedModels.has(model))
     throw new Error(`${name}.model is unsupported`);
   const effort = text(input.reasoningEffort, `${name}.reasoningEffort`);
   if (!["low", "medium", "high", "xhigh"].includes(effort)) {

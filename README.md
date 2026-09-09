@@ -52,10 +52,11 @@ projects/<project-key>/
 }
 ```
 
-`targetBranch` may be omitted to use the repository default. Both adapter types must be `github`.
-Model identifiers must be nonempty `gpt-*` values, reasoning effort must be `low`, `medium`, `high`,
-or `xhigh`, and `ticketClosure` must be `runner` or `code_host`. The named credential environment
-variables must be set; interactive `gh auth` is not used as a fallback.
+`targetBranch` may be omitted to resolve the Project's Target Branch through CodeHost. Both adapter
+types must be `github`. Supported models are `gpt-5.2`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, and `gpt-6-astra`; reasoning effort must be `low`, `medium`, `high`, or `xhigh`.
+`ticketClosure` must be `runner` or `code_host`. The named credential environment variables must be
+set; interactive `gh auth` is not used as a fallback.
 
 ## Run
 
@@ -71,7 +72,8 @@ without changing children.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any
-other input supplies a trusted successful result. Trusted overrides are not reconciled or logged.
+other input supplies a trusted successful result. Trusted overrides are not reconciled; the audit
+records `operator_override` but never the raw override input.
 
 Each invocation creates a fresh UUID and diagnostic JSONL file under the Project's `logs/` directory.
 Logs are never read as recovery state, and a new invocation does not adopt or remove earlier artifacts.

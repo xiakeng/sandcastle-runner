@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { GitHubCodeHost } from "../../src/adapters/github-code-host.ts";
 
-test("GitHubCodeHost reads the default Target Branch with the configured token and timeout", async () => {
+test("GitHubCodeHost resolves the Target Branch with the configured token and timeout", async () => {
   let observed: { args: string[]; token: string; timeout: number } | undefined;
   const codeHost = new GitHubCodeHost(
     "configured-token",
@@ -13,7 +13,7 @@ test("GitHubCodeHost reads the default Target Branch with the configured token a
     },
   );
 
-  assert.equal(await codeHost.getDefaultBranch("owner/repo"), "trunk");
+  assert.equal(await codeHost.resolveTargetBranch("owner/repo"), "trunk");
   assert.deepEqual(observed, {
     args: ["api", "--method", "GET", "repos/owner/repo"],
     token: "configured-token",
