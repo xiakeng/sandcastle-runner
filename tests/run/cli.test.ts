@@ -785,6 +785,38 @@ test("an omitted Target Branch is resolved once through CodeHost and fixed for t
   assert.equal(branchCalls, 1);
 });
 
+test("a trusted Target Branch override uses the project term", async () => {
+  const root = await createProject();
+  const configPath = path.join(root, "projects", "demo", "config.json");
+  const configWithoutBranch = { ...validConfig };
+  delete (configWithoutBranch as Partial<typeof validConfig>).targetBranch;
+  await writeFile(configPath, JSON.stringify(configWithoutBranch));
+  let branchCalls = 0;
+  let pauseCalls = 0;
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      codeHost: {
+        async resolveTargetBranch() {
+          branchCalls += 1;
+          throw new Error("unavailable");
+        },
+      },
+      operator: {
+        async pause() {
+          pauseCalls += 1;
+          return pauseCalls === 1 ? '{"targetBranch":"trunk"}' : "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "no_work");
+  assert.equal(result.summary.targetBranch, "trunk");
+  assert.equal(branchCalls, 5);
+  assert.equal(pauseCalls, 1);
+});
+
 test("open children return an actionable incomplete summary", async () => {
   const root = await createProject();
   const result = await executeCli(
@@ -939,4 +971,34 @@ test("a fresh Run ignores existing audit logs", async () => {
     await readFile(oldLog, "utf8"),
     "not valid JSON and not recovery state\n",
   );
+});
+
+test("a contradictory Parent read override fails without a second pause", async () => {
+  const root = await createProject();
+  let parentCalls = 0;
+  let pauseCalls = 0;
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async getParent() {
+          parentCalls += 1;
+          throw new Error("unavailable");
+        },
+      },
+      operator: {
+        async pause() {
+          pauseCalls += 1;
+          return pauseCalls === 1
+            ? '{"state":"closed","stateReason":null}'
+            : "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(result.summary.reasons[0] ?? "", /closed Parent Ticket/u);
+  assert.equal(parentCalls, 5);
+  assert.equal(pauseCalls, 1);
 });

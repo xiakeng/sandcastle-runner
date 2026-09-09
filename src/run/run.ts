@@ -48,6 +48,7 @@ function overrideState(
   }
   if (ticket.state === "open") return { state: "open", stateReason: null };
   if (
+    ticket.stateReason !== null &&
     ticket.stateReason !== "completed" &&
     ticket.stateReason !== "not_planned"
   ) {
@@ -113,14 +114,14 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     (await externalRead({
       action: () => input.codeHost.resolveTargetBranch(input.repository),
       parseOverride: (value) => {
-        const parsed = JSON.parse(value) as { defaultBranch?: unknown };
+        const parsed = JSON.parse(value) as { targetBranch?: unknown };
         if (
-          typeof parsed.defaultBranch !== "string" ||
-          parsed.defaultBranch.length === 0
+          typeof parsed.targetBranch !== "string" ||
+          parsed.targetBranch.length === 0
         ) {
-          throw new Error("override has no defaultBranch");
+          throw new Error("override has no Target Branch");
         }
-        return parsed.defaultBranch;
+        return parsed.targetBranch;
       },
       audit: input.audit,
       event: event("startup", "resolve_target_branch", input.repository),
