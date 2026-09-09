@@ -2806,54 +2806,58 @@ test("failed required checks are repaired on the existing branch and Pull Reques
   );
 });
 
-test("an externally merged Pull Request skips CI repair", async () => {
-  const root = await createProject();
-  const delivery = createCommittedDelivery();
-  let agentCalls = 0;
-  let pushes = 0;
+test("an externally merged Pull Request skips pending repair work", async () => {
+  for (const mergeDuringRepair of [false, true]) {
+    const root = await createProject();
+    const delivery = createCommittedDelivery();
+    let agentCalls = 0;
+    let pushes = 0;
+    let merged = !mergeDuringRepair;
 
-  const result = await executeCli(
-    ["run", "--project", "demo", "--parent", "8"],
-    createCliDependencies(root, {
-      ...delivery,
-      gitWorkspace: {
-        ...delivery.gitWorkspace,
-        async push() {
-          pushes += 1;
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        ...delivery,
+        gitWorkspace: {
+          ...delivery.gitWorkspace,
+          async push() {
+            pushes += 1;
+          },
         },
-      },
-      agentExecutor: {
-        async execute(input) {
-          agentCalls += 1;
-          return delivery.agentExecutor.execute!(input);
+        agentExecutor: {
+          async execute(input) {
+            agentCalls += 1;
+            if (agentCalls === 2) merged = true;
+            return delivery.agentExecutor.execute!(input);
+          },
         },
-      },
-      codeHost: {
-        async getRequiredChecks() {
-          return [
-            {
-              name: "checks",
-              state: "FAILURE",
-              link: "https://github.com/owner/repo/actions/runs/1",
-              bucket: "fail",
-            },
-          ];
+        codeHost: {
+          async getRequiredChecks() {
+            return [
+              {
+                name: "checks",
+                state: "FAILURE",
+                link: "https://github.com/owner/repo/actions/runs/1",
+                bucket: "fail",
+              },
+            ];
+          },
+          async getPullRequest() {
+            return {
+              headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              createdAt: "2026-09-09T00:00:00Z",
+              merged,
+              mergeFailure: null,
+            };
+          },
         },
-        async getPullRequest() {
-          return {
-            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            createdAt: "2026-09-09T00:00:00Z",
-            merged: true,
-            mergeFailure: null,
-          };
-        },
-      },
-    }),
-  );
+      }),
+    );
 
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.equal(agentCalls, 1);
-  assert.equal(pushes, 1);
+    assert.equal(result.summary.outcome, "succeeded");
+    assert.equal(agentCalls, mergeDuringRepair ? 2 : 1);
+    assert.equal(pushes, 1);
+  }
 });
 
 test("a trusted repair Agent override needs no replacement PR metadata", async () => {

@@ -500,6 +500,13 @@ async function repairRequiredChecks(
       if (repair.outcome === "boundary") return repair.boundary;
       if (repair.outcome === "consumed") continue;
 
+      const currentPullRequestState = await observePullRequestForIntegration(
+        input,
+        pullRequest.number,
+        "ci_repair",
+      );
+      if (currentPullRequestState.merged)
+        return { readiness: "ready", failedChecks: [] };
       const boundary = await revalidateReservedDeliveryTicket(
         input,
         handoff.ticket,
