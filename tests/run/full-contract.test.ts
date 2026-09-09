@@ -271,11 +271,6 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
             trustedOverrideTicket = 4;
             throw new Error("Agent output unavailable");
           }
-          if (recovery && purpose === "implement" && input.ticket === 2) {
-            operations.push("agent:malformed:2");
-            operations.push("agent:corrected-in-session:2");
-          }
-
           const digit =
             purpose === "ci"
               ? input.ticket === 101
@@ -437,123 +432,158 @@ function milestones(operations: string[]): string[] {
   );
 }
 
-test("five Delivery Tickets complete through both maintenance barriers on the first try", async () => {
-  const root = await createProject(false);
-  const scenario = createFiveTicketScenario(root, false);
+function batchBarriers(operations: string[]): string[] {
+  return operations.filter(
+    (operation) =>
+      operation.startsWith("maintenance:create:") ||
+      operation === "reservation:label:4:1" ||
+      operation === "ticket:close:4" ||
+      operation === "reservation:label:5:1" ||
+      operation === "ticket:close:5",
+  );
+}
 
-  const result = await executeCli(
-    ["run", "--project", "demo", "--parent", "8"],
-    scenario.dependencies,
-  );
+test(
+  "five Delivery Tickets complete through both maintenance barriers on the first try",
+  { timeout: 5_000 },
+  async () => {
+    const root = await createProject(false);
+    const scenario = createFiveTicketScenario(root, false);
 
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.deepEqual(result.summary.batch, [1, 2, 3, 4, 5]);
-  assert.deepEqual(result.summary.completedTickets, [1, 2, 3, 4, 5]);
-  assert.equal(scenario.maxActiveAgents, 3);
-  assert.deepEqual(scenario.maintenanceTickets, [101, 102]);
-  assert.deepEqual(milestones(scenario.operations), [
-    "merge:1:1",
-    "merge:2:1",
-    "merge:3:1",
-    "maintenance:create:101",
-    "merge:101:1",
-    "merge:4:1",
-    "merge:5:1",
-    "maintenance:create:102",
-    "merge:102:1",
-    "parent:close",
-  ]);
-  assert.equal(
-    [...scenario.agentCalls.values()].every((attempts) => attempts === 1),
-    true,
-  );
-  assert.equal(
-    [...scenario.labelCalls.values()].every((attempts) => attempts === 1),
-    true,
-  );
-  assert.equal(
-    [...scenario.checkCalls.values()].every((attempts) => attempts === 1),
-    true,
-  );
-  assert.equal(
-    [...scenario.mergeCalls.values()].every((attempts) => attempts === 1),
-    true,
-  );
-  assert.equal(
-    scenario.operations.some((value) => value.startsWith("operator:pause:")),
-    false,
-  );
-  assert.equal(scenario.parent.stateReason, "completed");
-  assert.equal(
-    scenario.maintenanceTickets.every(
-      (ticket) => scenario.tickets.get(ticket)?.stateReason === "completed",
-    ),
-    true,
-  );
-  assert.ok(result.logPath);
-  assert.ok(result.logPath.startsWith(root));
-  assert.match(
-    await readFile(result.logPath, "utf8"),
-    /"phase":"maintenance"/u,
-  );
-});
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      scenario.dependencies,
+    );
 
-test("the five-ticket topology succeeds through the composed recovery path", async () => {
-  const root = await createProject(true);
-  const scenario = createFiveTicketScenario(root, true);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.summary.outcome, "succeeded");
+    assert.deepEqual(result.summary.batch, [1, 2, 3, 4, 5]);
+    assert.deepEqual(result.summary.completedTickets, [1, 2, 3, 4, 5]);
+    assert.equal(scenario.maxActiveAgents, 3);
+    assert.deepEqual(scenario.maintenanceTickets, [101, 102]);
+    assert.deepEqual(milestones(scenario.operations), [
+      "merge:1:1",
+      "merge:2:1",
+      "merge:3:1",
+      "maintenance:create:101",
+      "merge:101:1",
+      "merge:4:1",
+      "merge:5:1",
+      "maintenance:create:102",
+      "merge:102:1",
+      "parent:close",
+    ]);
+    assert.deepEqual(batchBarriers(scenario.operations), [
+      "maintenance:create:101",
+      "reservation:label:4:1",
+      "ticket:close:4",
+      "reservation:label:5:1",
+      "ticket:close:5",
+      "maintenance:create:102",
+    ]);
+    assert.equal(
+      [...scenario.agentCalls.values()].every((attempts) => attempts === 1),
+      true,
+    );
+    assert.equal(
+      [...scenario.labelCalls.values()].every((attempts) => attempts === 1),
+      true,
+    );
+    assert.equal(
+      [...scenario.checkCalls.values()].every((attempts) => attempts === 1),
+      true,
+    );
+    assert.equal(
+      [...scenario.mergeCalls.values()].every((attempts) => attempts === 1),
+      true,
+    );
+    assert.equal(
+      scenario.operations.some((value) => value.startsWith("operator:pause:")),
+      false,
+    );
+    assert.equal(scenario.parent.stateReason, "completed");
+    assert.equal(
+      scenario.maintenanceTickets.every(
+        (ticket) => scenario.tickets.get(ticket)?.stateReason === "completed",
+      ),
+      true,
+    );
+    assert.ok(result.logPath);
+    assert.ok(result.logPath.startsWith(root));
+    assert.match(
+      await readFile(result.logPath, "utf8"),
+      /"phase":"maintenance"/u,
+    );
+  },
+);
 
-  const result = await executeCli(
-    ["run", "--project", "demo", "--parent", "8"],
-    scenario.dependencies,
-  );
+test(
+  "the five-ticket topology succeeds through the composed recovery path",
+  { timeout: 5_000 },
+  async () => {
+    const root = await createProject(true);
+    const scenario = createFiveTicketScenario(root, true);
 
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.deepEqual(result.summary.batch, [1, 2, 3, 4, 5]);
-  assert.deepEqual(result.summary.completedTickets, [1, 2, 3, 4, 5]);
-  assert.equal(scenario.resolveTargetBranchCalls, 5);
-  assert.equal(scenario.labelCalls.get(1), 2);
-  assert.equal(scenario.agentCalls.get("implement:1"), 2);
-  assert.equal(scenario.agentCalls.get("implement:3"), 2);
-  assert.equal(scenario.agentCalls.get("implement:4"), 1);
-  assert.ok(scenario.operations.includes("agent:corrected-in-session:2"));
-  assert.equal(scenario.agentCalls.get("ci:1"), 1);
-  assert.equal(scenario.agentCalls.get("conflict:3"), 1);
-  assert.equal(scenario.agentCalls.get("ci:101"), 1);
-  assert.equal(scenario.agentCalls.get("conflict:101"), 1);
-  assert.equal(
-    scenario.operations.filter((operation) => operation.startsWith("checks:2:"))
-      .length,
-    5,
-  );
-  assert.equal(
-    result.summary.handoffs?.find(({ ticket }) => ticket === 4)?.verification,
-    "operator_override",
-  );
-  assert.deepEqual(milestones(scenario.operations), [
-    "merge:1:1",
-    "merge:2:1",
-    "merge:3:1",
-    "merge:3:2",
-    "maintenance:create:101",
-    "merge:101:1",
-    "merge:101:2",
-    "merge:4:1",
-    "merge:5:1",
-    "maintenance:create:102",
-    "merge:102:1",
-    "parent:close",
-  ]);
-  assert.equal(scenario.parent.stateReason, "completed");
-  assert.equal(
-    scenario.maintenanceTickets.every(
-      (ticket) => scenario.tickets.get(ticket)?.stateReason === "completed",
-    ),
-    true,
-  );
-  assert.ok(result.logPath);
-  const audit = await readFile(result.logPath, "utf8");
-  assert.match(audit, /"result":"operator_override"/u);
-  assert.equal(audit.includes("Completes ticket 4."), false);
-});
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      scenario.dependencies,
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.summary.outcome, "succeeded");
+    assert.deepEqual(result.summary.batch, [1, 2, 3, 4, 5]);
+    assert.deepEqual(result.summary.completedTickets, [1, 2, 3, 4, 5]);
+    assert.equal(scenario.resolveTargetBranchCalls, 5);
+    assert.equal(scenario.labelCalls.get(1), 2);
+    assert.equal(scenario.agentCalls.get("implement:1"), 2);
+    assert.equal(scenario.agentCalls.get("implement:3"), 2);
+    assert.equal(scenario.agentCalls.get("implement:4"), 1);
+    assert.equal(scenario.agentCalls.get("ci:1"), 1);
+    assert.equal(scenario.agentCalls.get("conflict:3"), 1);
+    assert.equal(scenario.agentCalls.get("ci:101"), 1);
+    assert.equal(scenario.agentCalls.get("conflict:101"), 1);
+    assert.equal(
+      scenario.operations.filter((operation) =>
+        operation.startsWith("checks:2:"),
+      ).length,
+      5,
+    );
+    assert.equal(
+      result.summary.handoffs?.find(({ ticket }) => ticket === 4)?.verification,
+      "operator_override",
+    );
+    assert.deepEqual(milestones(scenario.operations), [
+      "merge:1:1",
+      "merge:2:1",
+      "merge:3:1",
+      "merge:3:2",
+      "maintenance:create:101",
+      "merge:101:1",
+      "merge:101:2",
+      "merge:4:1",
+      "merge:5:1",
+      "maintenance:create:102",
+      "merge:102:1",
+      "parent:close",
+    ]);
+    assert.deepEqual(batchBarriers(scenario.operations), [
+      "maintenance:create:101",
+      "reservation:label:4:1",
+      "ticket:close:4",
+      "reservation:label:5:1",
+      "ticket:close:5",
+      "maintenance:create:102",
+    ]);
+    assert.equal(scenario.parent.stateReason, "completed");
+    assert.equal(
+      scenario.maintenanceTickets.every(
+        (ticket) => scenario.tickets.get(ticket)?.stateReason === "completed",
+      ),
+      true,
+    );
+    assert.ok(result.logPath);
+    const audit = await readFile(result.logPath, "utf8");
+    assert.match(audit, /"result":"operator_override"/u);
+    assert.equal(audit.includes("Completes ticket 4."), false);
+  },
+);
