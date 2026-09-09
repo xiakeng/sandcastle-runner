@@ -7,6 +7,7 @@ import type {
   CodeHost,
   GitWorkspace,
   OperatorIO,
+  TicketClosurePolicy,
   Tracker,
 } from "./contracts.ts";
 import { discoverAndReserve } from "./discovery.ts";
@@ -52,7 +53,7 @@ interface RunInput {
   requiredChecksTimeoutMs: number;
   mergeQueueTimeoutMs: number;
   adminMerge: boolean;
-  ticketClosure: "runner" | "code_host";
+  ticketClosure: TicketClosurePolicy;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
 }

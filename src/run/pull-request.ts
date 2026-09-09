@@ -6,16 +6,21 @@ import type {
   PullRequestIdentity,
   PullRequestState,
   RequiredCheck,
+  Ticket,
+  TicketClosurePolicy,
 } from "./contracts.ts";
 import { parseRequiredChecks } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
   type DiscoveryInput,
+  type MergedDeliveryBoundaryResult,
+  releaseTerminalReservation,
   revalidateMergedDeliveryTicket,
   revalidateReservedDeliveryTicket,
 } from "./discovery.ts";
 import {
   externalRead,
+  OperatorCancelled,
   pauseForOperator,
   recordOperatorOverride,
   workflowWrite,
@@ -39,7 +44,7 @@ interface PublicationInput extends ReadinessInput {
   gitWorkspace: GitWorkspace;
   adminMerge: boolean;
   mergeQueueTimeoutMs: number;
-  ticketClosure: "runner" | "code_host";
+  ticketClosure: TicketClosurePolicy;
 }
 
 export interface PublicationResult {
@@ -106,106 +111,139 @@ async function waitForMerge(
   input: PublicationInput,
   handoff: VerifiedHandoff,
   pullRequest: PullRequestIdentity,
-): Promise<
-  "merged" | "retry" | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
-> {
-  const deadline = input.clock.now().getTime() + input.mergeQueueTimeoutMs;
+): Promise<"merged" | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>> {
   for (;;) {
-    const state = await readPullRequest(input, pullRequest.number);
-    if (state.merged) return "merged";
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
-    if (boundary.outcome !== "ready") return boundary;
-    const remaining = deadline - input.clock.now().getTime();
-    if (state.mergeFailure === null && remaining > 0) {
-      await input.clock.sleep(Math.min(10_000, remaining));
-      continue;
-    }
+    const deadline = input.clock.now().getTime() + input.mergeQueueTimeoutMs;
+    for (;;) {
+      const state = await readPullRequest(input, pullRequest.number);
+      if (state.merged) return "merged";
+      const boundary = await revalidateReservedDeliveryTicket(
+        input,
+        handoff.ticket,
+      );
+      if (boundary.outcome !== "ready") return boundary;
+      const remaining = deadline - input.clock.now().getTime();
+      if (state.mergeFailure === null && remaining > 0) {
+        await input.clock.sleep(Math.min(10_000, remaining));
+        continue;
+      }
 
-    const event = input.event(
-      "merge_wait",
-      state.mergeFailure === null ? "merge_timeout" : "merge_failure",
-      `pull_request:${pullRequest.number}`,
-    )(1);
-    const response = await pauseForOperator(
-      input.audit,
-      event,
-      input.operator,
-      state.mergeFailure ??
-        "Merge confirmation timed out. Enter to retry, q to cancel, or acknowledge a trusted merge.",
-    );
-    if (response === "") return "retry";
-    const afterOverride = await revalidateMergedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
-    if (
-      afterOverride.outcome !== "ready" &&
-      !(
-        afterOverride.outcome === "terminal" &&
-        afterOverride.stateReason === "completed"
-      )
-    ) {
-      return afterOverride.outcome === "terminal"
-        ? {
-            outcome: "stopped",
-            reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
-          }
-        : afterOverride;
+      const event = input.event(
+        "merge_wait",
+        state.mergeFailure === null ? "merge_timeout" : "merge_failure",
+        `pull_request:${pullRequest.number}`,
+      )(1);
+      const response = await pauseForOperator(
+        input.audit,
+        event,
+        input.operator,
+        state.mergeFailure ??
+          "Merge confirmation timed out. Enter to retry, q to cancel, or acknowledge a trusted merge.",
+      );
+      if (response === "") break;
+      const afterOverride = await revalidateMergedDeliveryTicket(
+        input,
+        handoff.ticket,
+      );
+      if (
+        afterOverride.outcome !== "ready" &&
+        !(
+          afterOverride.outcome === "terminal" &&
+          afterOverride.ticket.stateReason === "completed"
+        )
+      ) {
+        return afterOverride.outcome === "terminal"
+          ? {
+              outcome: "stopped",
+              reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
+            }
+          : afterOverride;
+      }
+      await recordOperatorOverride(input.audit, event, input.operator);
+      return "merged";
     }
-    await recordOperatorOverride(input.audit, event, input.operator);
-    return "merged";
+  }
+}
+
+type CompletionResult =
+  | { outcome: "completed"; ticket: Ticket }
+  | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+type ChangedAfterMerge = Exclude<
+  MergedDeliveryBoundaryResult,
+  { outcome: "ready" }
+>;
+
+async function completedOrStopped(
+  input: PublicationInput,
+  handoff: VerifiedHandoff,
+  boundary: ChangedAfterMerge,
+): Promise<CompletionResult> {
+  if (boundary.outcome !== "terminal") return boundary;
+  if (boundary.ticket.stateReason === "completed") {
+    return { outcome: "completed", ticket: boundary.ticket };
+  }
+  await releaseTerminalReservation(input, boundary.ticket);
+  return {
+    outcome: "stopped",
+    reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
+  };
+}
+
+class DeliveryBoundaryChanged extends Error {
+  readonly boundary: ChangedAfterMerge;
+
+  constructor(boundary: ChangedAfterMerge) {
+    super("Delivery Ticket changed before operation retry");
+    this.boundary = boundary;
   }
 }
 
 async function confirmCompletion(
   input: PublicationInput,
   handoff: VerifiedHandoff,
-): Promise<
-  "completed" | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
-> {
+): Promise<CompletionResult> {
   for (;;) {
     if (input.ticketClosure === "code_host") await input.clock.sleep(10_000);
     let boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
-    if (boundary.outcome === "terminal") {
-      return boundary.stateReason === "completed"
-        ? "completed"
-        : {
-            outcome: "stopped",
-            reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
-          };
+    if (boundary.outcome !== "ready") {
+      return completedOrStopped(input, handoff, boundary);
     }
-    if (boundary.outcome !== "ready") return boundary;
 
     if (input.ticketClosure === "runner") {
-      await workflowWrite({
-        action: () =>
-          input.tracker.closeTicket(input.repository, handoff.ticket),
-        audit: input.audit,
-        event: () =>
-          input.event(
-            "ticket_closure",
-            "close_ticket",
-            `ticket:${handoff.ticket}`,
-          )(1),
-        operator: input.operator,
-      });
+      try {
+        await workflowWrite({
+          action: () =>
+            input.tracker.closeTicket(input.repository, handoff.ticket),
+          beforeRetry: async () => {
+            const changed = await revalidateMergedDeliveryTicket(
+              input,
+              handoff.ticket,
+            );
+            if (changed.outcome !== "ready") {
+              throw new DeliveryBoundaryChanged(changed);
+            }
+          },
+          audit: input.audit,
+          event: () =>
+            input.event(
+              "ticket_closure",
+              "close_ticket",
+              `ticket:${handoff.ticket}`,
+            )(1),
+          operator: input.operator,
+        });
+      } catch (error) {
+        if (!(error instanceof DeliveryBoundaryChanged)) throw error;
+        return completedOrStopped(input, handoff, error.boundary);
+      }
     } else {
       await input.clock.sleep(30_000);
     }
 
     boundary = await revalidateMergedDeliveryTicket(input, handoff.ticket);
-    if (boundary.outcome === "terminal") {
-      return boundary.stateReason === "completed"
-        ? "completed"
-        : {
-            outcome: "stopped",
-            reason: `Delivery Ticket ${handoff.ticket} was cancelled after merge`,
-          };
+    if (boundary.outcome !== "ready") {
+      return completedOrStopped(input, handoff, boundary);
     }
-    if (boundary.outcome !== "ready") return boundary;
 
     const event = input.event(
       "ticket_closure",
@@ -220,7 +258,14 @@ async function confirmCompletion(
     );
     if (response === "") continue;
     await recordOperatorOverride(input.audit, event, input.operator);
-    return "completed";
+    return {
+      outcome: "completed",
+      ticket: {
+        number: handoff.ticket,
+        state: "closed",
+        stateReason: "completed",
+      },
+    };
   }
 }
 
@@ -229,19 +274,20 @@ async function integratePullRequest(
   handoff: VerifiedHandoff,
   pullRequest: PullRequestIdentity,
 ): Promise<
-  | "completed"
+  | { outcome: "completed"; ticket: Ticket }
   | { outcome: "conflict"; reason: string }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
-  for (;;) {
-    const boundary = await revalidateReservedDeliveryTicket(
-      input,
-      handoff.ticket,
-    );
-    if (boundary.outcome !== "ready") return boundary;
-    const observed = await readPullRequest(input, pullRequest.number);
-    if (!observed.merged) {
-      const request = await workflowWrite<MergeRequestResult>({
+  const boundary = await revalidateReservedDeliveryTicket(
+    input,
+    handoff.ticket,
+  );
+  if (boundary.outcome !== "ready") return boundary;
+  const observed = await readPullRequest(input, pullRequest.number);
+  if (!observed.merged) {
+    let request: MergeRequestResult;
+    try {
+      request = await workflowWrite<MergeRequestResult>({
         action: async () => {
           const result = await input.codeHost.requestSquashMerge({
             repository: input.repository,
@@ -253,6 +299,15 @@ async function integratePullRequest(
           return result;
         },
         parseOverride: () => ({ outcome: "accepted" }),
+        beforeRetry: async () => {
+          const changed = await revalidateReservedDeliveryTicket(
+            input,
+            handoff.ticket,
+          );
+          if (changed.outcome !== "ready") {
+            throw new DeliveryBoundaryChanged(changed);
+          }
+        },
         audit: input.audit,
         event: () =>
           input.event(
@@ -262,18 +317,25 @@ async function integratePullRequest(
           )(1),
         operator: input.operator,
       });
-      if (request.outcome === "conflict") {
-        return {
-          outcome: "conflict",
-          reason: `Pull Request ${pullRequest.number} has merge conflicts: ${request.error}`,
-        };
-      }
-      const confirmation = await waitForMerge(input, handoff, pullRequest);
-      if (confirmation === "retry") continue;
-      if (confirmation !== "merged") return confirmation;
+    } catch (error) {
+      if (!(error instanceof DeliveryBoundaryChanged)) throw error;
+      return error.boundary.outcome === "terminal"
+        ? {
+            outcome: "stopped",
+            reason: `Delivery Ticket ${handoff.ticket} became terminal`,
+          }
+        : error.boundary;
     }
-    return confirmCompletion(input, handoff);
+    if (request.outcome === "conflict") {
+      return {
+        outcome: "conflict",
+        reason: `Pull Request ${pullRequest.number} has merge conflicts: ${request.error}`,
+      };
+    }
+    const confirmation = await waitForMerge(input, handoff, pullRequest);
+    if (confirmation !== "merged") return confirmation;
   }
+  return confirmCompletion(input, handoff);
 }
 
 function pullRequestOverride(value: string): PullRequestIdentity {
@@ -441,8 +503,19 @@ export async function publishVerifiedHandoffs(
         handoff,
         pullRequest,
       );
-      if (integration === "completed") {
+      if (integration.outcome === "completed") {
         completedTickets.push(handoff.ticket);
+        try {
+          await releaseTerminalReservation(input, integration.ticket);
+        } catch (error) {
+          if (!(error instanceof OperatorCancelled)) throw error;
+          return {
+            outcome: "cancelled",
+            reasons: ["operator cancelled"],
+            pullRequests,
+            completedTickets,
+          };
+        }
       } else if (integration.outcome === "conflict") {
         return {
           outcome: "incomplete",

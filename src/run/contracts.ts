@@ -1,5 +1,6 @@
 export type TicketState = "open" | "closed";
 export type ClosureReason = "completed" | "not_planned" | null;
+export type TicketClosurePolicy = "runner" | "code_host";
 
 export interface Ticket {
   number: number;

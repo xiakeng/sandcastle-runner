@@ -160,6 +160,23 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
   ]);
 });
 
+test("GitHubCodeHost confirms a merged Pull Request from either merged field", async () => {
+  for (const response of [
+    '{"headRefOid":"abc123","state":"MERGED","mergedAt":"2026-09-09T00:00:00Z"}',
+    '{"headRefOid":"abc123","state":"CLOSED","mergedAt":"2026-09-09T00:00:00Z"}',
+  ]) {
+    const codeHost = new GitHubCodeHost(
+      "configured-token",
+      async () => response,
+    );
+    assert.deepEqual(await codeHost.getPullRequest("owner/repo", 41), {
+      headSha: "abc123",
+      merged: true,
+      mergeFailure: null,
+    });
+  }
+});
+
 test("GitHubCodeHost distinguishes explicit conflicts and preserves other merge errors", async () => {
   for (const scenario of [
     {

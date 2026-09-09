@@ -2066,7 +2066,7 @@ test("a queued merge receives no completion credit until timeout recovery confir
   );
 
   assert.deepEqual(result.summary.completedTickets, [9]);
-  assert.equal(mergeRequests, 2);
+  assert.equal(mergeRequests, 1);
   assert.equal(closeCalls, 1);
 });
 
@@ -2120,6 +2120,50 @@ test("merge conflict evidence is retained while other merge rejections enter Ope
     const evidence = `${result.summary.reasons.join(" ")} ${await readFile(result.logPath, "utf8")}`;
     assert.match(evidence, new RegExp(scenario.error));
   }
+});
+
+test("Parent cancellation during a merge rejection pause prevents the authorized retry", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let parentCancelled = false;
+  let mergeRequests = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return parentCancelled
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+      },
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            merged: false,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          return { outcome: "rejected", error: "merge rejected" };
+        },
+      },
+      operator: {
+        async pause() {
+          parentCancelled = true;
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(mergeRequests, 1);
 });
 
 test("a post-merge cancellation releases its Reservation without completion credit", async () => {
@@ -2208,6 +2252,67 @@ test("runner closure write failure retries only after operator authorization and
   assert.deepEqual(result.summary.completedTickets, [9]);
   assert.equal(closeCalls, 2);
   assert.equal(mergeCalls, 1);
+});
+
+test("confirmed completion credit survives a later Reservation release cancellation", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async removeAssignee() {
+          throw new Error("release failed");
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+});
+
+test("Parent cancellation during a closure write pause prevents the authorized retry", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let closeCalls = 0;
+  let parentCancelled = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return parentCancelled
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+        async closeTicket() {
+          closeCalls += 1;
+          throw new Error("closure write failed");
+        },
+      },
+      operator: {
+        async pause() {
+          parentCancelled = true;
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(closeCalls, 1);
 });
 
 test("an open code_host ticket after both closure reads enters Operator Pause without credit", async () => {
