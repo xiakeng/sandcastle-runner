@@ -134,6 +134,8 @@ export async function executeCli(
         "implement.md",
       ),
       implementationAgent: loaded.config.agents.implement,
+      ciRepairPrompt: path.join(loaded.directory, "prompts", "ci-repair.md"),
+      ciRepairAgent: loaded.config.agents.ciRepair,
       agentTimeoutMs: loaded.config.timeouts.agentMinutes * 60_000,
       requiredChecksTimeoutMs:
         loaded.config.timeouts.requiredChecksMinutes * 60_000,

@@ -3,8 +3,9 @@
 Sandcastle Runner is a local CLI for delivering a configured GitHub Parent Ticket. The current
 implementation supports supervised startup, complete Delivery Ticket and blocker discovery,
 Reservations, Sandcastle-backed implementation through independently Verified Handoffs, and
-publication through required CI readiness observation. It squash-merges CI-ready Pull Requests and
-counts delivery only after both the merge and completed ticket closure are confirmed.
+publication through required CI readiness observation. It repairs failed required checks on their
+existing branches and Pull Requests, then counts delivery only after both the merge and completed
+ticket closure are confirmed.
 
 ## Project configuration
 
@@ -26,6 +27,9 @@ implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IM
 `{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{BASE_SHA}}`, and `{{TARGET_BRANCH}}`. It must restrict the
 Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag with
 `outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and `pr_body`.
+The CI-repair prompt receives the same arguments plus `{{PULL_REQUEST_NUMBER}}`,
+`{{PULL_REQUEST_URL}}`, and `{{FAILED_CHECKS}}`, a JSON array of failing check names, states, and
+links. Repair PR metadata is ignored because the Runner retains the original Pull Request.
 
 ```json
 {
@@ -92,8 +96,15 @@ are pushed with the configured code-host credential and published concurrently a
 Requests using their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls
 each Pull Request's required checks through GitHub CLI semantics. Empty, passing, or skipped
 required-check sets are CI-ready; pending checks are polled every 10 seconds; failed or cancelled
-checks remain associated with the Pull Request as CI-repair evidence. Read failures use the common
-retry policy, and the configured required-check timeout enters Operator Pause.
+checks start a fresh CI-repair Agent Attempt on that Worktree and branch. A Verified repair is pushed
+by the Runner and repeats the full 30-second discovery and readiness path on the same Pull Request.
+Read failures use the common retry policy, and the configured required-check timeout enters Operator
+Pause.
+
+Each CI-repair operation automatically consumes at most two valid `blocked`, `no_change`, or Verified
+repair results. Agent execution and handoff failures pause without consuming that budget; empty input
+retries with a fresh Agent Attempt. Exhaustion enters Operator Pause, where empty input starts a fresh
+two-attempt budget, nonempty input acknowledges trusted readiness, and `q` or EOF cancels the Run.
 
 No Pull Request in a Batch is merged until every selected Agent Attempt produced a Verified Handoff
 and every published Pull Request is CI-ready. The Runner then orders the Batch by Pull Request
