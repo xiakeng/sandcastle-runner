@@ -40,6 +40,16 @@ function createCliDependencies(
     async listChildrenPage() {
       return { children: [], nextPage: null };
     },
+    async getTicket(_repository, ticket) {
+      return { number: ticket, state: "open", stateReason: null };
+    },
+    async listBlockersPage() {
+      return { blockers: [], nextPage: null };
+    },
+    async addLabel() {},
+    async addAssignee() {},
+    async removeLabel() {},
+    async removeAssignee() {},
     async closeParent() {},
     ...overrides.tracker,
   };
@@ -216,7 +226,7 @@ test("an all-cancelled paginated scan closes the Parent as completed", async () 
     }),
   );
 
-  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(pages, [1, 2, 1, 2]);
   assert.equal(closeCalls, 1);
   assert.equal(result.exitCode, 0);
   assert.equal(result.summary.outcome, "succeeded");
@@ -487,6 +497,19 @@ test("a child read override without repository pauses again", async () => {
       tracker: {
         async listChildrenPage() {
           childCalls += 1;
+          if (childCalls > 5) {
+            return {
+              children: [
+                {
+                  number: 9,
+                  state: "closed",
+                  stateReason: "completed",
+                  repository: "owner/repo",
+                },
+              ],
+              nextPage: null,
+            };
+          }
           throw new Error("unavailable");
         },
       },
@@ -499,7 +522,7 @@ test("a child read override without repository pauses again", async () => {
   );
 
   assert.equal(result.summary.outcome, "succeeded");
-  assert.equal(childCalls, 5);
+  assert.equal(childCalls, 6);
   assert.equal(responses.length, 0);
   assert.ok(result.logPath);
   assert.match(await readFile(result.logPath, "utf8"), /invalid_override/u);
@@ -831,6 +854,7 @@ test("open children return an actionable incomplete summary", async () => {
                 state: "open",
                 stateReason: null,
                 repository: "owner/repo",
+                labels: ["sandcastle:reserved"],
               } as const,
             ],
             nextPage: null,
@@ -842,7 +866,657 @@ test("open children return an actionable incomplete summary", async () => {
 
   assert.equal(result.summary.outcome, "incomplete");
   assert.equal(result.exitCode, 1);
-  assert.deepEqual(result.summary.reasons, ["open Delivery Tickets: 9"]);
+  assert.deepEqual(result.summary.reasons, [
+    "existing Reservations: 9 (partial)",
+  ]);
+});
+
+test("a Run reserves the three lowest-numbered eligible Delivery Tickets", async () => {
+  const root = await createProject();
+  const writes: string[] = [];
+  const tickets = [12, 9, 11, 10].map((number) => ({
+    number,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  }));
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return { children: tickets, nextPage: null };
+        },
+        async getTicket(_repository, ticket) {
+          return tickets.find(({ number }) => number === ticket)!;
+        },
+        async addLabel(_repository, ticket, label) {
+          writes.push(`label:${ticket}:${label}`);
+        },
+        async addAssignee(_repository, ticket, assignee) {
+          writes.push(`assignee:${ticket}:${assignee}`);
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [9, 10, 11]);
+  assert.deepEqual(writes, [
+    "label:9:sandcastle:reserved",
+    "assignee:9:runner",
+    "label:10:sandcastle:reserved",
+    "assignee:10:runner",
+    "label:11:sandcastle:reserved",
+    "assignee:11:runner",
+  ]);
+  assert.equal(result.summary.outcome, "incomplete");
+});
+
+test("eligibility reports ownership and Reservations after complete blocker pagination", async () => {
+  const root = await createProject();
+  const writes: number[] = [];
+  const children = [
+    { number: 9, assignees: ["developer"], labels: [] },
+    { number: 10, assignees: [], labels: ["sandcastle:reserved"] },
+    { number: 11, assignees: ["runner"], labels: [] },
+    {
+      number: 12,
+      assignees: ["runner"],
+      labels: ["sandcastle:reserved"],
+    },
+    { number: 13, assignees: [], labels: [] },
+    { number: 14, assignees: [], labels: [] },
+  ].map((ticket) => ({
+    ...ticket,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+  }));
+  const blockerPages: string[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return { children, nextPage: null };
+        },
+        async listBlockersPage(_repository, ticket, page) {
+          blockerPages.push(`${ticket}:${page}`);
+          if (ticket === 13) {
+            return page === 1
+              ? {
+                  blockers: [
+                    {
+                      number: 30,
+                      state: "closed",
+                      stateReason: "completed",
+                      repository: "outside/repo",
+                    },
+                  ],
+                  nextPage: 2,
+                }
+              : {
+                  blockers: [
+                    {
+                      number: 31,
+                      state: "open",
+                      stateReason: null,
+                      repository: "outside/repo",
+                    },
+                  ],
+                  nextPage: null,
+                };
+          }
+          if (ticket === 14) {
+            return page === 1
+              ? {
+                  blockers: [
+                    {
+                      number: 32,
+                      state: "closed",
+                      stateReason: "completed",
+                    },
+                  ],
+                  nextPage: 2,
+                }
+              : {
+                  blockers: [
+                    {
+                      number: 33,
+                      state: "closed",
+                      stateReason: "not_planned",
+                    },
+                  ],
+                  nextPage: null,
+                };
+          }
+          return { blockers: [], nextPage: null };
+        },
+        async addLabel(_repository, ticket) {
+          writes.push(ticket);
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [14]);
+  assert.deepEqual(writes, [14]);
+  assert.deepEqual(blockerPages, [
+    "9:1",
+    "10:1",
+    "11:1",
+    "12:1",
+    "13:1",
+    "13:2",
+    "14:1",
+    "14:2",
+    "14:1",
+    "14:2",
+    "14:1",
+    "14:2",
+    "14:1",
+    "14:2",
+  ]);
+  assert.deepEqual(result.summary.reasons, [
+    "reserved Delivery Tickets: 14",
+    "blocked Delivery Tickets: 13",
+    "externally owned Delivery Tickets: 9",
+    "existing Reservations: 10 (partial), 11 (partial), 12 (complete)",
+  ]);
+});
+
+test("Parent cancellation before Reservation stops without mutating children", async () => {
+  const root = await createProject();
+  let parentReads = 0;
+  let childWrites = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async getParent() {
+          parentReads += 1;
+          return parentReads === 1
+            ? { number: 8, state: "open", stateReason: null }
+            : {
+                number: 8,
+                state: "closed",
+                stateReason: "not_planned",
+              };
+        },
+        async listChildrenPage() {
+          return { children: [child], nextPage: null };
+        },
+        async getTicket() {
+          return child;
+        },
+        async addLabel() {
+          childWrites += 1;
+        },
+        async addAssignee() {
+          childWrites += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(parentReads, 2);
+  assert.equal(childWrites, 0);
+});
+
+test("a terminal Delivery Ticket releases a partial Reservation before the next marker", async () => {
+  const root = await createProject();
+  const writes: string[] = [];
+  let ticketReads = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return { children: [child], nextPage: null };
+        },
+        async getTicket() {
+          ticketReads += 1;
+          return ticketReads === 1
+            ? child
+            : {
+                ...child,
+                state: "closed",
+                stateReason: "completed",
+                labels: ["sandcastle:reserved"],
+              };
+        },
+        async addLabel() {
+          writes.push("add label");
+        },
+        async addAssignee() {
+          writes.push("add assignee");
+        },
+        async removeLabel() {
+          writes.push("remove label");
+        },
+        async removeAssignee() {
+          writes.push("remove assignee");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(writes, ["add label", "remove label"]);
+});
+
+test("a Delivery Ticket removed from Parent scope is not reserved", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let childWrites = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: childScans === 1 ? [child] : [],
+            nextPage: null,
+          };
+        },
+        async getTicket() {
+          return child;
+        },
+        async addLabel() {
+          childWrites += 1;
+        },
+        async addAssignee() {
+          childWrites += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(childWrites, 0);
+});
+
+test("a terminal Delivery Ticket releases a complete Reservation before the checkpoint", async () => {
+  const root = await createProject();
+  const writes: string[] = [];
+  let ticketReads = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return { children: [child], nextPage: null };
+        },
+        async getTicket() {
+          ticketReads += 1;
+          return ticketReads < 3
+            ? child
+            : {
+                ...child,
+                state: "closed",
+                stateReason: "not_planned",
+                assignees: ["runner"],
+                labels: ["sandcastle:reserved"],
+              };
+        },
+        async addLabel() {
+          writes.push("add label");
+        },
+        async addAssignee() {
+          writes.push("add assignee");
+        },
+        async removeAssignee() {
+          writes.push("remove assignee");
+        },
+        async removeLabel() {
+          writes.push("remove label");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(writes, [
+    "add label",
+    "add assignee",
+    "remove assignee",
+    "remove label",
+  ]);
+  assert.deepEqual(result.summary.batch, []);
+});
+
+test("the final complete scan reserves newly eligible work", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              childScans === 1
+                ? { ...child, labels: ["sandcastle:reserved"] }
+                : child,
+            ],
+            nextPage: null,
+          };
+        },
+        async getTicket() {
+          return child;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [9]);
+  assert.ok(childScans > 1);
+});
+
+test("new work in the final closeout scan prevents Parent closure", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let closeCalls = 0;
+  const child = {
+    number: 9,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              childScans === 1
+                ? {
+                    ...child,
+                    state: "closed" as const,
+                    stateReason: "completed" as const,
+                  }
+                : {
+                    ...child,
+                    state: "open" as const,
+                    stateReason: null,
+                  },
+            ],
+            nextPage: null,
+          };
+        },
+        async getTicket() {
+          return { ...child, state: "open", stateReason: null };
+        },
+        async closeParent() {
+          closeCalls += 1;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [9]);
+  assert.equal(closeCalls, 0);
+});
+
+test("an incomplete blocker read never produces Parent closeout", async () => {
+  const root = await createProject();
+  let blockerReads = 0;
+  let closeCalls = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return {
+            children: [
+              {
+                number: 9,
+                state: "closed",
+                stateReason: "completed",
+                repository: "owner/repo",
+              },
+            ],
+            nextPage: null,
+          };
+        },
+        async listBlockersPage() {
+          blockerReads += 1;
+          throw new Error("incomplete dependency page");
+        },
+        async closeParent() {
+          closeCalls += 1;
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(blockerReads, 5);
+  assert.equal(closeCalls, 0);
+});
+
+test("a failed second Reservation marker keeps the partial write", async () => {
+  const root = await createProject();
+  const writes: string[] = [];
+  let assigneeCalls = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          return { children: [child], nextPage: null };
+        },
+        async getTicket() {
+          return child;
+        },
+        async addLabel() {
+          writes.push("add label");
+        },
+        async addAssignee() {
+          assigneeCalls += 1;
+          throw new Error("assignee write failed");
+        },
+        async removeLabel() {
+          writes.push("remove label");
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(assigneeCalls, 1);
+  assert.deepEqual(writes, ["add label"]);
+});
+
+test("a cross-repository child with the selected number fails revalidation", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let childWrites = 0;
+  const child = {
+    number: 9,
+    state: "open" as const,
+    stateReason: null,
+    assignees: [],
+    labels: [],
+  };
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              {
+                ...child,
+                repository: childScans === 1 ? "owner/repo" : "another/repo",
+              },
+            ],
+            nextPage: null,
+          };
+        },
+        async getTicket() {
+          return { ...child, repository: "owner/repo" };
+        },
+        async addLabel() {
+          childWrites += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(result.summary.reasons[0] ?? "", /cross-repository/u);
+  assert.equal(childWrites, 0);
+});
+
+test("successive revalidation changes cannot hide newly eligible work", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  const ticket = (number: number, assignees: string[] = []) => ({
+    number,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees,
+    labels: [],
+  });
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          const children =
+            childScans === 1
+              ? [ticket(9)]
+              : childScans < 4
+                ? [ticket(9, ["developer"]), ticket(10)]
+                : [
+                    ticket(9, ["developer"]),
+                    ticket(10, ["developer"]),
+                    ticket(11),
+                  ];
+          return { children, nextPage: null };
+        },
+        async getTicket(_repository, number) {
+          return number === 11 ? ticket(11) : ticket(number, ["developer"]);
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.batch, [11]);
+});
+
+test("the final complete scan closes a now-terminal Parent scope", async () => {
+  const root = await createProject();
+  let childScans = 0;
+  let closeCalls = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        async listChildrenPage() {
+          childScans += 1;
+          return {
+            children: [
+              {
+                number: 9,
+                state: childScans === 1 ? "open" : "closed",
+                stateReason: childScans === 1 ? null : "completed",
+                repository: "owner/repo",
+                assignees: [],
+                labels: childScans === 1 ? ["sandcastle:reserved"] : [],
+              },
+            ],
+            nextPage: null,
+          };
+        },
+        async closeParent() {
+          closeCalls += 1;
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(closeCalls, 1);
 });
 
 test("cancelling a failed audit result append pauses exactly once", async () => {
