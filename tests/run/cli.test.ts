@@ -1907,7 +1907,7 @@ test("a CI-ready Pull Request is delivered only after its merge and completed cl
         async removeLabel(_repository, ticket) {
           operations.push(`unlabel:${ticket}`);
         },
-      } as Partial<Tracker>,
+      },
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1952,7 +1952,7 @@ test("a CI-ready Pull Request is delivered only after its merge and completed cl
           merged = true;
           return { outcome: "accepted" as const };
         },
-      } as Partial<CodeHost>,
+      },
     }),
   );
 
