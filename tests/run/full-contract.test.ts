@@ -317,13 +317,14 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
               const validate = standard.validate;
               if (typeof validate !== "function")
                 assert.fail("result schema must validate");
+              const validateSchema = validate as (value: unknown) => unknown;
               operations.push("agent:malformed:2");
               assert.ok(
-                object(await validate({ ...attemptResult, summary: "" }))
+                object(await validateSchema({ ...attemptResult, summary: "" }))
                   .issues,
               );
               operations.push("agent:corrected-in-session:2");
-              assert.deepEqual(await validate(attemptResult), {
+              assert.deepEqual(await validateSchema(attemptResult), {
                 value: attemptResult,
               });
               return {
