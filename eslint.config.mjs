@@ -24,4 +24,12 @@ export default defineConfig(
     files: ["**/*.{js,mjs,cjs}"],
     extends: [js.configs.recommended],
   },
+  {
+    files: ["tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-empty-function": "off",
+      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/require-await": "off",
+    },
+  },
 );
