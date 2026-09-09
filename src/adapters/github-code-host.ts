@@ -1,4 +1,9 @@
-import type { CodeHost } from "../run/contracts.ts";
+import type {
+  CodeHost,
+  PullRequestIdentity,
+  RequiredCheck,
+} from "../run/contracts.ts";
+import { parseRequiredChecks } from "../run/contracts.ts";
 import { GitHubClient, type GitHubCommand } from "./github-client.ts";
 
 export class GitHubCodeHost implements CodeHost {
@@ -25,4 +30,61 @@ export class GitHubCodeHost implements CodeHost {
     }
     return value.default_branch;
   }
+
+  async createPullRequest(input: {
+    repository: string;
+    targetBranch: string;
+    branch: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequestIdentity> {
+    return pullRequest(
+      await this.client.request([
+        "pr",
+        "create",
+        "--repo",
+        input.repository,
+        "--base",
+        input.targetBranch,
+        "--head",
+        input.branch,
+        "--title",
+        input.title,
+        "--body",
+        input.body,
+      ]),
+    );
+  }
+
+  async getRequiredChecks(
+    repository: string,
+    pullRequestNumber: number,
+  ): Promise<RequiredCheck[]> {
+    const value = JSON.parse(
+      await this.client.request(
+        [
+          "pr",
+          "checks",
+          String(pullRequestNumber),
+          "--repo",
+          repository,
+          "--required",
+          "--json",
+          "name,state,link,bucket",
+        ],
+        [1, 8],
+      ),
+    ) as unknown;
+    return parseRequiredChecks(
+      value,
+      "GitHub returned invalid required-check evidence",
+    );
+  }
+}
+
+function pullRequest(value: string): PullRequestIdentity {
+  const url = value.trim();
+  const match = /\/pull\/(\d+)\/?$/u.exec(url);
+  if (!match) throw new Error("GitHub returned invalid Pull Request identity");
+  return { number: Number(match[1]), url };
 }

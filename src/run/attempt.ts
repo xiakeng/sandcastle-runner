@@ -372,11 +372,6 @@ export async function implementReservedBatch(
           ...settled.filter(
             (result): result is string => typeof result === "string",
           ),
-          ...(handoffs.length > 0
-            ? [
-                `Verified Handoffs awaiting publication: ${handoffs.map(({ ticket }) => ticket).join(", ")}`,
-              ]
-            : []),
         ],
       };
     } catch (error) {
