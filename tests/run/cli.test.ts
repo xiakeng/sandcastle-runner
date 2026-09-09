@@ -2766,6 +2766,7 @@ test("failed required checks are repaired on the existing branch and Pull Reques
   );
   assert.equal(agentInputs[1]?.model, "gpt-5.5");
   assert.equal(agentInputs[1]?.effort, "medium");
+  assert.equal(agentInputs[1]?.pullRequestMetadata, "ignored");
   assert.equal(agentInputs[1]?.branch, branch);
   assert.equal(agentInputs[1]?.base, implementation.sha);
   assert.deepEqual(agentInputs[1]?.promptArgs, {
@@ -2792,6 +2793,132 @@ test("failed required checks are repaired on the existing branch and Pull Reques
   ]);
   assert.equal(agentInputs.length, 2);
   assert.equal(result.summary.pullRequests?.[0]?.readiness, "ready");
+  assert.ok(result.logPath);
+  const audit = (await readFile(result.logPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(
+    audit.some(
+      (event) =>
+        event.phase === "ci_repair" && event.operation === "pull_request_state",
+    ),
+  );
+});
+
+test("an externally merged Pull Request skips CI repair", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let agentCalls = 0;
+  let pushes = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async push() {
+          pushes += 1;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          agentCalls += 1;
+          return delivery.agentExecutor.execute!(input);
+        },
+      },
+      codeHost: {
+        async getRequiredChecks() {
+          return [
+            {
+              name: "checks",
+              state: "FAILURE",
+              link: "https://github.com/owner/repo/actions/runs/1",
+              bucket: "fail",
+            },
+          ];
+        },
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged: true,
+            mergeFailure: null,
+          };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(agentCalls, 1);
+  assert.equal(pushes, 1);
+});
+
+test("a trusted repair Agent override needs no replacement PR metadata", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let agentCalls = 0;
+  let checkReads = 0;
+  let pushes = 0;
+  let merged = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async push() {
+          pushes += 1;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          agentCalls += 1;
+          if (agentCalls === 2) throw new Error("Sandcastle failed");
+          return delivery.agentExecutor.execute!(input);
+        },
+      },
+      codeHost: {
+        async getRequiredChecks() {
+          checkReads += 1;
+          return checkReads === 1
+            ? [
+                {
+                  name: "checks",
+                  state: "FAILURE",
+                  link: "https://github.com/owner/repo/actions/runs/1",
+                  bucket: "fail" as const,
+                },
+              ]
+            : [];
+        },
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause() {
+          return "trusted repair";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(agentCalls, 2);
+  assert.equal(pushes, 2);
 });
 
 test("Parent cancellation during a failed repair push prevents retry", async () => {

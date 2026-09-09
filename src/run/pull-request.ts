@@ -109,13 +109,14 @@ function pullRequestStateOverride(value: string): PullRequestState {
 export async function observePullRequestForIntegration(
   input: ReadinessInput,
   pullRequest: number,
+  phase = "merge_wait",
 ): Promise<PullRequestState> {
   return externalRead({
     action: () => input.codeHost.getPullRequest(input.repository, pullRequest),
     parseOverride: pullRequestStateOverride,
     audit: input.audit,
     event: input.event(
-      "merge_wait",
+      phase,
       "pull_request_state",
       `pull_request:${pullRequest}`,
     ),
@@ -480,7 +481,10 @@ async function repairRequiredChecks(
       const pullRequestState = await observePullRequestForIntegration(
         input,
         pullRequest.number,
+        "ci_repair",
       );
+      if (pullRequestState.merged)
+        return { readiness: "ready", failedChecks: [] };
       const repair = await runCiRepairAttempt({
         ...input,
         handoff,

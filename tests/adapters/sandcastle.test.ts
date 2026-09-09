@@ -41,6 +41,7 @@ function input() {
       BRANCH: "sandcastle/run-id/ticket-9",
       BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
+    pullRequestMetadata: "required" as const,
     model: "gpt-5.6-sol",
     effort: "high" as const,
     gitConfigGlobal: "/tmp/attempt/config",
@@ -123,6 +124,35 @@ test("SandcastleAgentExecutor rejects multiple result tags", async () => {
   );
 
   await assert.rejects(executor.execute(input()), /exactly one result tag/u);
+});
+
+test("SandcastleAgentExecutor accepts repair results without Pull Request metadata", async () => {
+  const repair = {
+    outcome: "committed" as const,
+    summary: "repaired CI",
+    commits: committed.commits,
+    checks: committed.checks,
+    blocker: null,
+  };
+  const executor = new SandcastleAgentExecutor(async (received) => {
+    const definition = object(received.output);
+    const standard = object(object(definition.schema)["~standard"]);
+    const validate = standard.validate as (value: unknown) => unknown;
+    assert.deepEqual(await validate(repair), { value: repair });
+    assert.ok(object(await validate(committed)).issues);
+    return result(
+      `<agent_attempt_result>${JSON.stringify(repair)}</agent_attempt_result>`,
+      repair,
+    );
+  });
+
+  assert.deepEqual(
+    await executor.execute({
+      ...input(),
+      pullRequestMetadata: "ignored",
+    }),
+    repair,
+  );
 });
 
 test("SandcastleAgentExecutor aborts a continuously active run at the configured total timeout", async () => {

@@ -56,16 +56,18 @@ function parseCheck(value: unknown): CheckEvidence {
   };
 }
 
-function parseAttemptResult(value: unknown): AgentAttemptResult {
+function parseAttemptResult(
+  value: unknown,
+  pullRequestMetadata: "required" | "ignored",
+): AgentAttemptResult {
   const input = object(value, "Agent Attempt Result");
   const expected = [
     "blocker",
     "checks",
     "commits",
     "outcome",
-    "pr_body",
-    "pr_title",
     "summary",
+    ...(pullRequestMetadata === "required" ? ["pr_body", "pr_title"] : []),
   ];
   if (
     Object.keys(input).length !== expected.length ||
@@ -99,33 +101,39 @@ function parseAttemptResult(value: unknown): AgentAttemptResult {
     commits,
     checks: input.checks.map(parseCheck),
     blocker: blocker as string | null,
-    pr_title: nonempty(input.pr_title, "pr_title"),
-    pr_body: nonempty(input.pr_body, "pr_body"),
+    ...(pullRequestMetadata === "required"
+      ? {
+          pr_title: nonempty(input.pr_title, "pr_title"),
+          pr_body: nonempty(input.pr_body, "pr_body"),
+        }
+      : {}),
   };
 }
 
-const resultSchema = {
-  "~standard": {
-    version: 1 as const,
-    vendor: "sandcastle-runner",
-    validate(value: unknown) {
-      try {
-        return { value: parseAttemptResult(value) };
-      } catch (error) {
-        return {
-          issues: [
-            {
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "invalid Agent Attempt Result",
-            },
-          ],
-        };
-      }
+function resultSchema(pullRequestMetadata: "required" | "ignored") {
+  return {
+    "~standard": {
+      version: 1 as const,
+      vendor: "sandcastle-runner",
+      validate(value: unknown) {
+        try {
+          return { value: parseAttemptResult(value, pullRequestMetadata) };
+        } catch (error) {
+          return {
+            issues: [
+              {
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "invalid Agent Attempt Result",
+              },
+            ],
+          };
+        }
+      },
     },
-  },
-};
+  };
+}
 
 export class SandcastleAgentExecutor implements AgentExecutor {
   private readonly run: SandcastleRun;
@@ -161,7 +169,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         logging: { type: "file", path: input.logFile },
         output: Output.object({
           tag: "agent_attempt_result",
-          schema: resultSchema,
+          schema: resultSchema(input.pullRequestMetadata),
           maxRetries: 1,
         }),
         signal: controller.signal,

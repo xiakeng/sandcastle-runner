@@ -116,17 +116,20 @@ function trustedHandoff(
   worktree: string,
   branch: string,
   base: string,
+  existingPrMetadata?: Pick<VerifiedHandoff, "prTitle" | "prBody">,
 ): VerifiedHandoff {
-  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const parsed = existingPrMetadata
+    ? null
+    : (JSON.parse(value) as Record<string, unknown>);
   if (
-    parsed.outcome !== "committed" ||
-    typeof parsed.pr_title !== "string" ||
-    parsed.pr_title.trim() === "" ||
-    typeof parsed.pr_body !== "string" ||
-    parsed.pr_body.trim() === ""
-  ) {
+    parsed &&
+    (parsed.outcome !== "committed" ||
+      typeof parsed.pr_title !== "string" ||
+      parsed.pr_title.trim() === "" ||
+      typeof parsed.pr_body !== "string" ||
+      parsed.pr_body.trim() === "")
+  )
     throw new Error("override has no downstream PR metadata");
-  }
   return {
     ticket,
     worktree,
@@ -134,8 +137,8 @@ function trustedHandoff(
     base,
     commits: [],
     checks: [],
-    prTitle: parsed.pr_title,
-    prBody: parsed.pr_body,
+    prTitle: existingPrMetadata?.prTitle ?? (parsed?.pr_title as string),
+    prBody: existingPrMetadata?.prBody ?? (parsed?.pr_body as string),
     verification: "operator_override",
   };
 }
@@ -150,6 +153,8 @@ async function runAgentOperation(
     base: string;
     promptFile: string;
     promptArgs: Record<string, string | number>;
+    pullRequestMetadata: "required" | "ignored";
+    existingPrMetadata?: Pick<VerifiedHandoff, "prTitle" | "prBody">;
     agent: AgentConfig;
     signal: AbortSignal;
     attemptCounter: { value: number };
@@ -181,6 +186,7 @@ async function runAgentOperation(
           base: operation.base,
           promptFile: operation.promptFile,
           promptArgs: operation.promptArgs,
+          pullRequestMetadata: operation.pullRequestMetadata,
           model: operation.agent.model,
           effort: operation.agent.reasoningEffort,
           gitConfigGlobal,
@@ -225,6 +231,10 @@ async function runAgentOperation(
       ) {
         throw new Error("Agent commit claims do not match Git evidence");
       }
+      const prTitle = result.pr_title ?? operation.existingPrMetadata?.prTitle;
+      const prBody = result.pr_body ?? operation.existingPrMetadata?.prBody;
+      if (!prTitle || !prBody)
+        throw new Error("Agent Attempt result has no downstream PR metadata");
       const handoff: VerifiedHandoff = {
         ticket: operation.ticket,
         worktree: operation.worktree,
@@ -232,8 +242,8 @@ async function runAgentOperation(
         base: operation.base,
         commits: observed.commits,
         checks: result.checks,
-        prTitle: result.pr_title,
-        prBody: result.pr_body,
+        prTitle,
+        prBody,
         verification: "verified",
       };
       await appendOperation(input, event, "succeeded", null);
@@ -266,6 +276,7 @@ async function runAgentOperation(
             operation.worktree,
             operation.branch,
             operation.base,
+            operation.existingPrMetadata,
           );
         } catch {
           await appendOperation(input, event, "invalid_override", null);
@@ -327,6 +338,7 @@ async function implementTicket(
         BASE_SHA: base,
         TARGET_BRANCH: input.targetBranch,
       },
+      pullRequestMetadata: "required",
       agent: input.agent,
       signal: controller.signal,
       attemptCounter: { value: 0 },
@@ -383,6 +395,8 @@ export async function runCiRepairAttempt(
           })),
         ),
       },
+      pullRequestMetadata: "ignored",
+      existingPrMetadata: input.handoff,
       agent: input.agent,
       signal: input.signal,
       attemptCounter: input.attemptCounter,
