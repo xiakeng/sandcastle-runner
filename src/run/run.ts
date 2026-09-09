@@ -91,39 +91,67 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       operator: input.operator,
     }));
 
-  const discovery = await discoverAndReserve({
-    repository: input.repository,
-    parentTicket: input.parentTicket,
-    tracker: input.tracker,
-    audit: input.audit,
-    clock: input.clock,
-    operator: input.operator,
-    event,
-    runnerAccount: input.runnerAccount,
-    reservationLabel: input.reservationLabel,
-  });
-  if (discovery.outcome === "close_parent") {
-    await workflowWrite({
-      action: () =>
-        input.tracker.closeParent(input.repository, input.parentTicket),
-      audit: input.audit,
-      event: () =>
-        event(
-          "close_parent",
-          "close_parent",
-          `parent:${input.parentTicket}`,
-        )(1),
-      operator: input.operator,
-    });
-    return {
-      outcome: "succeeded",
-      project: input.project,
+  let hadChildren = false;
+  const batches: number[] = [];
+  const handoffs: VerifiedHandoff[] = [];
+  const pullRequests: PullRequestObservation[] = [];
+  const completedTickets: number[] = [];
+  const reasons: string[] = [];
+
+  for (;;) {
+    const discovery = await discoverAndReserve({
+      repository: input.repository,
       parentTicket: input.parentTicket,
-      targetBranch,
-      reasons: [],
-    };
-  }
-  if (discovery.outcome === "incomplete" && discovery.batch.length > 0) {
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event,
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+      hadChildren,
+    });
+    if (discovery.outcome === "close_parent") {
+      await workflowWrite({
+        action: () =>
+          input.tracker.closeParent(input.repository, input.parentTicket),
+        audit: input.audit,
+        event: () =>
+          event(
+            "close_parent",
+            "close_parent",
+            `parent:${input.parentTicket}`,
+          )(1),
+        operator: input.operator,
+      });
+      return {
+        outcome: "succeeded",
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons,
+        ...(batches.length === 0 ? {} : { batch: batches }),
+        ...(handoffs.length === 0 ? {} : { handoffs }),
+        ...(pullRequests.length === 0 ? {} : { pullRequests }),
+        ...(completedTickets.length === 0 ? {} : { completedTickets }),
+      };
+    }
+    if (discovery.outcome !== "incomplete" || discovery.batch.length === 0) {
+      return {
+        ...discovery,
+        project: input.project,
+        parentTicket: input.parentTicket,
+        targetBranch,
+        reasons: [...reasons, ...discovery.reasons],
+        ...(batches.length === 0 ? {} : { batch: batches }),
+        ...(handoffs.length === 0 ? {} : { handoffs }),
+        ...(pullRequests.length === 0 ? {} : { pullRequests }),
+        ...(completedTickets.length === 0 ? {} : { completedTickets }),
+      };
+    }
+
+    hadChildren = true;
+    batches.push(...discovery.batch);
     const attempts = await implementReservedBatch({
       repository: input.repository,
       parentTicket: input.parentTicket,
@@ -145,6 +173,10 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       gitWorkspace: input.gitWorkspace,
       agentExecutor: input.agentExecutor,
     });
+    handoffs.push(...attempts.handoffs);
+    const batchComplete =
+      attempts.handoffs.length === discovery.batch.length &&
+      attempts.reasons.length === 0;
     const publication =
       attempts.handoffs.length === 0
         ? null
@@ -163,28 +195,31 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
             adminMerge: input.adminMerge,
             ticketClosure: input.ticketClosure,
+            batchComplete,
             handoffs: attempts.handoffs,
             gitWorkspace: input.gitWorkspace,
             codeHost: input.codeHost,
           });
+    if (publication) {
+      pullRequests.push(...publication.pullRequests);
+      completedTickets.push(...publication.completedTickets);
+    }
+    reasons.push(
+      ...discovery.reasons,
+      ...attempts.reasons,
+      ...(publication?.reasons ?? []),
+    );
+    if (batchComplete && publication?.outcome === "succeeded") continue;
     return {
-      ...attempts,
-      ...(publication ?? {}),
+      outcome: publication?.outcome ?? attempts.outcome,
       project: input.project,
       parentTicket: input.parentTicket,
       targetBranch,
-      batch: discovery.batch,
-      reasons: [
-        ...discovery.reasons,
-        ...attempts.reasons,
-        ...(publication?.reasons ?? []),
-      ],
+      batch: batches,
+      reasons,
+      handoffs,
+      pullRequests,
+      completedTickets,
     };
   }
-  return {
-    ...discovery,
-    project: input.project,
-    parentTicket: input.parentTicket,
-    targetBranch,
-  };
 }

@@ -83,6 +83,7 @@ function createCliDependencies(
     async getPullRequest() {
       return {
         headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        createdAt: "2026-09-09T00:00:00Z",
         merged,
         mergeFailure: null,
       };
@@ -249,6 +250,61 @@ function createCommittedDelivery(ticket = 9): {
         };
       },
     },
+  };
+}
+
+function createCommittedBatch(...numbers: number[]) {
+  const { tracker, tickets } = createAttemptTracker(...numbers);
+  const branches = new Map<number, string>();
+  return {
+    tracker,
+    tickets,
+    gitWorkspace: {
+      async fetchTargetBranch() {
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      },
+      async createWorktree(
+        input: Parameters<GitWorkspace["createWorktree"]>[0],
+      ) {
+        branches.set(Number(input.branch.split("-").at(-1)), input.branch);
+      },
+      async inspect({
+        worktree,
+        base,
+      }: Parameters<GitWorkspace["inspect"]>[0]) {
+        const ticket = Number(worktree.split("-").at(-1));
+        return {
+          worktree,
+          branch: branches.get(ticket)!,
+          base,
+          commits: [
+            {
+              sha: String(ticket).at(-1)!.repeat(40),
+              message: `feat: ticket ${ticket}`,
+            },
+          ],
+          clean: true,
+        };
+      },
+    } satisfies Partial<GitWorkspace>,
+    agentExecutor: {
+      async execute(input: Parameters<AgentExecutor["execute"]>[0]) {
+        return {
+          outcome: "committed" as const,
+          summary: `implemented ${input.ticket}`,
+          commits: [
+            {
+              sha: String(input.ticket).at(-1)!.repeat(40),
+              message: `feat: ticket ${input.ticket}`,
+            },
+          ],
+          checks: [],
+          blocker: null,
+          pr_title: `feat: ticket ${input.ticket}`,
+          pr_body: `Implements ticket ${input.ticket}.`,
+        };
+      },
+    } satisfies Partial<AgentExecutor>,
   };
 }
 
@@ -1814,7 +1870,7 @@ test("a Verified Handoff is published unchanged and becomes CI-ready after check
     }),
   );
 
-  assert.equal(result.summary.outcome, "incomplete");
+  assert.equal(result.summary.outcome, "succeeded");
   assert.ok(prepared);
   assert.deepEqual(result.summary.handoffs, [
     {
@@ -1937,6 +1993,7 @@ test("a CI-ready Pull Request is delivered only after its merge and completed cl
           operations.push(`observe:${merged}`);
           return {
             headSha: commit.sha,
+            createdAt: "2026-09-09T00:00:00Z",
             merged,
             mergeFailure: null,
           };
@@ -1956,7 +2013,7 @@ test("a CI-ready Pull Request is delivered only after its merge and completed cl
     }),
   );
 
-  assert.equal(result.summary.outcome, "incomplete");
+  assert.equal(result.summary.outcome, "succeeded");
   assert.deepEqual(result.summary.completedTickets, [9]);
   assert.deepEqual(operations, [
     "observe:false",
@@ -2041,6 +2098,7 @@ test("a queued merge receives no completion credit until timeout recovery confir
         async getPullRequest() {
           return {
             headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
             merged: false,
             mergeFailure: null,
           };
@@ -2096,6 +2154,7 @@ test("merge conflict evidence is retained while other merge rejections enter Ope
           async getPullRequest() {
             return {
               headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              createdAt: "2026-09-09T00:00:00Z",
               merged: false,
               mergeFailure: null,
             };
@@ -2144,6 +2203,7 @@ test("Parent cancellation during a merge rejection pause prevents the authorized
         async getPullRequest() {
           return {
             headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
             merged: false,
             mergeFailure: null,
           };
@@ -2231,6 +2291,7 @@ test("runner closure write failure retries only after operator authorization and
         async getPullRequest() {
           return {
             headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
             merged,
             mergeFailure: null,
           };
@@ -2413,6 +2474,7 @@ test("Parent cancellation after merge confirmation prevents ticket closure mutat
         async getPullRequest() {
           return {
             headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
             merged,
             mergeFailure: null,
           };
@@ -3135,6 +3197,324 @@ test("a reserved Batch runs its Agent Attempts concurrently", async () => {
     result.summary.handoffs?.map(({ ticket }) => ticket),
     [9, 10],
   );
+});
+
+test("a Batch publishes every PR before merging by creation order", async () => {
+  const root = await createProject();
+  const delivery = createCommittedBatch(9, 10, 11);
+  const pullRequests = new Map([
+    [9, { number: 42, createdAt: "2026-09-09T00:00:02Z" }],
+    [10, { number: 43, createdAt: "2026-09-09T00:00:01Z" }],
+    [11, { number: 41, createdAt: "2026-09-09T00:00:01Z" }],
+  ]);
+  const merged = new Set<number>();
+  const operations: string[] = [];
+  let activeCheckReads = 0;
+  let maxActiveCheckReads = 0;
+  let releaseChecks!: () => void;
+  const allChecksStarted = new Promise<void>((resolve) => {
+    releaseChecks = resolve;
+  });
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: delivery.tracker,
+      gitWorkspace: delivery.gitWorkspace,
+      agentExecutor: delivery.agentExecutor,
+      codeHost: {
+        async createPullRequest(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          const pullRequest = pullRequests.get(ticket)!;
+          operations.push(`create:${pullRequest.number}`);
+          return {
+            number: pullRequest.number,
+            url: `https://github.com/owner/repo/pull/${pullRequest.number}`,
+          };
+        },
+        async getRequiredChecks(_repository, pullRequest) {
+          operations.push(`checks:${pullRequest}`);
+          activeCheckReads += 1;
+          maxActiveCheckReads = Math.max(maxActiveCheckReads, activeCheckReads);
+          if (activeCheckReads === 3) releaseChecks();
+          await allChecksStarted;
+          activeCheckReads -= 1;
+          return [];
+        },
+        async getPullRequest(_repository, pullRequest) {
+          const metadata = [...pullRequests.values()].find(
+            ({ number }) => number === pullRequest,
+          )!;
+          return {
+            headSha: String(pullRequest).at(-1)!.repeat(40),
+            createdAt: metadata.createdAt,
+            merged: merged.has(pullRequest),
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          operations.push(`merge:${pullRequest}`);
+          merged.add(pullRequest);
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    operations.filter((operation) => operation.startsWith("create:")).sort(),
+    ["create:41", "create:42", "create:43"],
+  );
+  assert.equal(
+    operations
+      .slice(
+        0,
+        operations.findIndex((operation) => operation.startsWith("merge:")),
+      )
+      .filter((operation) => operation.startsWith("checks:")).length,
+    3,
+  );
+  assert.deepEqual(
+    operations.filter((operation) => operation.startsWith("merge:")),
+    ["merge:41", "merge:43", "merge:42"],
+  );
+  assert.equal(maxActiveCheckReads, 3);
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [11, 10, 9]);
+  assert.ok(
+    delivery.tickets.every(({ stateReason }) => stateReason === "completed"),
+  );
+});
+
+test("a successful Batch rescans added work and an emptied scope closes the Parent", async () => {
+  const root = await createProject();
+  const delivery = createCommittedBatch(9);
+  const ticket10 = {
+    number: 10,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [] as string[],
+    labels: [] as string[],
+  };
+  const merged = new Set<number>();
+  const attempts: number[] = [];
+  let removed = false;
+  let fetches = 0;
+  let parentClosures = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async listChildrenPage() {
+          if (removed) return { children: [], nextPage: null };
+          if (
+            delivery.tickets[0]!.stateReason === "completed" &&
+            !delivery.tickets.includes(ticket10)
+          ) {
+            delivery.tickets.push(ticket10);
+          }
+          return { children: delivery.tickets, nextPage: null };
+        },
+        async getTicket(_repository, ticket) {
+          return delivery.tickets.find(({ number }) => number === ticket)!;
+        },
+        async listBlockersPage(_repository, ticket) {
+          return {
+            blockers: ticket === 10 ? [delivery.tickets[0]!] : [],
+            nextPage: null,
+          };
+        },
+        async removeLabel(repository, ticket, label) {
+          await delivery.tracker.removeLabel!(repository, ticket, label);
+          if (ticket === 10) removed = true;
+        },
+        async closeParent() {
+          parentClosures += 1;
+        },
+      },
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async fetchTargetBranch() {
+          fetches += 1;
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          attempts.push(input.ticket);
+          return delivery.agentExecutor.execute(input);
+        },
+      },
+      codeHost: {
+        async createPullRequest(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          return {
+            number: ticket + 100,
+            url: `https://github.com/owner/repo/pull/${ticket + 100}`,
+          };
+        },
+        async getPullRequest(_repository, pullRequest) {
+          return {
+            headSha: String(pullRequest - 100)
+              .at(-1)!
+              .repeat(40),
+            createdAt: `2026-09-09T00:00:${String(pullRequest - 100).padStart(2, "0")}Z`,
+            merged: merged.has(pullRequest),
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          merged.add(pullRequest);
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(attempts, [9, 10]);
+  assert.deepEqual(result.summary.batch, [9, 10]);
+  assert.deepEqual(result.summary.completedTickets, [9, 10]);
+  assert.equal(fetches, 2);
+  assert.equal(parentClosures, 1);
+});
+
+test("an unresolved Agent Attempt blocks integration after other Handoffs publish", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9, 10);
+  const branches = new Map<number, string>();
+  let pullRequestCreates = 0;
+  let mergeRequests = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branches.set(Number(input.branch.split("-").at(-1)), input.branch);
+        },
+        async inspect({ worktree, base }) {
+          const ticket = Number(worktree.split("-").at(-1));
+          return {
+            worktree,
+            branch: branches.get(ticket)!,
+            base,
+            commits:
+              ticket === 9
+                ? [
+                    {
+                      sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      message: "feat: ticket 9",
+                    },
+                  ]
+                : [],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return input.ticket === 9
+            ? {
+                outcome: "committed",
+                summary: "implemented 9",
+                commits: [
+                  {
+                    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    message: "feat: ticket 9",
+                  },
+                ],
+                checks: [],
+                blocker: null,
+                pr_title: "feat: ticket 9",
+                pr_body: "Implements ticket 9.",
+              }
+            : {
+                outcome: "no_change",
+                summary: "no safe change",
+                commits: [],
+                checks: [],
+                blocker: null,
+                pr_title: "unused",
+                pr_body: "unused",
+              };
+        },
+      },
+      codeHost: {
+        async createPullRequest() {
+          pullRequestCreates += 1;
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.equal(pullRequestCreates, 1);
+  assert.equal(mergeRequests, 0);
+  assert.deepEqual(result.summary.completedTickets ?? [], []);
+  assert.match(result.summary.reasons.join(" "), /no_change.*Batch barrier/u);
+});
+
+test("partial Batch integration keeps credit and does not overtake a conflict", async () => {
+  const root = await createProject();
+  const delivery = createCommittedBatch(9, 10, 11);
+  const merged = new Set<number>();
+  const mergeRequests: number[] = [];
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: delivery.tracker,
+      gitWorkspace: delivery.gitWorkspace,
+      agentExecutor: delivery.agentExecutor,
+      codeHost: {
+        async createPullRequest(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          return {
+            number: ticket + 100,
+            url: `https://github.com/owner/repo/pull/${ticket + 100}`,
+          };
+        },
+        async getPullRequest(_repository, pullRequest) {
+          return {
+            headSha: String(pullRequest - 100)
+              .at(-1)!
+              .repeat(40),
+            createdAt: `2026-09-09T00:00:${String(pullRequest - 100).padStart(2, "0")}Z`,
+            merged: merged.has(pullRequest),
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          mergeRequests.push(pullRequest);
+          if (pullRequest === 110) {
+            return { outcome: "conflict", error: "conflict in run.ts" };
+          }
+          merged.add(pullRequest);
+          return { outcome: "accepted" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.deepEqual(mergeRequests, [109, 110]);
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(delivery.tickets[0]!.stateReason, "completed");
+  assert.equal(delivery.tickets[1]!.state, "open");
+  assert.equal(delivery.tickets[2]!.state, "open");
 });
 
 test("cancelling one concurrent Agent Attempt aborts and settles the others", async () => {

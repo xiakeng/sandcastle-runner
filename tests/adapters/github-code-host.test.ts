@@ -99,9 +99,9 @@ test("GitHubCodeHost creates a non-draft Pull Request and reads authoritative re
 test("GitHubCodeHost observes merge state and requests a head-matched admin squash merge", async () => {
   const calls: string[][] = [];
   const responses = [
-    '{"headRefOid":"abc123","state":"OPEN","mergedAt":null}',
+    '{"headRefOid":"abc123","createdAt":"2026-09-09T00:00:00Z","state":"OPEN","mergedAt":null}',
     "",
-    '{"headRefOid":"abc123","state":"CLOSED","mergedAt":null}',
+    '{"headRefOid":"abc123","createdAt":"2026-09-09T00:00:00Z","state":"CLOSED","mergedAt":null}',
   ];
   const codeHost = new GitHubCodeHost("configured-token", async (args) => {
     calls.push(args);
@@ -110,6 +110,7 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
 
   assert.deepEqual(await codeHost.getPullRequest("owner/repo", 41), {
     headSha: "abc123",
+    createdAt: "2026-09-09T00:00:00Z",
     merged: false,
     mergeFailure: null,
   });
@@ -124,6 +125,7 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
   );
   assert.deepEqual(await codeHost.getPullRequest("owner/repo", 41), {
     headSha: "abc123",
+    createdAt: "2026-09-09T00:00:00Z",
     merged: false,
     mergeFailure: "Pull Request 41 closed without merging",
   });
@@ -135,7 +137,7 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
       "--repo",
       "owner/repo",
       "--json",
-      "headRefOid,state,mergedAt",
+      "headRefOid,createdAt,state,mergedAt",
     ],
     [
       "pr",
@@ -155,15 +157,15 @@ test("GitHubCodeHost observes merge state and requests a head-matched admin squa
       "--repo",
       "owner/repo",
       "--json",
-      "headRefOid,state,mergedAt",
+      "headRefOid,createdAt,state,mergedAt",
     ],
   ]);
 });
 
 test("GitHubCodeHost confirms a merged Pull Request from either merged field", async () => {
   for (const response of [
-    '{"headRefOid":"abc123","state":"MERGED","mergedAt":null}',
-    '{"headRefOid":"abc123","state":"CLOSED","mergedAt":"2026-09-09T00:00:00Z"}',
+    '{"headRefOid":"abc123","createdAt":"2026-09-09T00:00:00Z","state":"MERGED","mergedAt":null}',
+    '{"headRefOid":"abc123","createdAt":"2026-09-09T00:00:00Z","state":"CLOSED","mergedAt":"2026-09-09T00:00:00Z"}',
   ]) {
     const codeHost = new GitHubCodeHost(
       "configured-token",
@@ -171,6 +173,7 @@ test("GitHubCodeHost confirms a merged Pull Request from either merged field", a
     );
     assert.deepEqual(await codeHost.getPullRequest("owner/repo", 41), {
       headSha: "abc123",
+      createdAt: "2026-09-09T00:00:00Z",
       merged: true,
       mergeFailure: null,
     });
