@@ -3,12 +3,21 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { SystemClock } from "./adapters/clock.ts";
+import { LocalGitWorkspace } from "./adapters/git-workspace.ts";
 import { GitHubCodeHost } from "./adapters/github-code-host.ts";
 import { GitHubTracker } from "./adapters/github-tracker.ts";
+import { SandcastleAgentExecutor } from "./adapters/sandcastle.ts";
 import { TerminalOperator } from "./adapters/terminal.ts";
 import { AuditLog } from "./audit.ts";
 import { loadProject } from "./config.ts";
-import type { Clock, CodeHost, OperatorIO, Tracker } from "./run/contracts.ts";
+import type {
+  AgentExecutor,
+  Clock,
+  CodeHost,
+  GitWorkspace,
+  OperatorIO,
+  Tracker,
+} from "./run/contracts.ts";
 import { OperatorCancelled, supervisedAuditWrite } from "./run/operations.ts";
 import { runProject, type RunSummary } from "./run/run.ts";
 
@@ -17,6 +26,8 @@ export interface CliDependencies {
   env: Record<string, string | undefined>;
   tracker?: Tracker;
   codeHost?: CodeHost;
+  gitWorkspace?: GitWorkspace;
+  agentExecutor?: AgentExecutor;
   clock: Clock;
   operator: OperatorIO;
 }
@@ -93,6 +104,9 @@ export async function executeCli(
     dependencies.tracker ?? new GitHubTracker(loaded.trackerToken);
   const codeHost =
     dependencies.codeHost ?? new GitHubCodeHost(loaded.codeHostToken);
+  const gitWorkspace = dependencies.gitWorkspace ?? new LocalGitWorkspace();
+  const agentExecutor =
+    dependencies.agentExecutor ?? new SandcastleAgentExecutor();
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -111,6 +125,17 @@ export async function executeCli(
       operator: dependencies.operator,
       runnerAccount: loaded.config.tracker.runnerAccount,
       reservationLabel: loaded.config.tracker.reservationLabel,
+      checkout: loaded.config.checkout,
+      projectDirectory: loaded.directory,
+      implementationPrompt: path.join(
+        loaded.directory,
+        "prompts",
+        "implement.md",
+      ),
+      implementationAgent: loaded.config.agents.implement,
+      agentTimeoutMs: loaded.config.timeouts.agentMinutes * 60_000,
+      gitWorkspace,
+      agentExecutor,
     });
   } catch (error) {
     summary = {

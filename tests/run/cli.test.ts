@@ -13,18 +13,27 @@ import test from "node:test";
 
 import { executeCli, type CliDependencies } from "../../src/cli.ts";
 import type {
+  AgentExecutor,
   Clock,
   CodeHost,
+  GitWorkspace,
   OperatorIO,
   Tracker,
 } from "../../src/run/contracts.ts";
 
 type CliDependencyOverrides = Omit<
   Partial<CliDependencies>,
-  "tracker" | "codeHost" | "clock" | "operator"
+  | "tracker"
+  | "codeHost"
+  | "gitWorkspace"
+  | "agentExecutor"
+  | "clock"
+  | "operator"
 > & {
   tracker?: Partial<Tracker>;
   codeHost?: Partial<CodeHost>;
+  gitWorkspace?: Partial<GitWorkspace>;
+  agentExecutor?: Partial<AgentExecutor>;
   clock?: Partial<Clock>;
   operator?: Partial<OperatorIO>;
 };
@@ -59,6 +68,36 @@ function createCliDependencies(
     },
     ...overrides.codeHost,
   };
+  const gitWorkspace: GitWorkspace = {
+    async fetchTargetBranch() {
+      return "base";
+    },
+    async createWorktree() {},
+    async inspect({ worktree, base }) {
+      return {
+        worktree,
+        branch: "unused",
+        base,
+        commits: [],
+        clean: true,
+      };
+    },
+    ...overrides.gitWorkspace,
+  };
+  const agentExecutor: AgentExecutor = {
+    async execute() {
+      return {
+        outcome: "blocked",
+        summary: "not enabled for this scenario",
+        commits: [],
+        checks: [],
+        blocker: "not enabled for this scenario",
+        pr_title: "unused",
+        pr_body: "unused",
+      };
+    },
+    ...overrides.agentExecutor,
+  };
   const clock: Clock = {
     now: () => new Date("2026-09-09T00:00:00.000Z"),
     async sleep() {},
@@ -78,8 +117,50 @@ function createCliDependencies(
     ...overrides,
     tracker,
     codeHost,
+    gitWorkspace,
+    agentExecutor,
     clock,
     operator,
+  };
+}
+
+function createAttemptTracker(...numbers: number[]): {
+  tickets: {
+    number: number;
+    state: "open";
+    stateReason: null;
+    repository: string;
+    assignees: string[];
+    labels: string[];
+  }[];
+  tracker: Partial<Tracker>;
+} {
+  const tickets = numbers.map((number) => ({
+    number,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [] as string[],
+    labels: [] as string[],
+  }));
+  return {
+    tickets,
+    tracker: {
+      async listChildrenPage() {
+        return { children: tickets, nextPage: null };
+      },
+      async getTicket(_repository, ticket) {
+        return tickets.find(({ number }) => number === ticket)!;
+      },
+      async addLabel(_repository, ticket, label) {
+        tickets.find(({ number }) => number === ticket)!.labels.push(label);
+      },
+      async addAssignee(_repository, ticket, assignee) {
+        tickets
+          .find(({ number }) => number === ticket)!
+          .assignees.push(assignee);
+      },
+    },
   };
 }
 
@@ -1020,12 +1101,15 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
     "14:2",
     "14:1",
     "14:2",
+    "14:1",
+    "14:2",
   ]);
   assert.deepEqual(result.summary.reasons, [
     "reserved Delivery Tickets: 14",
     "blocked Delivery Tickets: 13",
     "externally owned Delivery Tickets: 9",
     "existing Reservations: 10 (partial), 11 (partial), 12 (complete)",
+    "Delivery Ticket 14 no longer has a complete Reservation",
   ]);
 });
 
@@ -1537,6 +1621,662 @@ test("cancelling a failed audit result append pauses exactly once", async () => 
         },
         async listChildrenPage() {
           throw new Error("must not scan children");
+        },
+      },
+      operator: {
+        async pause() {
+          pauseCalls += 1;
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(pauseCalls, 1);
+});
+
+test("a committed Agent Attempt becomes a Verified Handoff only from matching clean Git evidence", async () => {
+  const root = await createProject();
+  const operations: string[] = [];
+  let prepared: { worktree: string; branch: string; base: string } | undefined;
+  let agentInput: Parameters<AgentExecutor["execute"]>[0] | undefined;
+  let gitConfigContents: string | undefined;
+  const { tracker } = createAttemptTracker(9);
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch(checkout, targetBranch) {
+          operations.push(`fetch:${checkout}:${targetBranch}`);
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          prepared = input;
+          operations.push(`create:${input.branch}:${input.base}`);
+        },
+        async inspect({ worktree, base }) {
+          operations.push(`inspect:${base}`);
+          assert.ok(prepared);
+          return {
+            worktree,
+            branch: prepared.branch,
+            base,
+            commits: [
+              {
+                sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                message: "feat: implement ticket",
+              },
+            ],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          agentInput = input;
+          gitConfigContents = await readFile(input.gitConfigGlobal, "utf8");
+          operations.push(
+            `execute:${input.ticket}:${input.branch}:${input.base}`,
+          );
+          return {
+            outcome: "committed",
+            summary: "implemented",
+            commits: [
+              {
+                sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                message: "feat: implement ticket",
+              },
+            ],
+            checks: [{ command: "npm test", status: "passed", details: "ok" }],
+            blocker: null,
+            pr_title: "feat: implement ticket",
+            pr_body: "Implements the Delivery Ticket.",
+          };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.ok(prepared);
+  assert.deepEqual(result.summary.handoffs, [
+    {
+      ticket: 9,
+      worktree: prepared.worktree,
+      branch: prepared.branch,
+      base: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      commits: [
+        {
+          sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          message: "feat: implement ticket",
+        },
+      ],
+      checks: [{ command: "npm test", status: "passed", details: "ok" }],
+      prTitle: "feat: implement ticket",
+      prBody: "Implements the Delivery Ticket.",
+      verification: "verified",
+    },
+  ]);
+  assert.match(prepared.branch, /^sandcastle\/run-[0-9a-f-]+\/ticket-9$/u);
+  assert.equal(path.isAbsolute(prepared.worktree), true);
+  assert.ok(agentInput);
+  assert.equal(
+    agentInput.promptFile,
+    path.join(root, "projects/demo/prompts/implement.md"),
+  );
+  assert.deepEqual(agentInput.promptArgs, {
+    TICKET_NUMBER: 9,
+    TICKET_REFERENCE: "owner/repo#9",
+    IMPLEMENT_SKILL: "$implement",
+    WORKTREE_PATH: prepared.worktree,
+    BRANCH: prepared.branch,
+    BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    TARGET_BRANCH: "main",
+  });
+  assert.equal(agentInput.model, "gpt-5.6-sol");
+  assert.equal(agentInput.effort, "high");
+  assert.equal(agentInput.timeoutMs, 120 * 60_000);
+  assert.equal(gitConfigContents, "");
+  await assert.rejects(readFile(agentInput.gitConfigGlobal, "utf8"));
+  assert.deepEqual(operations, [
+    "fetch:/tmp/repo:main",
+    `create:${prepared.branch}:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+    `execute:9:${prepared.branch}:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+    "inspect:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ]);
+});
+
+test("valid no_change and blocked results stay unresolved without handoffs", async () => {
+  for (const scenario of [
+    {
+      outcome: "no_change" as const,
+      summary: "the requested behavior already exists",
+      blocker: null,
+      expected:
+        "Delivery Ticket 9 no_change: the requested behavior already exists",
+      inspections: 1,
+    },
+    {
+      outcome: "blocked" as const,
+      summary: "waiting for an API decision",
+      blocker: "API contract is unresolved",
+      expected: "Delivery Ticket 9 blocked: API contract is unresolved",
+      inspections: 0,
+    },
+  ]) {
+    const root = await createProject();
+    let inspections = 0;
+    let branch = "";
+    const { tracker } = createAttemptTracker(9);
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker,
+        gitWorkspace: {
+          async fetchTargetBranch() {
+            return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          },
+          async createWorktree(input) {
+            branch = input.branch;
+          },
+          async inspect({ worktree, base }) {
+            inspections += 1;
+            return {
+              worktree,
+              branch,
+              base,
+              commits: [],
+              clean: true,
+            };
+          },
+        },
+        agentExecutor: {
+          async execute() {
+            return {
+              ...scenario,
+              commits: [],
+              checks: [],
+              pr_title: "unused metadata",
+              pr_body: "unused metadata",
+            };
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, "incomplete");
+    assert.equal(result.summary.handoffs?.length, 0);
+    assert.ok(result.summary.reasons.includes(scenario.expected));
+    assert.equal(inspections, scenario.inspections);
+  }
+});
+
+test("false commit claims enter Operator Pause and q cancels active Sandcastle resources", async () => {
+  const root = await createProject();
+  let signal: AbortSignal | undefined;
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch: "sandcastle/mismatch",
+            base,
+            commits: [],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          signal = input.signal;
+          return {
+            outcome: "committed",
+            summary: "claimed success",
+            commits: [
+              {
+                sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                message: "feat: claimed commit",
+              },
+            ],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: claimed commit",
+            pr_body: "Claimed implementation.",
+          };
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(signal?.aborted, true);
+});
+
+test("empty input starts a fresh Agent Attempt with a new Git configuration", async () => {
+  const root = await createProject();
+  const gitConfigs: string[] = [];
+  let branch = "";
+  let attempt = 0;
+  const { tracker } = createAttemptTracker(9);
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: retry succeeds",
+  };
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return { worktree, branch, base, commits: [commit], clean: true };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          gitConfigs.push(input.gitConfigGlobal);
+          attempt += 1;
+          if (attempt === 1) throw new Error("Sandcastle failed");
+          return {
+            outcome: "committed",
+            summary: "retry succeeded",
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: retry succeeds",
+            pr_body: "Retry implementation.",
+          };
+        },
+      },
+      operator: {
+        async pause() {
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.handoffs?.length, 1);
+  assert.equal(gitConfigs.length, 2);
+  assert.notEqual(gitConfigs[0], gitConfigs[1]);
+  await Promise.all(
+    gitConfigs.map((filename) => assert.rejects(readFile(filename, "utf8"))),
+  );
+});
+
+test("a trusted committed override extracts only downstream metadata and bypasses Git verification", async () => {
+  const root = await createProject();
+  const responses = [
+    "not json",
+    JSON.stringify({
+      outcome: "committed",
+      pr_title: "feat: trusted result",
+      pr_body: "Operator supplied metadata.",
+      ignored: "not copied downstream",
+    }),
+  ];
+  let inspections = 0;
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async inspect() {
+          inspections += 1;
+          throw new Error("must be bypassed");
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          throw new Error("Sandcastle failed");
+        },
+      },
+      operator: {
+        async pause() {
+          return responses.shift() ?? "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(inspections, 0);
+  assert.equal(result.summary.handoffs?.[0]?.verification, "operator_override");
+  assert.equal(result.summary.handoffs?.[0]?.prTitle, "feat: trusted result");
+  assert.deepEqual(result.summary.handoffs?.[0]?.commits, []);
+  assert.ok(result.logPath);
+  const audit = await readFile(result.logPath, "utf8");
+  assert.match(audit, /operator_override/u);
+  assert.equal(audit.includes("not json"), false);
+  assert.equal(audit.includes("not copied downstream"), false);
+});
+
+test("a reserved Batch runs its Agent Attempts concurrently", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9, 10);
+  const branches = new Map<number, string>();
+  let active = 0;
+  let maxActive = 0;
+  let release: (() => void) | undefined;
+  const bothStarted = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          branches.set(ticket, input.branch);
+        },
+        async inspect({ worktree, base }) {
+          const ticket = Number(worktree.split("-").at(-1));
+          const digit = ticket === 9 ? "b" : "c";
+          return {
+            worktree,
+            branch: branches.get(ticket)!,
+            base,
+            commits: [
+              { sha: digit.repeat(40), message: `feat: ticket ${ticket}` },
+            ],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          if (active === 2) release?.();
+          await bothStarted;
+          active -= 1;
+          const digit = input.ticket === 9 ? "b" : "c";
+          return {
+            outcome: "committed",
+            summary: `implemented ${input.ticket}`,
+            commits: [
+              {
+                sha: digit.repeat(40),
+                message: `feat: ticket ${input.ticket}`,
+              },
+            ],
+            checks: [],
+            blocker: null,
+            pr_title: `feat: ticket ${input.ticket}`,
+            pr_body: `Implements ticket ${input.ticket}.`,
+          };
+        },
+      },
+    }),
+  );
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(
+    result.summary.handoffs?.map(({ ticket }) => ticket),
+    [9, 10],
+  );
+});
+
+test("cancelling one concurrent Agent Attempt aborts and settles the others", async () => {
+  const root = await createProject();
+  const { tracker } = createAttemptTracker(9, 10);
+  let started = 0;
+  let release: (() => void) | undefined;
+  let abortedAttemptSettled = false;
+  let activePauses = 0;
+  let maxActivePauses = 0;
+  let pauseCalls = 0;
+  const bothStarted = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          started += 1;
+          if (started === 2) release?.();
+          await bothStarted;
+          if (input.ticket === 9) throw new Error("Sandcastle failed");
+          await new Promise<void>((_resolve, reject) => {
+            input.signal.addEventListener(
+              "abort",
+              () => {
+                abortedAttemptSettled = true;
+                reject(new Error("Agent Attempt aborted"));
+              },
+              { once: true },
+            );
+          });
+          throw new Error("unreachable");
+        },
+      },
+      operator: {
+        async pause() {
+          pauseCalls += 1;
+          activePauses += 1;
+          maxActivePauses = Math.max(maxActivePauses, activePauses);
+          await Promise.resolve();
+          activePauses -= 1;
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(abortedAttemptSettled, true);
+  assert.equal(pauseCalls, 1);
+  assert.equal(maxActivePauses, 1);
+});
+
+test("Parent cancellation after Worktree preparation starts no Agent and preserves the Reservation", async () => {
+  const root = await createProject();
+  let worktreeCreated = false;
+  let agentCalls = 0;
+  let releases = 0;
+  const {
+    tickets: [child],
+    tracker,
+  } = createAttemptTracker(9);
+  assert.ok(child);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async getParent() {
+          return worktreeCreated
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+        async removeLabel() {
+          releases += 1;
+        },
+        async removeAssignee() {
+          releases += 1;
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree() {
+          worktreeCreated = true;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          throw new Error("must not start");
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(agentCalls, 0);
+  assert.equal(releases, 0);
+  assert.deepEqual(child.labels, ["sandcastle:reserved"]);
+  assert.deepEqual(child.assignees, ["runner"]);
+});
+
+test("a removed Reservation after Worktree preparation starts no Agent", async () => {
+  const root = await createProject();
+  let agentCalls = 0;
+  const {
+    tickets: [child],
+    tracker,
+  } = createAttemptTracker(9);
+  assert.ok(child);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree() {
+          child.labels.length = 0;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          throw new Error("must not start");
+        },
+      },
+    }),
+  );
+
+  assert.equal(agentCalls, 0);
+  assert.ok(
+    result.summary.reasons.includes(
+      "Delivery Ticket 9 no longer has a complete Reservation",
+    ),
+  );
+});
+
+test("Agent results and trusted overrides are rejected after Parent cancellation", async () => {
+  for (const trustedOverride of [false, true]) {
+    const root = await createProject();
+    let parentCancelled = false;
+    const { tracker } = createAttemptTracker(9);
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker: {
+          ...tracker,
+          async getParent() {
+            return parentCancelled
+              ? { number: 8, state: "closed", stateReason: "not_planned" }
+              : { number: 8, state: "open", stateReason: null };
+          },
+        },
+        gitWorkspace: {
+          async fetchTargetBranch() {
+            return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          },
+        },
+        agentExecutor: {
+          async execute() {
+            if (trustedOverride) throw new Error("Sandcastle failed");
+            parentCancelled = true;
+            return {
+              outcome: "blocked",
+              summary: "waiting",
+              commits: [],
+              checks: [],
+              blocker: "waiting",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          },
+        },
+        operator: {
+          async pause() {
+            parentCancelled = true;
+            return JSON.stringify({
+              outcome: "committed",
+              pr_title: "feat: trusted result",
+              pr_body: "Trusted result.",
+            });
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, "cancelled");
+    assert.deepEqual(result.summary.handoffs, []);
+  }
+});
+
+test("cancelling boundary revalidation after an Agent result pauses once", async () => {
+  const root = await createProject();
+  let agentFinished = false;
+  let pauseCalls = 0;
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async getParent() {
+          if (agentFinished) throw new Error("tracker unavailable");
+          return { number: 8, state: "open", stateReason: null };
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentFinished = true;
+          return {
+            outcome: "blocked",
+            summary: "waiting",
+            commits: [],
+            checks: [],
+            blocker: "waiting",
+            pr_title: "unused",
+            pr_body: "unused",
+          };
         },
       },
       operator: {
