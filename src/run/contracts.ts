@@ -75,6 +75,34 @@ export interface RequiredCheck {
   bucket: "pass" | "fail" | "pending" | "skipping" | "cancel";
 }
 
+export function parseRequiredChecks(
+  value: unknown,
+  errorMessage: string,
+): RequiredCheck[] {
+  if (!Array.isArray(value)) throw new Error(errorMessage);
+  return value.map((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item))
+      throw new Error(errorMessage);
+    const check = item as Record<string, unknown>;
+    if (
+      typeof check.name !== "string" ||
+      typeof check.state !== "string" ||
+      typeof check.link !== "string" ||
+      !["pass", "fail", "pending", "skipping", "cancel"].includes(
+        String(check.bucket),
+      )
+    ) {
+      throw new Error(errorMessage);
+    }
+    return {
+      name: check.name,
+      state: check.state,
+      link: check.link,
+      bucket: check.bucket as RequiredCheck["bucket"],
+    };
+  });
+}
+
 export interface CommitEvidence {
   sha: string;
   message: string;

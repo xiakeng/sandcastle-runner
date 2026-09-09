@@ -1930,8 +1930,10 @@ test("required-check timeout enters Operator Pause", async () => {
     }),
   );
   let elapsed = 0;
+  let discoveryDelays = 0;
   let branch = "";
   let pauseMessage = "";
+  const responses = ["", "q"];
   const commit = {
     sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     message: "feat: implementation",
@@ -1983,13 +1985,14 @@ test("required-check timeout enters Operator Pause", async () => {
       clock: {
         now: () => new Date(elapsed),
         async sleep(milliseconds) {
+          if (milliseconds === 30_000) discoveryDelays += 1;
           elapsed += milliseconds;
         },
       },
       operator: {
         async pause(message) {
           pauseMessage = message;
-          return "q";
+          return responses.shift() ?? "q";
         },
       },
     }),
@@ -1997,6 +2000,74 @@ test("required-check timeout enters Operator Pause", async () => {
 
   assert.equal(result.summary.outcome, "cancelled");
   assert.match(pauseMessage, /Required checks timed out/u);
+  assert.equal(discoveryDelays, 1);
+});
+
+test("a successful publication write is not replayed when its result audit is cancelled", async () => {
+  const root = await createProject();
+  const logs = path.join(root, "projects/demo/logs");
+  let branch = "";
+  let pushCalls = 0;
+  let damagedLog = "";
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return { worktree, branch, base, commits: [commit], clean: true };
+        },
+        async push() {
+          pushCalls += 1;
+          if (pushCalls === 1) {
+            const [filename] = await readdir(logs);
+            assert.ok(filename);
+            damagedLog = path.join(logs, filename);
+            await rm(damagedLog);
+            await mkdir(damagedLog);
+          }
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          return {
+            outcome: "committed",
+            summary: "implemented",
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      operator: {
+        async pause() {
+          if (damagedLog) {
+            await rm(damagedLog, { recursive: true });
+            await writeFile(damagedLog, "");
+            damagedLog = "";
+            return "q";
+          }
+          return "";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(pushCalls, 1);
 });
 
 test("uncertain push and Pull Request creation writes are never replayed automatically", async () => {

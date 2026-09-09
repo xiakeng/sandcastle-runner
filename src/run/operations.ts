@@ -216,18 +216,9 @@ export async function workflowWrite<T>(
         operation.audit.append({ ...event, result: "started", error: null }),
       operation.operator,
     );
+    let result: T | void;
     try {
-      const result = await operation.action();
-      await supervisedAuditWrite(
-        () =>
-          operation.audit.append({
-            ...event,
-            result: "succeeded",
-            error: null,
-          }),
-        operation.operator,
-      );
-      return result;
+      result = await operation.action();
     } catch (error) {
       await supervisedAuditWrite(
         () =>
@@ -270,5 +261,15 @@ export async function workflowWrite<T>(
       }
       continue;
     }
+    await supervisedAuditWrite(
+      () =>
+        operation.audit.append({
+          ...event,
+          result: "succeeded",
+          error: null,
+        }),
+      operation.operator,
+    );
+    return result;
   }
 }

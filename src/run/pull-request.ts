@@ -5,6 +5,7 @@ import type {
   PullRequestIdentity,
   RequiredCheck,
 } from "./contracts.ts";
+import { parseRequiredChecks } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
   type DiscoveryInput,
@@ -79,30 +80,10 @@ function pullRequestOverride(value: string): PullRequestIdentity {
 }
 
 function requiredChecksOverride(value: string): RequiredCheck[] {
-  const parsed = JSON.parse(value) as unknown;
-  if (!Array.isArray(parsed))
-    throw new Error("override has no required checks");
-  return parsed.map((item) => {
-    if (typeof item !== "object" || item === null || Array.isArray(item))
-      throw new Error("override has invalid required-check evidence");
-    const check = item as Record<string, unknown>;
-    if (
-      typeof check.name !== "string" ||
-      typeof check.state !== "string" ||
-      typeof check.link !== "string" ||
-      !["pass", "fail", "pending", "skipping", "cancel"].includes(
-        String(check.bucket),
-      )
-    ) {
-      throw new Error("override has invalid required-check evidence");
-    }
-    return {
-      name: check.name,
-      state: check.state,
-      link: check.link,
-      bucket: check.bucket as RequiredCheck["bucket"],
-    };
-  });
+  return parseRequiredChecks(
+    JSON.parse(value) as unknown,
+    "override has invalid required-check evidence",
+  );
 }
 
 function checkResult(
@@ -128,8 +109,8 @@ export async function observeRequiredChecks(
   | Pick<PullRequestObservation, "readiness" | "failedChecks">
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
+  await input.clock.sleep(30_000);
   for (;;) {
-    await input.clock.sleep(30_000);
     const deadline =
       input.clock.now().getTime() + input.requiredChecksTimeoutMs;
     for (;;) {
