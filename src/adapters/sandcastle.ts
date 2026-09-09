@@ -58,16 +58,20 @@ function parseCheck(value: unknown): CheckEvidence {
 
 function parseAttemptResult(
   value: unknown,
-  pullRequestMetadata: "required" | "ignored",
+  pullRequestMetadata: "required" | "required_for_committed" | "ignored",
 ): AgentAttemptResult {
   const input = object(value, "Agent Attempt Result");
+  const requiresPullRequestMetadata =
+    pullRequestMetadata === "required" ||
+    (pullRequestMetadata === "required_for_committed" &&
+      input.outcome === "committed");
   const expected = [
     "blocker",
     "checks",
     "commits",
     "outcome",
     "summary",
-    ...(pullRequestMetadata === "required" ? ["pr_body", "pr_title"] : []),
+    ...(requiresPullRequestMetadata ? ["pr_body", "pr_title"] : []),
   ];
   if (
     Object.keys(input).length !== expected.length ||
@@ -101,7 +105,7 @@ function parseAttemptResult(
     commits,
     checks: input.checks.map(parseCheck),
     blocker: blocker as string | null,
-    ...(pullRequestMetadata === "required"
+    ...(requiresPullRequestMetadata
       ? {
           pr_title: nonempty(input.pr_title, "pr_title"),
           pr_body: nonempty(input.pr_body, "pr_body"),
@@ -110,7 +114,9 @@ function parseAttemptResult(
   };
 }
 
-function resultSchema(pullRequestMetadata: "required" | "ignored") {
+function resultSchema(
+  pullRequestMetadata: "required" | "required_for_committed" | "ignored",
+) {
   return {
     "~standard": {
       version: 1 as const,

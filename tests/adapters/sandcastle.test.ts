@@ -155,6 +155,42 @@ test("SandcastleAgentExecutor accepts repair results without Pull Request metada
   );
 });
 
+test("SandcastleAgentExecutor requires Pull Request metadata only for committed maintenance", async () => {
+  const noChange: AgentAttemptResult = {
+    outcome: "no_change",
+    summary: "documentation is current",
+    commits: [],
+    checks: [],
+    blocker: null,
+  };
+  const executor = new SandcastleAgentExecutor(async (received) => {
+    const definition = object(received.output);
+    const standard = object(object(definition.schema)["~standard"]);
+    const validate = standard.validate as (value: unknown) => unknown;
+    assert.deepEqual(await validate(noChange), { value: noChange });
+    const withoutMetadata = {
+      outcome: committed.outcome,
+      summary: committed.summary,
+      commits: committed.commits,
+      checks: committed.checks,
+      blocker: committed.blocker,
+    };
+    assert.ok(object(await validate(withoutMetadata)).issues);
+    return result(
+      `<agent_attempt_result>${JSON.stringify(noChange)}</agent_attempt_result>`,
+      noChange,
+    );
+  });
+
+  assert.deepEqual(
+    await executor.execute({
+      ...input(),
+      pullRequestMetadata: "required_for_committed",
+    }),
+    noChange,
+  );
+});
+
 test("SandcastleAgentExecutor aborts a continuously active run at the configured total timeout", async () => {
   const executor = new SandcastleAgentExecutor(
     (options) =>

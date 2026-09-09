@@ -16,7 +16,7 @@ import type {
 import {
   type DeliveryBoundaryResult,
   type DiscoveryInput,
-  revalidateReservedDeliveryTicket,
+  revalidateActiveTicket,
 } from "./discovery.ts";
 import {
   externalRead,
@@ -61,6 +61,18 @@ export interface AttemptBatchResult {
   handoffs: VerifiedHandoff[];
 }
 
+type AgentStop =
+  | { outcome: "blocked"; reason: string }
+  | { outcome: "no_change"; reason: string };
+
+export type MaintenanceAttemptResult =
+  | { outcome: "committed"; handoff: VerifiedHandoff }
+  | AgentStop
+  | {
+      outcome: "boundary";
+      boundary: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
+    };
+
 class BoundaryStop extends Error {
   readonly result: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
 
@@ -92,7 +104,7 @@ async function boundary(
   input: AgentOperationInput,
   ticket: number,
 ): Promise<void> {
-  const result = await revalidateReservedDeliveryTicket(input, ticket);
+  const result = await revalidateActiveTicket(input, ticket);
   if (result.outcome !== "ready") throw new BoundaryStop(result);
 }
 
@@ -146,7 +158,7 @@ function trustedHandoff(
 async function runAgentOperation(
   input: AgentOperationInput,
   operation: {
-    phase: "implement" | "ci_repair" | "conflict_repair";
+    phase: "implement" | "ci_repair" | "conflict_repair" | "maintenance";
     ticket: number;
     worktree: string;
     branch: string;
@@ -154,13 +166,13 @@ async function runAgentOperation(
     requiredAncestor?: string;
     promptFile: string;
     promptArgs: Record<string, string | number>;
-    pullRequestMetadata: "required" | "ignored";
+    pullRequestMetadata: "required" | "required_for_committed" | "ignored";
     existingPrMetadata?: Pick<VerifiedHandoff, "prTitle" | "prBody">;
     agent: AgentConfig;
     signal: AbortSignal;
     attemptCounter: { value: number };
   },
-): Promise<VerifiedHandoff | string> {
+): Promise<VerifiedHandoff | AgentStop> {
   for (;;) {
     await boundary(input, operation.ticket);
     operation.attemptCounter.value += 1;
@@ -206,7 +218,10 @@ async function runAgentOperation(
       await boundary(input, operation.ticket);
       if (result.outcome === "blocked") {
         await appendOperation(input, event, "blocked", null);
-        return `Delivery Ticket ${operation.ticket} blocked: ${result.blocker}`;
+        return {
+          outcome: "blocked",
+          reason: `${input.ticketKind ?? "Delivery Ticket"} ${operation.ticket} blocked: ${result.blocker}`,
+        };
       }
       const observed = await input.gitWorkspace.inspect({
         worktree: operation.worktree,
@@ -227,7 +242,10 @@ async function runAgentOperation(
         if (observed.commits.length !== 0)
           throw new Error("no_change left new commits");
         await appendOperation(input, event, "no_change", null);
-        return `Delivery Ticket ${operation.ticket} no_change: ${result.summary}`;
+        return {
+          outcome: "no_change",
+          reason: `${input.ticketKind ?? "Delivery Ticket"} ${operation.ticket} no_change: ${result.summary}`,
+        };
       }
       if (
         observed.commits.length === 0 ||
@@ -326,7 +344,7 @@ async function implementTicket(
         )(1),
       operator: input.operator,
     });
-    return await runAgentOperation(input, {
+    const result = await runAgentOperation(input, {
       phase: "implement",
       ticket,
       worktree,
@@ -347,6 +365,7 @@ async function implementTicket(
       signal: controller.signal,
       attemptCounter: { value: 0 },
     });
+    return "reason" in result ? result.reason : result;
   } catch (error) {
     if (error instanceof BoundaryStop && error.result.outcome === "stopped")
       return error.result.reason;
@@ -405,8 +424,8 @@ export async function runCiRepairAttempt(
       signal: input.signal,
       attemptCounter: input.attemptCounter,
     });
-    return typeof result === "string"
-      ? { outcome: "consumed", reason: result }
+    return "reason" in result
+      ? { outcome: "consumed", reason: result.reason }
       : { outcome: "handoff", handoff: result };
   } catch (error) {
     if (error instanceof BoundaryStop) {
@@ -464,9 +483,93 @@ export async function runConflictRepairAttempt(
       signal: input.signal,
       attemptCounter: input.attemptCounter,
     });
-    return typeof result === "string"
-      ? { outcome: "consumed", reason: result }
+    return "reason" in result
+      ? { outcome: "consumed", reason: result.reason }
       : { outcome: "handoff", handoff: result };
+  } catch (error) {
+    if (error instanceof BoundaryStop) {
+      return { outcome: "boundary", boundary: error.result };
+    }
+    throw error;
+  }
+}
+
+export async function runMaintenanceAttempt(
+  input: AgentOperationInput & {
+    checkout: string;
+    ticket: number;
+    promptFile: string;
+    agent: AgentConfig;
+  },
+): Promise<MaintenanceAttemptResult> {
+  try {
+    await boundary(input, input.ticket);
+    const base = await externalRead({
+      action: () =>
+        input.gitWorkspace.fetchTargetBranch(
+          input.checkout,
+          input.targetBranch,
+        ),
+      parseOverride: (value) => {
+        const parsed = JSON.parse(value) as { base?: unknown };
+        return fullSha(parsed.base);
+      },
+      audit: input.audit,
+      event: input.event(
+        "maintenance",
+        "fetch_target_branch",
+        input.targetBranch,
+      ),
+      clock: input.clock,
+      operator: input.operator,
+    });
+    const branch = `sandcastle/run-${input.runId}/maintenance-${input.ticket}`;
+    const worktree = path.join(
+      input.projectDirectory,
+      "worktrees",
+      input.runId,
+      `maintenance-${input.ticket}`,
+    );
+    await workflowWrite({
+      action: () =>
+        input.gitWorkspace.createWorktree({
+          checkout: input.checkout,
+          worktree,
+          branch,
+          base,
+        }),
+      audit: input.audit,
+      event: () =>
+        input.event(
+          "maintenance",
+          "create_worktree",
+          `ticket:${input.ticket}`,
+        )(1),
+      operator: input.operator,
+    });
+    const result = await runAgentOperation(input, {
+      phase: "maintenance",
+      ticket: input.ticket,
+      worktree,
+      branch,
+      base,
+      promptFile: input.promptFile,
+      promptArgs: {
+        TICKET_NUMBER: input.ticket,
+        TICKET_REFERENCE: `${input.repository}#${input.ticket}`,
+        WORKTREE_PATH: worktree,
+        BRANCH: branch,
+        BASE_SHA: base,
+        TARGET_BRANCH: input.targetBranch,
+      },
+      pullRequestMetadata: "required_for_committed",
+      agent: input.agent,
+      signal: new AbortController().signal,
+      attemptCounter: { value: 0 },
+    });
+    return "reason" in result
+      ? result
+      : { outcome: "committed", handoff: result };
   } catch (error) {
     if (error instanceof BoundaryStop) {
       return { outcome: "boundary", boundary: error.result };

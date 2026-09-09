@@ -154,3 +154,74 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
     ],
   ]);
 });
+
+test("GitHubTracker ensures the documentation label and creates a standalone Maintenance Ticket", async () => {
+  const calls: string[][] = [];
+  const labels = Array.from({ length: 100 }, (_, index) => ({
+    name: index === 99 ? "other" : `label-${index}`,
+  }));
+  const responses = [
+    JSON.stringify(labels),
+    "{}",
+    '{"number":100,"state":"open","state_reason":null,"assignees":[],"labels":[{"name":"doc-maintain"}]}',
+  ];
+  const tracker = new GitHubTracker("configured-token", async (args) => {
+    calls.push(args);
+    return responses.shift() ?? "{}";
+  });
+
+  assert.deepEqual(await tracker.listLabelsPage("owner/repo", 2), {
+    labels: labels.map(({ name }) => name),
+    nextPage: 3,
+  });
+  await tracker.createLabel("owner/repo", "doc-maintain");
+  assert.deepEqual(
+    await tracker.createMaintenanceTicket(
+      "owner/repo",
+      "Maintain project documentation",
+      "Run the configured documentation-maintenance prompt for the current Target Branch.",
+      "doc-maintain",
+    ),
+    {
+      number: 100,
+      state: "open",
+      stateReason: null,
+      assignees: [],
+      labels: ["doc-maintain"],
+    },
+  );
+  assert.deepEqual(calls, [
+    [
+      "api",
+      "--method",
+      "GET",
+      "repos/owner/repo/labels",
+      "-f",
+      "per_page=100",
+      "-f",
+      "page=2",
+    ],
+    [
+      "api",
+      "--method",
+      "POST",
+      "repos/owner/repo/labels",
+      "-f",
+      "name=doc-maintain",
+      "-f",
+      "color=5319e7",
+    ],
+    [
+      "api",
+      "--method",
+      "POST",
+      "repos/owner/repo/issues",
+      "-f",
+      "title=Maintain project documentation",
+      "-f",
+      "body=Run the configured documentation-maintenance prompt for the current Target Branch.",
+      "-f",
+      "labels[]=doc-maintain",
+    ],
+  ]);
+});

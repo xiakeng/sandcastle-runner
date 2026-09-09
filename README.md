@@ -33,6 +33,10 @@ links. Repair PR metadata is ignored because the Runner retains the original Pul
 The conflict-repair prompt receives the Pull Request arguments plus `{{TARGET_BRANCH_SHA}}` and
 `{{MERGE_CONFLICT}}`. The first is the freshly fetched Target Branch commit; the second is the
 explicit conflict reported by the merge request.
+The documentation prompt receives `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`,
+`{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{BASE_SHA}}`, and `{{TARGET_BRANCH}}`. It owns each
+documentation surface's full Documentation Base and receives no completed-ticket list, commit range,
+or synthesized context.
 
 ```json
 {
@@ -132,6 +136,13 @@ After every successful Batch, the same Run performs a complete rescan so newly v
 unblocked work can be selected. Before reporting exhaustion or closing the Parent, it performs a
 final complete scan. Only an initially empty Parent returns `no_work`; if a Parent had children
 earlier in the Run and a later scan becomes empty, that scan proceeds through Parent closeout.
+
+Each confirmed Completed Delivery Ticket adds one Run-local documentation credit. After a successful
+Batch, three credits trigger a standalone `doc-maintain` Maintenance Ticket before the next rescan;
+a final closeout scan also triggers one when any credit remains. Maintenance uses a fresh Worktree,
+the documentation prompt/profile, and the ordinary PR, CI/repair, merge, and closure path. A clean
+`no_change` result closes the Maintenance Ticket directly. Successful maintenance resets the counter
+to zero; blocked or failed maintenance leaves its artifacts unresolved and stops the Run.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any

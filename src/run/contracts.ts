@@ -21,6 +21,11 @@ export interface BlockerPage {
   nextPage: number | null;
 }
 
+export interface LabelPage {
+  labels: string[];
+  nextPage: number | null;
+}
+
 export interface Tracker {
   getParent(repository: string, parentTicket: number): Promise<Ticket>;
   listChildrenPage(
@@ -34,6 +39,14 @@ export interface Tracker {
     ticket: number,
     page: number,
   ): Promise<BlockerPage>;
+  listLabelsPage(repository: string, page: number): Promise<LabelPage>;
+  createLabel(repository: string, label: string): Promise<void>;
+  createMaintenanceTicket(
+    repository: string,
+    title: string,
+    body: string,
+    label: string,
+  ): Promise<Ticket>;
   addLabel(repository: string, ticket: number, label: string): Promise<void>;
   addAssignee(
     repository: string,
@@ -179,7 +192,7 @@ export interface AgentAttemptInput {
   base: string;
   promptFile: string;
   promptArgs: Record<string, string | number>;
-  pullRequestMetadata: "required" | "ignored";
+  pullRequestMetadata: "required" | "required_for_committed" | "ignored";
   model: string;
   effort: "low" | "medium" | "high" | "xhigh";
   gitConfigGlobal: string;

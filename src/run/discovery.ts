@@ -24,6 +24,8 @@ export interface DiscoveryInput {
   runnerAccount: string;
   reservationLabel: string;
   hadChildren?: boolean;
+  ticketBoundary?: TicketBoundary;
+  ticketKind?: "Delivery Ticket" | "Maintenance Ticket";
 }
 
 export type DiscoveryResult =
@@ -370,6 +372,12 @@ export type MergedDeliveryBoundaryResult =
   | { outcome: "ready"; ticket: Ticket }
   | { outcome: "terminal"; ticket: Ticket };
 
+export interface TicketBoundary {
+  beforeOperation(ticket: number): Promise<DeliveryBoundaryResult>;
+  afterMerge(ticket: number): Promise<MergedDeliveryBoundaryResult>;
+  releaseTerminal(ticket: Ticket): Promise<void>;
+}
+
 async function revalidateReserved(
   input: DiscoveryInput,
   ticketNumber: number,
@@ -449,6 +457,93 @@ export function releaseTerminalReservation(
     (ticket.assignees ?? []).includes(input.runnerAccount),
     (ticket.labels ?? []).includes(input.reservationLabel),
   );
+}
+
+export function revalidateActiveTicket(
+  input: DiscoveryInput,
+  ticket: number,
+): Promise<DeliveryBoundaryResult> {
+  return (
+    input.ticketBoundary?.beforeOperation(ticket) ??
+    revalidateReservedDeliveryTicket(input, ticket)
+  );
+}
+
+export function revalidateMergedTicket(
+  input: DiscoveryInput,
+  ticket: number,
+): Promise<MergedDeliveryBoundaryResult> {
+  return (
+    input.ticketBoundary?.afterMerge(ticket) ??
+    revalidateMergedDeliveryTicket(input, ticket)
+  );
+}
+
+export function releaseTerminalTicket(
+  input: DiscoveryInput,
+  ticket: Ticket,
+): Promise<void> {
+  return (
+    input.ticketBoundary?.releaseTerminal(ticket) ??
+    releaseTerminalReservation(input, ticket)
+  );
+}
+
+export async function revalidateParentForOperation(
+  input: DiscoveryInput,
+): Promise<DeliveryBoundaryResult> {
+  const result = boundaryResult(await readParent(input, "maintenance"));
+  return result
+    ? {
+        outcome: result.outcome === "cancelled" ? "cancelled" : "failed",
+        reason: result.reasons[0] ?? "Parent Ticket changed",
+      }
+    : { outcome: "ready" };
+}
+
+export async function revalidateStandaloneMaintenanceTicket(
+  input: DiscoveryInput,
+  ticketNumber: number,
+): Promise<MergedDeliveryBoundaryResult> {
+  const parent = await revalidateParentForOperation(input);
+  if (parent.outcome !== "ready") return parent;
+  const ticket = await externalRead({
+    action: () => input.tracker.getTicket(input.repository, ticketNumber),
+    parseOverride: (value) =>
+      parseTicket(JSON.parse(value) as unknown, ticketNumber),
+    audit: input.audit,
+    event: input.event(
+      "maintenance",
+      "read_maintenance_ticket",
+      `ticket:${ticketNumber}`,
+    ),
+    clock: input.clock,
+    operator: input.operator,
+  });
+  if (ticket.state === "closed") return { outcome: "terminal", ticket };
+  const blockers = await readBlockers(input, ticketNumber, "maintenance");
+  if (blockers.some(({ state }) => state === "open")) {
+    return {
+      outcome: "stopped",
+      reason: `Maintenance Ticket ${ticketNumber} became blocked`,
+    };
+  }
+  if ((ticket.assignees ?? []).length > 0) {
+    return {
+      outcome: "stopped",
+      reason: `Maintenance Ticket ${ticketNumber} became externally owned`,
+    };
+  }
+  if (
+    !(ticket.labels ?? []).includes("doc-maintain") ||
+    (ticket.labels ?? []).includes(input.reservationLabel)
+  ) {
+    return {
+      outcome: "stopped",
+      reason: `Maintenance Ticket ${ticketNumber} lost its standalone markers`,
+    };
+  }
+  return { outcome: "ready", ticket };
 }
 
 function reasons(selection: Selection, batch: number[]): string[] {
