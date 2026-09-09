@@ -1,4 +1,8 @@
-import type { CodeHost } from "../run/contracts.ts";
+import type {
+  CodeHost,
+  PullRequestIdentity,
+  RequiredCheck,
+} from "../run/contracts.ts";
 import { GitHubClient, type GitHubCommand } from "./github-client.ts";
 
 export class GitHubCodeHost implements CodeHost {
@@ -25,4 +29,82 @@ export class GitHubCodeHost implements CodeHost {
     }
     return value.default_branch;
   }
+
+  async createPullRequest(input: {
+    repository: string;
+    targetBranch: string;
+    branch: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequestIdentity> {
+    return pullRequest(
+      await this.client.request([
+        "pr",
+        "create",
+        "--repo",
+        input.repository,
+        "--base",
+        input.targetBranch,
+        "--head",
+        input.branch,
+        "--title",
+        input.title,
+        "--body",
+        input.body,
+      ]),
+    );
+  }
+
+  async getRequiredChecks(
+    repository: string,
+    pullRequestNumber: number,
+  ): Promise<RequiredCheck[]> {
+    const value = JSON.parse(
+      await this.client.request(
+        [
+          "pr",
+          "checks",
+          String(pullRequestNumber),
+          "--repo",
+          repository,
+          "--required",
+          "--json",
+          "name,state,link,bucket",
+        ],
+        [1, 8],
+      ),
+    ) as unknown;
+    if (!Array.isArray(value))
+      throw new Error("GitHub returned invalid checks");
+    return value.map(requiredCheck);
+  }
+}
+
+function pullRequest(value: string): PullRequestIdentity {
+  const url = value.trim();
+  const match = /\/pull\/(\d+)\/?$/u.exec(url);
+  if (!match) throw new Error("GitHub returned invalid Pull Request identity");
+  return { number: Number(match[1]), url };
+}
+
+function requiredCheck(value: unknown): RequiredCheck {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("GitHub returned invalid required-check evidence");
+  const check = value as Record<string, unknown>;
+  if (
+    typeof check.name !== "string" ||
+    typeof check.state !== "string" ||
+    typeof check.link !== "string" ||
+    !["pass", "fail", "pending", "skipping", "cancel"].includes(
+      String(check.bucket),
+    )
+  ) {
+    throw new Error("GitHub returned invalid required-check evidence");
+  }
+  return {
+    name: check.name,
+    state: check.state,
+    link: check.link,
+    bucket: check.bucket as RequiredCheck["bucket"],
+  };
 }

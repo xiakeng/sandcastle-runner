@@ -11,20 +11,30 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
   const worktree = path.join(root, "worktrees", "ticket-9");
   const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  const calls: { cwd: string; args: string[]; timeout: number }[] = [];
-  const workspace = new LocalGitWorkspace(async (cwd, args, timeout) => {
-    calls.push({ cwd, args, timeout });
-    if (args[0] === "fetch") return "";
-    if (args.join(" ") === "rev-parse FETCH_HEAD") return `${base}\n`;
-    if (args[0] === "worktree") return "";
-    if (args.join(" ") === "rev-parse --show-toplevel") return `${worktree}\n`;
-    if (args.join(" ") === "branch --show-current")
-      return "sandcastle/run-id/ticket-9\n";
-    if (args[0] === "merge-base") return `${base}\n`;
-    if (args[0] === "log") return `${commit}\0feat: implementation\n`;
-    if (args[0] === "status") return "";
-    throw new Error(`unexpected Git command: ${args.join(" ")}`);
-  });
+  const calls: {
+    cwd: string;
+    args: string[];
+    timeout: number;
+    env?: Record<string, string>;
+  }[] = [];
+  const workspace = new LocalGitWorkspace(
+    "configured-token",
+    async (cwd, args, { timeout, env }) => {
+      calls.push({ cwd, args, timeout, ...(env ? { env } : {}) });
+      if (args.includes("fetch")) return "";
+      if (args.includes("push")) return "";
+      if (args.join(" ") === "rev-parse FETCH_HEAD") return `${base}\n`;
+      if (args[0] === "worktree") return "";
+      if (args.join(" ") === "rev-parse --show-toplevel")
+        return `${worktree}\n`;
+      if (args.join(" ") === "branch --show-current")
+        return "sandcastle/run-id/ticket-9\n";
+      if (args[0] === "merge-base") return `${base}\n`;
+      if (args[0] === "log") return `${commit}\0feat: implementation\n`;
+      if (args[0] === "status") return "";
+      throw new Error(`unexpected Git command: ${args.join(" ")}`);
+    },
+  );
 
   try {
     assert.equal(await workspace.fetchTargetBranch(root, "trunk"), base);
@@ -41,6 +51,7 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
       commits: [{ sha: commit, message: "feat: implementation" }],
       clean: true,
     });
+    await workspace.push(worktree, "sandcastle/run-id/ticket-9");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -48,8 +59,16 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
   assert.deepEqual(calls.slice(0, 3), [
     {
       cwd: root,
-      args: ["fetch", "--no-tags", "origin", "trunk"],
+      args: [
+        "-c",
+        "credential.helper=!gh auth git-credential",
+        "fetch",
+        "--no-tags",
+        "origin",
+        "trunk",
+      ],
       timeout: 60_000,
+      env: { GH_TOKEN: "configured-token" },
     },
     { cwd: root, args: ["rev-parse", "FETCH_HEAD"], timeout: 60_000 },
     {
@@ -71,13 +90,28 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
     ),
     false,
   );
+  assert.deepEqual(calls.at(-1), {
+    cwd: worktree,
+    args: [
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "push",
+      "origin",
+      "sandcastle/run-id/ticket-9",
+    ],
+    timeout: 60_000,
+    env: { GH_TOKEN: "configured-token" },
+  });
 });
 
 test("LocalGitWorkspace surfaces a Worktree name collision without adopting it", async () => {
-  const workspace = new LocalGitWorkspace(async (_cwd, args) => {
-    if (args[0] === "worktree") throw new Error("already exists");
-    return "";
-  });
+  const workspace = new LocalGitWorkspace(
+    "configured-token",
+    async (_cwd, args) => {
+      if (args[0] === "worktree") throw new Error("already exists");
+      return "";
+    },
+  );
 
   await assert.rejects(
     workspace.createWorktree({

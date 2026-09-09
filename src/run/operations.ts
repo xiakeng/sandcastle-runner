@@ -61,10 +61,19 @@ interface ReadOperation<T> {
 }
 
 interface WriteOperation {
-  action: () => Promise<void>;
   audit: AuditLog;
   event: () => Omit<AuditEvent, "result" | "error">;
   operator: OperatorIO;
+}
+
+interface VoidWriteOperation extends WriteOperation {
+  action: () => Promise<void>;
+  parseOverride?: never;
+}
+
+interface ResultWriteOperation<T> extends WriteOperation {
+  action: () => Promise<T>;
+  parseOverride: (value: string) => T;
 }
 
 async function appendPauseEvent(
@@ -81,6 +90,18 @@ async function appendPauseEvent(
         result,
         error: null,
       }),
+    operator,
+  );
+}
+
+export async function recordOperatorOverride(
+  audit: AuditLog,
+  event: Omit<AuditEvent, "result" | "error">,
+  operator: OperatorIO,
+): Promise<void> {
+  await appendPauseEvent(audit, event, operator, "operator_override");
+  await supervisedAuditWrite(
+    () => audit.append({ ...event, result: "operator_override", error: null }),
     operator,
   );
 }
@@ -181,7 +202,13 @@ export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
   }
 }
 
-export async function workflowWrite(operation: WriteOperation): Promise<void> {
+export function workflowWrite(operation: VoidWriteOperation): Promise<void>;
+export function workflowWrite<T>(
+  operation: ResultWriteOperation<T>,
+): Promise<T>;
+export async function workflowWrite<T>(
+  operation: VoidWriteOperation | ResultWriteOperation<T>,
+): Promise<T | void> {
   for (;;) {
     const event = operation.event();
     await supervisedAuditWrite(
@@ -190,7 +217,17 @@ export async function workflowWrite(operation: WriteOperation): Promise<void> {
       operation.operator,
     );
     try {
-      await operation.action();
+      const result = await operation.action();
+      await supervisedAuditWrite(
+        () =>
+          operation.audit.append({
+            ...event,
+            result: "succeeded",
+            error: null,
+          }),
+        operation.operator,
+      );
+      return result;
     } catch (error) {
       await supervisedAuditWrite(
         () =>
@@ -202,37 +239,36 @@ export async function workflowWrite(operation: WriteOperation): Promise<void> {
           }),
         operation.operator,
       );
-      const response = await pauseForOperator(
-        operation.audit,
-        event,
-        operation.operator,
-        "Operation failed. Enter to retry, q to cancel, or acknowledge a trusted successful write.",
-      );
-      if (response !== "") {
-        await appendPauseEvent(
+      for (;;) {
+        const response = await pauseForOperator(
           operation.audit,
           event,
           operation.operator,
-          "operator_override",
+          "Operation failed. Enter to retry, q to cancel, or acknowledge a trusted successful write.",
         );
-        await supervisedAuditWrite(
-          () =>
-            operation.audit.append({
-              ...event,
-              result: "operator_override",
-              error: null,
-            }),
+        if (response === "") break;
+        let result: T | void;
+        try {
+          result = operation.parseOverride
+            ? operation.parseOverride(response)
+            : undefined;
+        } catch {
+          await appendPauseEvent(
+            operation.audit,
+            event,
+            operation.operator,
+            "invalid_override",
+          );
+          continue;
+        }
+        await recordOperatorOverride(
+          operation.audit,
+          event,
           operation.operator,
         );
-        return;
+        return result;
       }
       continue;
     }
-    await supervisedAuditWrite(
-      () =>
-        operation.audit.append({ ...event, result: "succeeded", error: null }),
-      operation.operator,
-    );
-    return;
   }
 }

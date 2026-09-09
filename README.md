@@ -2,8 +2,9 @@
 
 Sandcastle Runner is a local CLI for delivering a configured GitHub Parent Ticket. The current
 implementation supports supervised startup, complete Delivery Ticket and blocker discovery,
-Reservations, and Sandcastle-backed implementation through independently Verified Handoffs. A later
-delivery slice will publish those handoffs.
+Reservations, Sandcastle-backed implementation through independently Verified Handoffs, and
+publication through required CI readiness observation. A later delivery slice will integrate
+CI-ready Pull Requests.
 
 ## Project configuration
 
@@ -87,7 +88,12 @@ Worktree for each Delivery Ticket at that exact commit, and starts the Agent Att
 Each Attempt gets an isolated temporary `GIT_CONFIG_GLOBAL`, the configured model, effort and agent
 timeout, and the caller-owned implementation prompt. The temporary Git configuration is removed after
 Sandcastle settles; unresolved branches and Worktrees remain for operator action. Verified Handoffs
-are returned in the `incomplete` summary until the publication slice consumes them.
+are pushed with the configured code-host credential and published as non-draft Pull Requests using
+their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls required checks
+through GitHub CLI semantics. Empty, passing, or skipped required-check sets are CI-ready; pending
+checks are polled every 10 seconds; failed or cancelled checks remain associated with the Pull
+Request as CI-repair evidence. Read failures use the common retry policy, and the configured
+required-check timeout enters Operator Pause. Publication never merges or closes a Delivery Ticket.
 
 Before reporting exhaustion or closing the Parent, the Run performs a final complete scan so newly
 visible work can be selected.

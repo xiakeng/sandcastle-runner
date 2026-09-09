@@ -104,7 +104,8 @@ export async function executeCli(
     dependencies.tracker ?? new GitHubTracker(loaded.trackerToken);
   const codeHost =
     dependencies.codeHost ?? new GitHubCodeHost(loaded.codeHostToken);
-  const gitWorkspace = dependencies.gitWorkspace ?? new LocalGitWorkspace();
+  const gitWorkspace =
+    dependencies.gitWorkspace ?? new LocalGitWorkspace(loaded.codeHostToken);
   const agentExecutor =
     dependencies.agentExecutor ?? new SandcastleAgentExecutor();
   let summary: RunSummary;
@@ -134,6 +135,8 @@ export async function executeCli(
       ),
       implementationAgent: loaded.config.agents.implement,
       agentTimeoutMs: loaded.config.timeouts.agentMinutes * 60_000,
+      requiredChecksTimeoutMs:
+        loaded.config.timeouts.requiredChecksMinutes * 60_000,
       gitWorkspace,
       agentExecutor,
     });

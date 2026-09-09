@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 export interface GitHubCommandOptions {
   token: string;
   timeout: number;
+  allowedExitCodes?: number[];
 }
 
 export type GitHubCommand = (
@@ -10,7 +11,10 @@ export type GitHubCommand = (
   options: GitHubCommandOptions,
 ) => Promise<string>;
 
-const runGitHubCommand: GitHubCommand = (args, { token, timeout }) =>
+const runGitHubCommand: GitHubCommand = (
+  args,
+  { token, timeout, allowedExitCodes = [] },
+) =>
   new Promise((resolve, reject) => {
     execFile(
       "gh",
@@ -24,6 +28,22 @@ const runGitHubCommand: GitHubCommand = (args, { token, timeout }) =>
       (error, stdout, stderr) => {
         if (!error) {
           resolve(stdout);
+          return;
+        }
+        if (
+          typeof error.code === "number" &&
+          allowedExitCodes.includes(error.code) &&
+          stdout.trim() !== ""
+        ) {
+          resolve(stdout);
+          return;
+        }
+        if (
+          typeof error.code === "number" &&
+          allowedExitCodes.includes(error.code) &&
+          /no (?:required )?checks reported/u.test(stderr)
+        ) {
+          resolve("[]");
           return;
         }
         const detail = (stderr.trim() || error.message).replaceAll(
@@ -44,7 +64,11 @@ export class GitHubClient {
     this.command = command;
   }
 
-  request(args: string[]): Promise<string> {
-    return this.command(args, { token: this.token, timeout: 60_000 });
+  request(args: string[], allowedExitCodes?: number[]): Promise<string> {
+    return this.command(args, {
+      token: this.token,
+      timeout: 60_000,
+      ...(allowedExitCodes ? { allowedExitCodes } : {}),
+    });
   }
 }

@@ -11,6 +11,10 @@ import type {
 } from "./contracts.ts";
 import { discoverAndReserve } from "./discovery.ts";
 import { externalRead, workflowWrite } from "./operations.ts";
+import {
+  publishVerifiedHandoffs,
+  type PullRequestObservation,
+} from "./pull-request.ts";
 
 export type RunOutcome =
   "succeeded" | "no_work" | "incomplete" | "cancelled" | "failed";
@@ -23,6 +27,7 @@ export interface RunSummary {
   reasons: string[];
   batch?: number[];
   handoffs?: VerifiedHandoff[];
+  pullRequests?: PullRequestObservation[];
 }
 
 interface RunInput {
@@ -43,6 +48,7 @@ interface RunInput {
   implementationPrompt: string;
   implementationAgent: AgentConfig;
   agentTimeoutMs: number;
+  requiredChecksTimeoutMs: number;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
 }
@@ -134,13 +140,37 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       gitWorkspace: input.gitWorkspace,
       agentExecutor: input.agentExecutor,
     });
+    const publication =
+      attempts.handoffs.length === 0
+        ? null
+        : await publishVerifiedHandoffs({
+            repository: input.repository,
+            parentTicket: input.parentTicket,
+            tracker: input.tracker,
+            audit: input.audit,
+            clock: input.clock,
+            operator: input.operator,
+            event,
+            runnerAccount: input.runnerAccount,
+            reservationLabel: input.reservationLabel,
+            targetBranch,
+            requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
+            handoffs: attempts.handoffs,
+            gitWorkspace: input.gitWorkspace,
+            codeHost: input.codeHost,
+          });
     return {
       ...attempts,
+      ...(publication ?? {}),
       project: input.project,
       parentTicket: input.parentTicket,
       targetBranch,
       batch: discovery.batch,
-      reasons: [...discovery.reasons, ...attempts.reasons],
+      reasons: [
+        ...discovery.reasons,
+        ...attempts.reasons,
+        ...(publication?.reasons ?? []),
+      ],
     };
   }
   return {

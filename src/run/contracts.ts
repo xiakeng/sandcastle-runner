@@ -50,6 +50,29 @@ export interface Tracker {
 
 export interface CodeHost {
   resolveTargetBranch(repository: string): Promise<string>;
+  createPullRequest(input: {
+    repository: string;
+    targetBranch: string;
+    branch: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequestIdentity>;
+  getRequiredChecks(
+    repository: string,
+    pullRequest: number,
+  ): Promise<RequiredCheck[]>;
+}
+
+export interface PullRequestIdentity {
+  number: number;
+  url: string;
+}
+
+export interface RequiredCheck {
+  name: string;
+  state: string;
+  link: string;
+  bucket: "pass" | "fail" | "pending" | "skipping" | "cancel";
 }
 
 export interface CommitEvidence {
@@ -83,6 +106,7 @@ export interface GitWorkspace {
     worktree: string;
     base: string;
   }): Promise<WorkspaceEvidence>;
+  push(worktree: string, branch: string): Promise<void>;
 }
 
 export interface AgentAttemptResult {

@@ -7,18 +7,32 @@ import type { CommitEvidence, GitWorkspace } from "../run/contracts.ts";
 export type GitCommand = (
   cwd: string,
   args: string[],
-  timeout: number,
+  options: {
+    timeout: number;
+    env?: Record<string, string>;
+  },
 ) => Promise<string>;
 
-const runGitCommand: GitCommand = (cwd, args, timeout) =>
+const runGitCommand: GitCommand = (cwd, args, { timeout, env = {} }) =>
   new Promise((resolve, reject) => {
     execFile(
       "git",
       args,
-      { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout },
+      {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout,
+      },
       (error, stdout, stderr) => {
         if (!error) resolve(stdout);
-        else reject(new Error((stderr.trim() || error.message).trim()));
+        else {
+          let detail = (stderr.trim() || error.message).trim();
+          for (const value of Object.values(env))
+            detail = detail.replaceAll(value, "[redacted]");
+          reject(new Error(detail));
+        }
       },
     );
   });
@@ -47,23 +61,31 @@ function commits(value: string): CommitEvidence[] {
 }
 
 export class LocalGitWorkspace implements GitWorkspace {
+  private readonly token: string;
   private readonly command: GitCommand;
 
-  constructor(command: GitCommand = runGitCommand) {
+  constructor(token: string, command: GitCommand = runGitCommand) {
+    this.token = token;
     this.command = command;
+  }
+
+  private remote(cwd: string, args: string[]): Promise<string> {
+    return this.command(
+      cwd,
+      ["-c", "credential.helper=!gh auth git-credential", ...args],
+      { timeout: 60_000, env: { GH_TOKEN: this.token } },
+    );
   }
 
   async fetchTargetBranch(
     checkout: string,
     targetBranch: string,
   ): Promise<string> {
-    await this.command(
-      checkout,
-      ["fetch", "--no-tags", "origin", targetBranch],
-      60_000,
-    );
+    await this.remote(checkout, ["fetch", "--no-tags", "origin", targetBranch]);
     return sha(
-      await this.command(checkout, ["rev-parse", "FETCH_HEAD"], 60_000),
+      await this.command(checkout, ["rev-parse", "FETCH_HEAD"], {
+        timeout: 60_000,
+      }),
     );
   }
 
@@ -77,22 +99,30 @@ export class LocalGitWorkspace implements GitWorkspace {
     await this.command(
       input.checkout,
       ["worktree", "add", "-b", input.branch, input.worktree, input.base],
-      60_000,
+      { timeout: 60_000 },
     );
   }
 
   async inspect({ worktree, base }: { worktree: string; base: string }) {
     const [actualPath, branch, actualBase, commitList, status] =
       await Promise.all([
-        this.command(worktree, ["rev-parse", "--show-toplevel"], 60_000),
-        this.command(worktree, ["branch", "--show-current"], 60_000),
-        this.command(worktree, ["merge-base", base, "HEAD"], 60_000),
+        this.command(worktree, ["rev-parse", "--show-toplevel"], {
+          timeout: 60_000,
+        }),
+        this.command(worktree, ["branch", "--show-current"], {
+          timeout: 60_000,
+        }),
+        this.command(worktree, ["merge-base", base, "HEAD"], {
+          timeout: 60_000,
+        }),
         this.command(
           worktree,
           ["log", "--reverse", "--format=%H%x00%s", `${base}..HEAD`],
-          60_000,
+          { timeout: 60_000 },
         ),
-        this.command(worktree, ["status", "--porcelain"], 60_000),
+        this.command(worktree, ["status", "--porcelain"], {
+          timeout: 60_000,
+        }),
       ]);
     return {
       worktree: path.resolve(actualPath.trim()),
@@ -101,5 +131,9 @@ export class LocalGitWorkspace implements GitWorkspace {
       commits: commits(commitList),
       clean: status === "",
     };
+  }
+
+  async push(worktree: string, branch: string): Promise<void> {
+    await this.remote(worktree, ["push", "origin", branch]);
   }
 }

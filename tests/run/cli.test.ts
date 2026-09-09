@@ -18,6 +18,7 @@ import type {
   CodeHost,
   GitWorkspace,
   OperatorIO,
+  RequiredCheck,
   Tracker,
 } from "../../src/run/contracts.ts";
 
@@ -66,6 +67,12 @@ function createCliDependencies(
     async resolveTargetBranch() {
       return "ignored";
     },
+    async createPullRequest() {
+      return { number: 1, url: "https://github.com/owner/repo/pull/1" };
+    },
+    async getRequiredChecks() {
+      return [];
+    },
     ...overrides.codeHost,
   };
   const gitWorkspace: GitWorkspace = {
@@ -82,6 +89,7 @@ function createCliDependencies(
         clean: true,
       };
     },
+    async push() {},
     ...overrides.gitWorkspace,
   };
   const agentExecutor: AgentExecutor = {
@@ -1636,12 +1644,13 @@ test("cancelling a failed audit result append pauses exactly once", async () => 
   assert.equal(pauseCalls, 1);
 });
 
-test("a committed Agent Attempt becomes a Verified Handoff only from matching clean Git evidence", async () => {
+test("a Verified Handoff is published unchanged and becomes CI-ready after check discovery", async () => {
   const root = await createProject();
   const operations: string[] = [];
   let prepared: { worktree: string; branch: string; base: string } | undefined;
   let agentInput: Parameters<AgentExecutor["execute"]>[0] | undefined;
   let gitConfigContents: string | undefined;
+  let checkReads = 0;
   const { tracker } = createAttemptTracker(9);
 
   const result = await executeCli(
@@ -1672,6 +1681,31 @@ test("a committed Agent Attempt becomes a Verified Handoff only from matching cl
             ],
             clean: true,
           };
+        },
+        async push(worktree, branch) {
+          operations.push(`push:${worktree}:${branch}`);
+        },
+      },
+      codeHost: {
+        async createPullRequest(input) {
+          operations.push(
+            `pr:${input.repository}:${input.targetBranch}:${input.branch}:${input.title}:${input.body}`,
+          );
+          return {
+            number: 41,
+            url: "https://github.com/owner/repo/pull/41",
+          };
+        },
+        async getRequiredChecks(repository, pullRequest) {
+          operations.push(`checks:${repository}:${pullRequest}`);
+          checkReads += 1;
+          if (checkReads === 1) throw new Error("temporary read failure");
+          return [];
+        },
+      },
+      clock: {
+        async sleep(milliseconds) {
+          operations.push(`sleep:${milliseconds}`);
         },
       },
       agentExecutor: {
@@ -1720,6 +1754,16 @@ test("a committed Agent Attempt becomes a Verified Handoff only from matching cl
       verification: "verified",
     },
   ]);
+  assert.deepEqual(result.summary.pullRequests, [
+    {
+      ticket: 9,
+      branch: prepared.branch,
+      number: 41,
+      url: "https://github.com/owner/repo/pull/41",
+      readiness: "ready",
+      failedChecks: [],
+    },
+  ]);
   assert.match(prepared.branch, /^sandcastle\/run-[0-9a-f-]+\/ticket-9$/u);
   assert.equal(path.isAbsolute(prepared.worktree), true);
   assert.ok(agentInput);
@@ -1746,7 +1790,355 @@ test("a committed Agent Attempt becomes a Verified Handoff only from matching cl
     `create:${prepared.branch}:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
     `execute:9:${prepared.branch}:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
     "inspect:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    `push:${prepared.worktree}:${prepared.branch}`,
+    `pr:owner/repo:main:${prepared.branch}:feat: implement ticket:Implements the Delivery Ticket.`,
+    "sleep:30000",
+    "checks:owner/repo:41",
+    "sleep:5000",
+    "checks:owner/repo:41",
   ]);
+});
+
+test("required-check polling preserves terminal failure and cancellation evidence", async () => {
+  const scenarios: {
+    name: string;
+    reads: RequiredCheck[][];
+    readiness: "ready" | "failed";
+    failedChecks: RequiredCheck[];
+    sleeps: number[];
+  }[] = [
+    {
+      name: "pending then passing",
+      reads: [
+        [
+          {
+            name: "build",
+            state: "IN_PROGRESS",
+            link: "https://github.com/owner/repo/actions/runs/1",
+            bucket: "pending",
+          },
+        ],
+        [
+          {
+            name: "build",
+            state: "SUCCESS",
+            link: "https://github.com/owner/repo/actions/runs/1",
+            bucket: "pass",
+          },
+        ],
+      ],
+      readiness: "ready",
+      failedChecks: [],
+      sleeps: [30_000, 10_000],
+    },
+    ...(["fail", "cancel"] as const).map((bucket) => {
+      const check = {
+        name: bucket === "fail" ? "build" : "deploy",
+        state: bucket === "fail" ? "FAILURE" : "CANCELLED",
+        link: `https://github.com/owner/repo/actions/runs/${bucket}`,
+        bucket,
+      };
+      return {
+        name: bucket,
+        reads: [[check]],
+        readiness: "failed" as const,
+        failedChecks: [check],
+        sleeps: [30_000],
+      };
+    }),
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await createProject();
+    const sleeps: number[] = [];
+    const reads = [...scenario.reads];
+    let branch = "";
+    const commit = {
+      sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      message: "feat: implementation",
+    };
+    const { tracker } = createAttemptTracker(9);
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker,
+        gitWorkspace: {
+          async fetchTargetBranch() {
+            return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          },
+          async createWorktree(input) {
+            branch = input.branch;
+          },
+          async inspect({ worktree, base }) {
+            return { worktree, branch, base, commits: [commit], clean: true };
+          },
+        },
+        agentExecutor: {
+          async execute() {
+            return {
+              outcome: "committed",
+              summary: "implemented",
+              commits: [commit],
+              checks: [],
+              blocker: null,
+              pr_title: "feat: implementation",
+              pr_body: "Implementation body.",
+            };
+          },
+        },
+        codeHost: {
+          async createPullRequest() {
+            return {
+              number: 41,
+              url: "https://github.com/owner/repo/pull/41",
+            };
+          },
+          async getRequiredChecks() {
+            const checks = reads.shift();
+            assert.ok(checks, `${scenario.name} read beyond script`);
+            return checks;
+          },
+        },
+        clock: {
+          async sleep(milliseconds) {
+            sleeps.push(milliseconds);
+          },
+        },
+      }),
+    );
+
+    assert.equal(
+      result.summary.pullRequests?.[0]?.readiness,
+      scenario.readiness,
+    );
+    assert.deepEqual(
+      result.summary.pullRequests?.[0]?.failedChecks,
+      scenario.failedChecks,
+    );
+    assert.deepEqual(sleeps, scenario.sleeps);
+    assert.equal(reads.length, 0);
+  }
+});
+
+test("required-check timeout enters Operator Pause", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({
+      ...validConfig,
+      timeouts: { ...validConfig.timeouts, requiredChecksMinutes: 1 / 60_000 },
+    }),
+  );
+  let elapsed = 0;
+  let branch = "";
+  let pauseMessage = "";
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return { worktree, branch, base, commits: [commit], clean: true };
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          return {
+            outcome: "committed",
+            summary: "implemented",
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest() {
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+        async getRequiredChecks() {
+          return [
+            {
+              name: "build",
+              state: "IN_PROGRESS",
+              link: "https://github.com/owner/repo/actions/runs/1",
+              bucket: "pending",
+            },
+          ];
+        },
+      },
+      clock: {
+        now: () => new Date(elapsed),
+        async sleep(milliseconds) {
+          elapsed += milliseconds;
+        },
+      },
+      operator: {
+        async pause(message) {
+          pauseMessage = message;
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.match(pauseMessage, /Required checks timed out/u);
+});
+
+test("uncertain push and Pull Request creation writes are never replayed automatically", async () => {
+  for (const failedWrite of ["push", "create"] as const) {
+    const root = await createProject();
+    let branch = "";
+    let pushCalls = 0;
+    let createCalls = 0;
+    const commit = {
+      sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      message: "feat: implementation",
+    };
+    const { tracker } = createAttemptTracker(9);
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker,
+        gitWorkspace: {
+          async fetchTargetBranch() {
+            return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          },
+          async createWorktree(input) {
+            branch = input.branch;
+          },
+          async inspect({ worktree, base }) {
+            return { worktree, branch, base, commits: [commit], clean: true };
+          },
+          async push() {
+            pushCalls += 1;
+            if (failedWrite === "push") throw new Error("uncertain push");
+          },
+        },
+        agentExecutor: {
+          async execute() {
+            return {
+              outcome: "committed",
+              summary: "implemented",
+              commits: [commit],
+              checks: [],
+              blocker: null,
+              pr_title: "feat: implementation",
+              pr_body: "Implementation body.",
+            };
+          },
+        },
+        codeHost: {
+          async createPullRequest() {
+            createCalls += 1;
+            if (failedWrite === "create") throw new Error("uncertain create");
+            return {
+              number: 41,
+              url: "https://github.com/owner/repo/pull/41",
+            };
+          },
+          async getRequiredChecks() {
+            return [];
+          },
+        },
+        operator: {
+          async pause() {
+            return failedWrite === "push"
+              ? "trusted success"
+              : "https://github.com/owner/repo/pull/41";
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.pullRequests?.[0]?.number, 41);
+    assert.equal(pushCalls, 1);
+    assert.equal(createCalls, 1);
+  }
+});
+
+test("Parent cancellation before publication stops without branch, PR, or child mutations", async () => {
+  const root = await createProject();
+  let branch = "";
+  let inspected = false;
+  let writes = 0;
+  let releases = 0;
+  const commit = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async getParent() {
+          return inspected
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+        async removeLabel() {
+          releases += 1;
+        },
+        async removeAssignee() {
+          releases += 1;
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          inspected = true;
+          return { worktree, branch, base, commits: [commit], clean: true };
+        },
+        async push() {
+          writes += 1;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          return {
+            outcome: "committed",
+            summary: "implemented",
+            commits: [commit],
+            checks: [],
+            blocker: null,
+            pr_title: "feat: implementation",
+            pr_body: "Implementation body.",
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest() {
+          writes += 1;
+          return { number: 41, url: "https://github.com/owner/repo/pull/41" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(writes, 0);
+  assert.equal(releases, 0);
 });
 
 test("valid no_change and blocked results stay unresolved without handoffs", async () => {
