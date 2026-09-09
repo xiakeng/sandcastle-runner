@@ -3,6 +3,35 @@ import type { Clock, OperatorIO } from "./contracts.ts";
 
 export class OperatorCancelled extends Error {}
 
+export function serializeOperator(
+  operator: OperatorIO,
+  controller: AbortController,
+): OperatorIO {
+  let tail = Promise.resolve();
+  return {
+    write(message) {
+      operator.write(message);
+    },
+    async pause(message) {
+      const previous = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        if (controller.signal.aborted) return null;
+        const response = await operator.pause(message);
+        if (response === null || response === "q")
+          controller.abort(new OperatorCancelled("operator cancelled"));
+        return response;
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
 export async function supervisedAuditWrite(
   action: () => Promise<void>,
   operator: OperatorIO,

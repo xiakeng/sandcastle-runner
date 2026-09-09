@@ -6,29 +6,10 @@ import type { RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
 import type { AgentAttemptResult } from "../../src/run/contracts.ts";
 
-interface StructuredObjectOutput {
-  _tag: "object";
-  maxRetries?: number;
-  schema: {
-    "~standard": {
-      validate(
-        value: unknown,
-      ):
-        | { value: unknown; issues?: undefined }
-        | { issues: readonly { message: string }[]; value?: undefined }
-        | Promise<
-            | { value: unknown; issues?: undefined }
-            | { issues: readonly { message: string }[]; value?: undefined }
-          >;
-    };
-  };
-}
-
-function structuredOutput(
-  output: RunOptions["output"],
-): StructuredObjectOutput {
-  assert.equal(output?._tag, "object");
-  return output;
+function object(value: unknown): Record<string, unknown> {
+  assert.equal(typeof value, "object");
+  assert.notEqual(value, null);
+  return value as Record<string, unknown>;
 }
 
 const committed: AgentAttemptResult = {
@@ -86,16 +67,16 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
   let options: RunOptions | undefined;
   const executor = new SandcastleAgentExecutor(async (received) => {
     options = received;
-    const definition = structuredOutput(received.output);
+    const definition = object(received.output);
+    assert.equal(definition._tag, "object");
+    const standard = object(object(definition.schema)["~standard"]);
+    const validate = standard.validate;
+    if (typeof validate !== "function") assert.fail("schema must validate");
+    const validateSchema = validate as (value: unknown) => unknown;
     assert.ok(
-      (
-        await definition.schema["~standard"].validate({
-          ...committed,
-          pr_body: "",
-        })
-      ).issues?.length,
+      object(await validateSchema({ ...committed, pr_body: "" })).issues,
     );
-    assert.deepEqual(await definition.schema["~standard"].validate(committed), {
+    assert.deepEqual(await validateSchema(committed), {
       value: committed,
     });
     return result(
@@ -132,7 +113,7 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
     type: "file",
     path: "/runner/projects/demo/logs/agent.log",
   });
-  assert.equal(structuredOutput(options.output).maxRetries, 1);
+  assert.equal(object(options.output).maxRetries, 1);
 });
 
 test("SandcastleAgentExecutor rejects multiple result tags", async () => {
@@ -162,4 +143,29 @@ test("SandcastleAgentExecutor aborts a continuously active run at the configured
     executor.execute({ ...input(), timeoutMs: 5 }),
     /Agent Attempt timed out/u,
   );
+});
+
+test("SandcastleAgentExecutor forwards caller cancellation", async () => {
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | undefined;
+  const executor = new SandcastleAgentExecutor(
+    (options) =>
+      new Promise((_resolve, reject) => {
+        receivedSignal = options.signal;
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(new Error("caller aborted")),
+          { once: true },
+        );
+      }),
+  );
+
+  const execution = executor.execute({
+    ...input(),
+    signal: controller.signal,
+  });
+  controller.abort();
+
+  await assert.rejects(execution, /caller aborted/u);
+  assert.equal(receivedSignal?.aborted, true);
 });

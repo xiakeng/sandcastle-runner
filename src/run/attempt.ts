@@ -10,7 +10,6 @@ import type {
   AgentExecutor,
   CommitEvidence,
   GitWorkspace,
-  OperatorIO,
 } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
@@ -21,6 +20,7 @@ import {
   externalRead,
   OperatorCancelled,
   pauseForOperator,
+  serializeOperator,
   supervisedAuditWrite,
   workflowWrite,
 } from "./operations.ts";
@@ -86,35 +86,6 @@ async function appendOperation(
 async function boundary(input: AttemptInput, ticket: number): Promise<void> {
   const result = await revalidateReservedDeliveryTicket(input, ticket);
   if (result.outcome !== "ready") throw new BoundaryStop(result);
-}
-
-function serializedOperator(
-  operator: OperatorIO,
-  controller: AbortController,
-): OperatorIO {
-  let tail = Promise.resolve();
-  return {
-    write(message) {
-      operator.write(message);
-    },
-    async pause(message) {
-      const previous = tail;
-      let release!: () => void;
-      tail = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      await previous;
-      try {
-        if (controller.signal.aborted) return null;
-        const response = await operator.pause(message);
-        if (response === null || response === "q")
-          controller.abort(new OperatorCancelled("operator cancelled"));
-        return response;
-      } finally {
-        release();
-      }
-    },
-  };
 }
 
 function sameCommits(
@@ -383,7 +354,7 @@ export async function implementReservedBatch(
     const controller = new AbortController();
     const concurrentInput = {
       ...input,
-      operator: serializedOperator(input.operator, controller),
+      operator: serializeOperator(input.operator, controller),
     };
     const attempts = candidates.map((ticket) =>
       implementTicket(concurrentInput, ticket, base, controller),
