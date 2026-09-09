@@ -10,9 +10,15 @@ import type {
   TicketClosurePolicy,
   Tracker,
 } from "./contracts.ts";
-import { discoverAndReserve } from "./discovery.ts";
-import { externalRead, workflowWrite } from "./operations.ts";
+import { discoverAndReserve, releaseTerminalReservation } from "./discovery.ts";
 import {
+  externalRead,
+  OperatorCancelled,
+  workflowWrite,
+} from "./operations.ts";
+import {
+  integratePullRequest,
+  observePullRequestForIntegration,
   publishVerifiedHandoffs,
   type PullRequestObservation,
 } from "./pull-request.ts";
@@ -97,6 +103,20 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const pullRequests: PullRequestObservation[] = [];
   const completedTickets: number[] = [];
   const reasons: string[] = [];
+  let hasBatchState = false;
+  const summary = (
+    outcome: RunOutcome,
+    finalReasons: string[] = reasons,
+  ): RunSummary => ({
+    outcome,
+    project: input.project,
+    parentTicket: input.parentTicket,
+    targetBranch,
+    reasons: finalReasons,
+    ...(!hasBatchState
+      ? {}
+      : { batch: batches, handoffs, pullRequests, completedTickets }),
+  });
 
   for (;;) {
     const discovery = await discoverAndReserve({
@@ -111,6 +131,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       reservationLabel: input.reservationLabel,
       hadChildren,
     });
+    if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {
       await workflowWrite({
         action: () =>
@@ -124,30 +145,10 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
           )(1),
         operator: input.operator,
       });
-      return {
-        outcome: "succeeded",
-        project: input.project,
-        parentTicket: input.parentTicket,
-        targetBranch,
-        reasons,
-        ...(batches.length === 0 ? {} : { batch: batches }),
-        ...(handoffs.length === 0 ? {} : { handoffs }),
-        ...(pullRequests.length === 0 ? {} : { pullRequests }),
-        ...(completedTickets.length === 0 ? {} : { completedTickets }),
-      };
+      return summary("succeeded");
     }
     if (discovery.outcome !== "incomplete" || discovery.batch.length === 0) {
-      return {
-        ...discovery,
-        project: input.project,
-        parentTicket: input.parentTicket,
-        targetBranch,
-        reasons: [...reasons, ...discovery.reasons],
-        ...(batches.length === 0 ? {} : { batch: batches }),
-        ...(handoffs.length === 0 ? {} : { handoffs }),
-        ...(pullRequests.length === 0 ? {} : { pullRequests }),
-        ...(completedTickets.length === 0 ? {} : { completedTickets }),
-      };
+      return summary(discovery.outcome, [...reasons, ...discovery.reasons]);
     }
 
     hadChildren = true;
@@ -177,49 +178,105 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     const batchComplete =
       attempts.handoffs.length === discovery.batch.length &&
       attempts.reasons.length === 0;
+    const publicationInput = {
+      repository: input.repository,
+      parentTicket: input.parentTicket,
+      tracker: input.tracker,
+      audit: input.audit,
+      clock: input.clock,
+      operator: input.operator,
+      event,
+      runnerAccount: input.runnerAccount,
+      reservationLabel: input.reservationLabel,
+      targetBranch,
+      requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
+      mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
+      adminMerge: input.adminMerge,
+      ticketClosure: input.ticketClosure,
+      handoffs: attempts.handoffs,
+      gitWorkspace: input.gitWorkspace,
+      codeHost: input.codeHost,
+    };
     const publication =
       attempts.handoffs.length === 0
         ? null
-        : await publishVerifiedHandoffs({
-            repository: input.repository,
-            parentTicket: input.parentTicket,
-            tracker: input.tracker,
-            audit: input.audit,
-            clock: input.clock,
-            operator: input.operator,
-            event,
-            runnerAccount: input.runnerAccount,
-            reservationLabel: input.reservationLabel,
-            targetBranch,
-            requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
-            mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
-            adminMerge: input.adminMerge,
-            ticketClosure: input.ticketClosure,
-            batchComplete,
-            handoffs: attempts.handoffs,
-            gitWorkspace: input.gitWorkspace,
-            codeHost: input.codeHost,
-          });
-    if (publication) {
-      pullRequests.push(...publication.pullRequests);
-      completedTickets.push(...publication.completedTickets);
-    }
+        : await publishVerifiedHandoffs(publicationInput);
+    if (publication) pullRequests.push(...publication.pullRequests);
     reasons.push(
       ...discovery.reasons,
       ...attempts.reasons,
       ...(publication?.reasons ?? []),
     );
-    if (batchComplete && publication?.outcome === "succeeded") continue;
-    return {
-      outcome: publication?.outcome ?? attempts.outcome,
-      project: input.project,
-      parentTicket: input.parentTicket,
-      targetBranch,
-      batch: batches,
-      reasons,
-      handoffs,
-      pullRequests,
-      completedTickets,
-    };
+    if (!publication) return summary(attempts.outcome);
+    const batchReady =
+      batchComplete &&
+      publication.outcome === "succeeded" &&
+      publication.published.every(
+        ({ observation }) => observation.readiness === "ready",
+      );
+    if (!batchReady) {
+      if (!batchComplete)
+        reasons.push("Batch barrier blocked by unresolved Agent Attempts");
+      return summary(
+        publication.outcome !== "succeeded"
+          ? publication.outcome
+          : "incomplete",
+      );
+    }
+
+    const ordered = await Promise.all(
+      publication.published.map(async (published) => ({
+        ...published,
+        state: await observePullRequestForIntegration(
+          publicationInput,
+          published.pullRequest.number,
+        ),
+      })),
+    );
+    ordered.sort(
+      (left, right) =>
+        left.state.createdAt.localeCompare(right.state.createdAt) ||
+        left.pullRequest.number - right.pullRequest.number,
+    );
+    for (const { handoff, pullRequest, state } of ordered) {
+      let integration: Awaited<ReturnType<typeof integratePullRequest>>;
+      try {
+        integration = await integratePullRequest(
+          publicationInput,
+          handoff,
+          pullRequest,
+          state,
+        );
+      } catch (error) {
+        if (!(error instanceof OperatorCancelled)) throw error;
+        reasons.push("operator cancelled");
+        return summary("cancelled");
+      }
+      if (integration.outcome === "completed") {
+        completedTickets.push(handoff.ticket);
+        reasons.push(
+          `Completed Delivery Ticket ${handoff.ticket} through Pull Request ${pullRequest.number}`,
+        );
+        try {
+          await releaseTerminalReservation(
+            publicationInput,
+            integration.ticket,
+          );
+        } catch (error) {
+          if (!(error instanceof OperatorCancelled)) throw error;
+          reasons.push("operator cancelled");
+          return summary("cancelled");
+        }
+        continue;
+      }
+      reasons.push(integration.reason);
+      return summary(
+        integration.outcome === "cancelled"
+          ? "cancelled"
+          : integration.outcome === "failed"
+            ? "failed"
+            : "incomplete",
+      );
+    }
   }
 }

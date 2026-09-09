@@ -3467,6 +3467,52 @@ test("an unresolved Agent Attempt blocks integration after other Handoffs publis
   assert.match(result.summary.reasons.join(" "), /no_change.*Batch barrier/u);
 });
 
+test("a boundary stop after PR creation keeps its identity", async () => {
+  const root = await createProject();
+  const delivery = createCommittedBatch(9);
+  let parentCancelled = false;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return parentCancelled
+            ? { number: 8, state: "closed", stateReason: "not_planned" }
+            : { number: 8, state: "open", stateReason: null };
+        },
+      },
+      codeHost: {
+        async getRequiredChecks() {
+          parentCancelled = true;
+          return [
+            {
+              name: "build",
+              state: "IN_PROGRESS",
+              link: "https://github.com/owner/repo/actions/runs/1",
+              bucket: "pending",
+            },
+          ];
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(result.summary.pullRequests, [
+    {
+      ticket: 9,
+      branch: result.summary.handoffs![0]!.branch,
+      number: 1,
+      url: "https://github.com/owner/repo/pull/1",
+      readiness: "stopped",
+      failedChecks: [],
+    },
+  ]);
+});
+
 test("partial Batch integration keeps credit and does not overtake a conflict", async () => {
   const root = await createProject();
   const delivery = createCommittedBatch(9, 10, 11);
@@ -3515,6 +3561,57 @@ test("partial Batch integration keeps credit and does not overtake a conflict", 
   assert.equal(delivery.tickets[0]!.stateReason, "completed");
   assert.equal(delivery.tickets[1]!.state, "open");
   assert.equal(delivery.tickets[2]!.state, "open");
+});
+
+test("cancelling a later merge keeps earlier Batch completion credit", async () => {
+  const root = await createProject();
+  const delivery = createCommittedBatch(9, 10);
+  const merged = new Set<number>();
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      codeHost: {
+        async createPullRequest(input) {
+          const ticket = Number(input.branch.split("-").at(-1));
+          return {
+            number: ticket + 100,
+            url: `https://github.com/owner/repo/pull/${ticket + 100}`,
+          };
+        },
+        async getPullRequest(_repository, pullRequest) {
+          return {
+            headSha: String(pullRequest - 100)
+              .at(-1)!
+              .repeat(40),
+            createdAt: `2026-09-09T00:00:${String(pullRequest - 100).padStart(2, "0")}Z`,
+            merged: merged.has(pullRequest),
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge({ pullRequest }) {
+          if (pullRequest === 110) {
+            return { outcome: "rejected", error: "merge rejected" };
+          }
+          merged.add(pullRequest);
+          return { outcome: "accepted" };
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.deepEqual(
+    result.summary.pullRequests?.map(({ number }) => number),
+    [109, 110],
+  );
 });
 
 test("cancelling one concurrent Agent Attempt aborts and settles the others", async () => {
