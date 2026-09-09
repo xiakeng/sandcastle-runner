@@ -6,6 +6,31 @@ import type { RunOptions, RunResult } from "@ai-hero/sandcastle";
 import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
 import type { AgentAttemptResult } from "../../src/run/contracts.ts";
 
+interface StructuredObjectOutput {
+  _tag: "object";
+  maxRetries?: number;
+  schema: {
+    "~standard": {
+      validate(
+        value: unknown,
+      ):
+        | { value: unknown; issues?: undefined }
+        | { issues: readonly { message: string }[]; value?: undefined }
+        | Promise<
+            | { value: unknown; issues?: undefined }
+            | { issues: readonly { message: string }[]; value?: undefined }
+          >;
+    };
+  };
+}
+
+function structuredOutput(
+  output: RunOptions["output"],
+): StructuredObjectOutput {
+  assert.equal(output?._tag, "object");
+  return output;
+}
+
 const committed: AgentAttemptResult = {
   outcome: "committed",
   summary: "implemented",
@@ -61,6 +86,18 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
   let options: RunOptions | undefined;
   const executor = new SandcastleAgentExecutor(async (received) => {
     options = received;
+    const definition = structuredOutput(received.output);
+    assert.ok(
+      (
+        await definition.schema["~standard"].validate({
+          ...committed,
+          pr_body: "",
+        })
+      ).issues?.length,
+    );
+    assert.deepEqual(await definition.schema["~standard"].validate(committed), {
+      value: committed,
+    });
     return result(
       `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
       committed,
@@ -95,8 +132,7 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
     type: "file",
     path: "/runner/projects/demo/logs/agent.log",
   });
-  assert.equal(options.output?.maxRetries, 1);
-  assert.equal(options.output?._tag, "object");
+  assert.equal(structuredOutput(options.output).maxRetries, 1);
 });
 
 test("SandcastleAgentExecutor rejects multiple result tags", async () => {
@@ -106,4 +142,24 @@ test("SandcastleAgentExecutor rejects multiple result tags", async () => {
   );
 
   await assert.rejects(executor.execute(input()), /exactly one result tag/u);
+});
+
+test("SandcastleAgentExecutor aborts a continuously active run at the configured total timeout", async () => {
+  const executor = new SandcastleAgentExecutor(
+    (options) =>
+      new Promise((_resolve, reject) => {
+        options.signal?.addEventListener(
+          "abort",
+          () => {
+            reject(new Error("Agent Attempt timed out"));
+          },
+          { once: true },
+        );
+      }),
+  );
+
+  await assert.rejects(
+    executor.execute({ ...input(), timeoutMs: 5 }),
+    /Agent Attempt timed out/u,
+  );
 });

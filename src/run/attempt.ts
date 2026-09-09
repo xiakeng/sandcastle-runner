@@ -10,6 +10,7 @@ import type {
   AgentExecutor,
   CommitEvidence,
   GitWorkspace,
+  OperatorIO,
 } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
@@ -85,6 +86,35 @@ async function appendOperation(
 async function boundary(input: AttemptInput, ticket: number): Promise<void> {
   const result = await revalidateReservedDeliveryTicket(input, ticket);
   if (result.outcome !== "ready") throw new BoundaryStop(result);
+}
+
+function serializedOperator(
+  operator: OperatorIO,
+  controller: AbortController,
+): OperatorIO {
+  let tail = Promise.resolve();
+  return {
+    write(message) {
+      operator.write(message);
+    },
+    async pause(message) {
+      const previous = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        if (controller.signal.aborted) return null;
+        const response = await operator.pause(message);
+        if (response === null || response === "q")
+          controller.abort(new OperatorCancelled("operator cancelled"));
+        return response;
+      } finally {
+        release();
+      }
+    },
+  };
 }
 
 function sameCommits(
@@ -188,11 +218,11 @@ async function runAgentOperation(
         await rm(gitDirectory, { recursive: true, force: true });
       }
 
+      await boundary(input, ticket);
       if (result.outcome === "blocked") {
         await appendOperation(input, event, "blocked", null);
         return `Delivery Ticket ${ticket} blocked: ${result.blocker}`;
       }
-      await boundary(input, ticket);
       const observed = await input.gitWorkspace.inspect({ worktree, base });
       if (
         observed.worktree !== path.resolve(worktree) ||
@@ -228,6 +258,7 @@ async function runAgentOperation(
       await appendOperation(input, event, "succeeded", null);
       return handoff;
     } catch (error) {
+      if (error instanceof OperatorCancelled) throw error;
       if (error instanceof BoundaryStop) {
         await appendOperation(input, event, error.result.outcome, null);
         throw error;
@@ -246,19 +277,16 @@ async function runAgentOperation(
           "Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted committed result.",
         );
         if (response === "") break;
+        let handoff: VerifiedHandoff;
         try {
-          const handoff = trustedHandoff(
-            response,
-            ticket,
-            worktree,
-            branch,
-            base,
-          );
-          await appendOperation(input, event, "operator_override", null);
-          return handoff;
+          handoff = trustedHandoff(response, ticket, worktree, branch, base);
         } catch {
           await appendOperation(input, event, "invalid_override", null);
+          continue;
         }
+        await boundary(input, ticket);
+        await appendOperation(input, event, "operator_override", null);
+        return handoff;
       }
     }
   }
@@ -353,8 +381,12 @@ export async function implementReservedBatch(
       operator: input.operator,
     });
     const controller = new AbortController();
+    const concurrentInput = {
+      ...input,
+      operator: serializedOperator(input.operator, controller),
+    };
     const attempts = candidates.map((ticket) =>
-      implementTicket(input, ticket, base, controller),
+      implementTicket(concurrentInput, ticket, base, controller),
     );
     try {
       const settled = await Promise.all(attempts);

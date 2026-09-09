@@ -408,6 +408,15 @@ export async function revalidateReservedDeliveryTicket(
       reason: `Delivery Ticket ${ticketNumber} became externally owned`,
     };
   }
+  if (
+    !(result.ticket.assignees ?? []).includes(input.runnerAccount) ||
+    !(result.ticket.labels ?? []).includes(input.reservationLabel)
+  ) {
+    return {
+      outcome: "stopped",
+      reason: `Delivery Ticket ${ticketNumber} no longer has a complete Reservation`,
+    };
+  }
   return { outcome: "ready" };
 }
 

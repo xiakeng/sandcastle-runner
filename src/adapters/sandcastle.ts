@@ -135,26 +135,41 @@ export class SandcastleAgentExecutor implements AgentExecutor {
   }
 
   async execute(input: Parameters<AgentExecutor["execute"]>[0]) {
-    const result = await this.run({
-      agent: codex(input.model, { effort: input.effort }),
-      sandbox: noSandbox({
-        env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
-      }),
-      cwd: input.worktree,
-      promptFile: input.promptFile,
-      promptArgs: input.promptArgs,
-      maxIterations: 1,
-      completionSignal: [],
-      idleTimeoutSeconds: input.timeoutMs / 1000,
-      branchStrategy: { type: "head" },
-      logging: { type: "file", path: input.logFile },
-      output: Output.object({
-        tag: "agent_attempt_result",
-        schema: resultSchema,
-        maxRetries: 1,
-      }),
-      signal: input.signal,
-    });
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(input.signal.reason);
+    if (input.signal.aborted) relayAbort();
+    else input.signal.addEventListener("abort", relayAbort, { once: true });
+    const timeout = setTimeout(
+      () => controller.abort(new Error("Agent Attempt timed out")),
+      input.timeoutMs,
+    );
+    timeout.unref();
+    let result: Awaited<ReturnType<SandcastleRun>>;
+    try {
+      result = await this.run({
+        agent: codex(input.model, { effort: input.effort }),
+        sandbox: noSandbox({
+          env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
+        }),
+        cwd: input.worktree,
+        promptFile: input.promptFile,
+        promptArgs: input.promptArgs,
+        maxIterations: 1,
+        completionSignal: [],
+        idleTimeoutSeconds: input.timeoutMs / 1000,
+        branchStrategy: { type: "head" },
+        logging: { type: "file", path: input.logFile },
+        output: Output.object({
+          tag: "agent_attempt_result",
+          schema: resultSchema,
+          maxRetries: 1,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+      input.signal.removeEventListener("abort", relayAbort);
+    }
     const openingTags =
       result.stdout.split("<agent_attempt_result>").length - 1;
     const closingTags =

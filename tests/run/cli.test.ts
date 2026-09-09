@@ -124,6 +124,46 @@ function createCliDependencies(
   };
 }
 
+function createAttemptTracker(...numbers: number[]): {
+  tickets: {
+    number: number;
+    state: "open";
+    stateReason: null;
+    repository: string;
+    assignees: string[];
+    labels: string[];
+  }[];
+  tracker: Partial<Tracker>;
+} {
+  const tickets = numbers.map((number) => ({
+    number,
+    state: "open" as const,
+    stateReason: null,
+    repository: "owner/repo",
+    assignees: [] as string[],
+    labels: [] as string[],
+  }));
+  return {
+    tickets,
+    tracker: {
+      async listChildrenPage() {
+        return { children: tickets, nextPage: null };
+      },
+      async getTicket(_repository, ticket) {
+        return tickets.find(({ number }) => number === ticket)!;
+      },
+      async addLabel(_repository, ticket, label) {
+        tickets.find(({ number }) => number === ticket)!.labels.push(label);
+      },
+      async addAssignee(_repository, ticket, assignee) {
+        tickets
+          .find(({ number }) => number === ticket)!
+          .assignees.push(assignee);
+      },
+    },
+  };
+}
+
 const validConfig = {
   repository: "owner/repo",
   checkout: "/tmp/repo",
@@ -1063,17 +1103,13 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
     "14:2",
     "14:1",
     "14:2",
-    "14:1",
-    "14:2",
-    "14:1",
-    "14:2",
   ]);
   assert.deepEqual(result.summary.reasons, [
     "reserved Delivery Tickets: 14",
     "blocked Delivery Tickets: 13",
     "externally owned Delivery Tickets: 9",
     "existing Reservations: 10 (partial), 11 (partial), 12 (complete)",
-    "Delivery Ticket 14 blocked: not enabled for this scenario",
+    "Delivery Ticket 14 no longer has a complete Reservation",
   ]);
 });
 
@@ -1606,32 +1642,12 @@ test("a committed Agent Attempt becomes a Verified Handoff only from matching cl
   let prepared: { worktree: string; branch: string; base: string } | undefined;
   let agentInput: Parameters<AgentExecutor["execute"]>[0] | undefined;
   let gitConfigContents: string | undefined;
-  const child = {
-    number: 9,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  };
+  const { tracker } = createAttemptTracker(9);
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async getTicket() {
-          return child;
-        },
-        async addLabel(_repository, _ticket, label) {
-          child.labels.push(label);
-        },
-        async addAssignee(_repository, _ticket, assignee) {
-          child.assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch(checkout, targetBranch) {
           operations.push(`fetch:${checkout}:${targetBranch}`);
@@ -1754,31 +1770,11 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
     const root = await createProject();
     let inspections = 0;
     let branch = "";
-    const child = {
-      number: 9,
-      state: "open" as const,
-      stateReason: null,
-      repository: "owner/repo",
-      assignees: [] as string[],
-      labels: [] as string[],
-    };
+    const { tracker } = createAttemptTracker(9);
     const result = await executeCli(
       ["run", "--project", "demo", "--parent", "8"],
       createCliDependencies(root, {
-        tracker: {
-          async listChildrenPage() {
-            return { children: [child], nextPage: null };
-          },
-          async getTicket() {
-            return child;
-          },
-          async addLabel(_repository, _ticket, label) {
-            child.labels.push(label);
-          },
-          async addAssignee(_repository, _ticket, assignee) {
-            child.assignees.push(assignee);
-          },
-        },
+        tracker,
         gitWorkspace: {
           async fetchTargetBranch() {
             return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1821,31 +1817,11 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
 test("false commit claims enter Operator Pause and q cancels active Sandcastle resources", async () => {
   const root = await createProject();
   let signal: AbortSignal | undefined;
-  const child = {
-    number: 9,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  };
+  const { tracker } = createAttemptTracker(9);
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async getTicket() {
-          return child;
-        },
-        async addLabel(_repository, _ticket, label) {
-          child.labels.push(label);
-        },
-        async addAssignee(_repository, _ticket, assignee) {
-          child.assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1896,14 +1872,7 @@ test("empty input starts a fresh Agent Attempt with a new Git configuration", as
   const gitConfigs: string[] = [];
   let branch = "";
   let attempt = 0;
-  const child = {
-    number: 9,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  };
+  const { tracker } = createAttemptTracker(9);
   const commit = {
     sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     message: "feat: retry succeeds",
@@ -1911,20 +1880,7 @@ test("empty input starts a fresh Agent Attempt with a new Git configuration", as
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async getTicket() {
-          return child;
-        },
-        async addLabel(_repository, _ticket, label) {
-          child.labels.push(label);
-        },
-        async addAssignee(_repository, _ticket, assignee) {
-          child.assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1980,31 +1936,11 @@ test("a trusted committed override extracts only downstream metadata and bypasse
     }),
   ];
   let inspections = 0;
-  const child = {
-    number: 9,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  };
+  const { tracker } = createAttemptTracker(9);
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async getTicket() {
-          return child;
-        },
-        async addLabel(_repository, _ticket, label) {
-          child.labels.push(label);
-        },
-        async addAssignee(_repository, _ticket, assignee) {
-          child.assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2040,14 +1976,7 @@ test("a trusted committed override extracts only downstream metadata and bypasse
 
 test("a reserved Batch runs its Agent Attempts concurrently", async () => {
   const root = await createProject();
-  const tickets = [9, 10].map((number) => ({
-    number,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  }));
+  const { tracker } = createAttemptTracker(9, 10);
   const branches = new Map<number, string>();
   let active = 0;
   let maxActive = 0;
@@ -2058,22 +1987,7 @@ test("a reserved Batch runs its Agent Attempts concurrently", async () => {
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: tickets, nextPage: null };
-        },
-        async getTicket(_repository, ticket) {
-          return tickets.find(({ number }) => number === ticket)!;
-        },
-        async addLabel(_repository, ticket, label) {
-          tickets.find(({ number }) => number === ticket)!.labels.push(label);
-        },
-        async addAssignee(_repository, ticket, assignee) {
-          tickets
-            .find(({ number }) => number === ticket)!
-            .assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2132,39 +2046,20 @@ test("a reserved Batch runs its Agent Attempts concurrently", async () => {
 
 test("cancelling one concurrent Agent Attempt aborts and settles the others", async () => {
   const root = await createProject();
-  const tickets = [9, 10].map((number) => ({
-    number,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  }));
+  const { tracker } = createAttemptTracker(9, 10);
   let started = 0;
   let release: (() => void) | undefined;
   let abortedAttemptSettled = false;
+  let activePauses = 0;
+  let maxActivePauses = 0;
+  let pauseCalls = 0;
   const bothStarted = new Promise<void>((resolve) => {
     release = resolve;
   });
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
-      tracker: {
-        async listChildrenPage() {
-          return { children: tickets, nextPage: null };
-        },
-        async getTicket(_repository, ticket) {
-          return tickets.find(({ number }) => number === ticket)!;
-        },
-        async addLabel(_repository, ticket, label) {
-          tickets.find(({ number }) => number === ticket)!.labels.push(label);
-        },
-        async addAssignee(_repository, ticket, assignee) {
-          tickets
-            .find(({ number }) => number === ticket)!
-            .assignees.push(assignee);
-        },
-      },
+      tracker,
       gitWorkspace: {
         async fetchTargetBranch() {
           return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2191,6 +2086,11 @@ test("cancelling one concurrent Agent Attempt aborts and settles the others", as
       },
       operator: {
         async pause() {
+          pauseCalls += 1;
+          activePauses += 1;
+          maxActivePauses = Math.max(maxActivePauses, activePauses);
+          await Promise.resolve();
+          activePauses -= 1;
           return "q";
         },
       },
@@ -2199,6 +2099,8 @@ test("cancelling one concurrent Agent Attempt aborts and settles the others", as
 
   assert.equal(result.summary.outcome, "cancelled");
   assert.equal(abortedAttemptSettled, true);
+  assert.equal(pauseCalls, 1);
+  assert.equal(maxActivePauses, 1);
 });
 
 test("Parent cancellation after Worktree preparation starts no Agent and preserves the Reservation", async () => {
@@ -2206,34 +2108,20 @@ test("Parent cancellation after Worktree preparation starts no Agent and preserv
   let worktreeCreated = false;
   let agentCalls = 0;
   let releases = 0;
-  const child = {
-    number: 9,
-    state: "open" as const,
-    stateReason: null,
-    repository: "owner/repo",
-    assignees: [] as string[],
-    labels: [] as string[],
-  };
+  const {
+    tickets: [child],
+    tracker,
+  } = createAttemptTracker(9);
+  assert.ok(child);
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     createCliDependencies(root, {
       tracker: {
+        ...tracker,
         async getParent() {
           return worktreeCreated
             ? { number: 8, state: "closed", stateReason: "not_planned" }
             : { number: 8, state: "open", stateReason: null };
-        },
-        async listChildrenPage() {
-          return { children: [child], nextPage: null };
-        },
-        async getTicket() {
-          return child;
-        },
-        async addLabel(_repository, _ticket, label) {
-          child.labels.push(label);
-        },
-        async addAssignee(_repository, _ticket, assignee) {
-          child.assignees.push(assignee);
         },
         async removeLabel() {
           releases += 1;
@@ -2264,6 +2152,144 @@ test("Parent cancellation after Worktree preparation starts no Agent and preserv
   assert.equal(releases, 0);
   assert.deepEqual(child.labels, ["sandcastle:reserved"]);
   assert.deepEqual(child.assignees, ["runner"]);
+});
+
+test("a removed Reservation after Worktree preparation starts no Agent", async () => {
+  const root = await createProject();
+  let agentCalls = 0;
+  const {
+    tickets: [child],
+    tracker,
+  } = createAttemptTracker(9);
+  assert.ok(child);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree() {
+          child.labels.length = 0;
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentCalls += 1;
+          throw new Error("must not start");
+        },
+      },
+    }),
+  );
+
+  assert.equal(agentCalls, 0);
+  assert.ok(
+    result.summary.reasons.includes(
+      "Delivery Ticket 9 no longer has a complete Reservation",
+    ),
+  );
+});
+
+test("Agent results and trusted overrides are rejected after Parent cancellation", async () => {
+  for (const trustedOverride of [false, true]) {
+    const root = await createProject();
+    let parentCancelled = false;
+    const { tracker } = createAttemptTracker(9);
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker: {
+          ...tracker,
+          async getParent() {
+            return parentCancelled
+              ? { number: 8, state: "closed", stateReason: "not_planned" }
+              : { number: 8, state: "open", stateReason: null };
+          },
+        },
+        gitWorkspace: {
+          async fetchTargetBranch() {
+            return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          },
+        },
+        agentExecutor: {
+          async execute() {
+            if (trustedOverride) throw new Error("Sandcastle failed");
+            parentCancelled = true;
+            return {
+              outcome: "blocked",
+              summary: "waiting",
+              commits: [],
+              checks: [],
+              blocker: "waiting",
+              pr_title: "unused",
+              pr_body: "unused",
+            };
+          },
+        },
+        operator: {
+          async pause() {
+            parentCancelled = true;
+            return JSON.stringify({
+              outcome: "committed",
+              pr_title: "feat: trusted result",
+              pr_body: "Trusted result.",
+            });
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, "cancelled");
+    assert.deepEqual(result.summary.handoffs, []);
+  }
+});
+
+test("cancelling boundary revalidation after an Agent result pauses once", async () => {
+  const root = await createProject();
+  let agentFinished = false;
+  let pauseCalls = 0;
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async getParent() {
+          if (agentFinished) throw new Error("tracker unavailable");
+          return { number: 8, state: "open", stateReason: null };
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          agentFinished = true;
+          return {
+            outcome: "blocked",
+            summary: "waiting",
+            commits: [],
+            checks: [],
+            blocker: "waiting",
+            pr_title: "unused",
+            pr_body: "unused",
+          };
+        },
+      },
+      operator: {
+        async pause() {
+          pauseCalls += 1;
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(pauseCalls, 1);
 });
 
 test("unsupported model and effort selections fail before workflow operations", async () => {
