@@ -238,6 +238,11 @@ async function pushRepair(
   phase: "ci_repair" | "conflict_repair",
   attempt: number,
 ): Promise<Exclude<DeliveryBoundaryResult, { outcome: "ready" }> | null> {
+  const boundary = await revalidateReservedDeliveryTicket(
+    input,
+    handoff.ticket,
+  );
+  if (boundary.outcome !== "ready") return boundary;
   try {
     await workflowWrite({
       action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
