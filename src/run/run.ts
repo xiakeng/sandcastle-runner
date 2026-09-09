@@ -155,7 +155,14 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       gitWorkspace: input.gitWorkspace,
       codeHost: input.codeHost,
       agentExecutor: input.agentExecutor,
+    }).catch((error: unknown) => {
+      if (!(error instanceof OperatorCancelled)) throw error;
+      return null;
     });
+    if (!result) {
+      reasons.push("operator cancelled");
+      return "cancelled";
+    }
     reasons.push(...result.reasons);
     if (result.handoff) handoffs.push(result.handoff);
     if (result.pullRequest) pullRequests.push(result.pullRequest);

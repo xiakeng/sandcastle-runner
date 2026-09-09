@@ -4933,6 +4933,10 @@ test("a Batch publishes every PR before merging by creation order", async () => 
 
 test("three completed Delivery Tickets trigger committed Documentation Maintenance before closeout", async () => {
   const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+  );
   const delivery = createCommittedBatch(9, 10, 11);
   const maintenance = {
     number: 100,
@@ -5034,6 +5038,16 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
         async requestSquashMerge({ pullRequest }) {
           operations.push(`merge:${pullRequest}`);
           merged.add(pullRequest);
+          if (pullRequest === 200) {
+            maintenance.state = "closed";
+            maintenance.stateReason = "completed";
+          } else {
+            const ticket = delivery.tickets.find(
+              ({ number }) => number === pullRequest - 100,
+            )!;
+            ticket.state = "closed";
+            ticket.stateReason = "completed";
+          }
           return { outcome: "accepted" };
         },
       },
@@ -5059,7 +5073,6 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
     "maintenance:agent",
     "pr:create:100",
     "merge:200",
-    "maintenance:close",
   ]);
 });
 
@@ -5178,7 +5191,7 @@ test("final closeout credit triggers one clean no_change Maintenance Ticket with
   assert.equal(parentCloses, 1);
 });
 
-test("blocked Documentation Maintenance preserves its standalone ticket and blocks Parent closeout", async () => {
+test("blocked Documentation Maintenance is preserved but ignored by a later Run", async () => {
   const root = await createProject();
   const delivery = createCommittedDelivery(9);
   const maintenance: Ticket = {
@@ -5190,55 +5203,58 @@ test("blocked Documentation Maintenance preserves its standalone ticket and bloc
   };
   let parentCloses = 0;
   let maintenanceBranch = "";
+  let maintenanceCreates = 0;
 
+  const dependencies = createCliDependencies(root, {
+    tracker: {
+      ...delivery.tracker,
+      async createMaintenanceTicket() {
+        maintenanceCreates += 1;
+        return maintenance;
+      },
+      async closeParent() {
+        parentCloses += 1;
+      },
+    },
+    gitWorkspace: {
+      ...delivery.gitWorkspace,
+      async createWorktree(input) {
+        if (input.worktree.includes("/maintenance-")) {
+          maintenanceBranch = input.branch;
+          return;
+        }
+        await delivery.gitWorkspace.createWorktree!(input);
+      },
+      async inspect(input) {
+        if (input.worktree.includes("/maintenance-")) {
+          return {
+            worktree: input.worktree,
+            branch: maintenanceBranch,
+            base: input.base,
+            commits: [],
+            clean: true,
+          };
+        }
+        return delivery.gitWorkspace.inspect!(input);
+      },
+    },
+    agentExecutor: {
+      async execute(input) {
+        return input.ticket === maintenance.number
+          ? {
+              outcome: "blocked",
+              summary: "documentation instructions are incomplete",
+              commits: [],
+              checks: [],
+              blocker: "missing Documentation Base",
+            }
+          : delivery.agentExecutor.execute!(input);
+      },
+    },
+  });
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
-    createCliDependencies(root, {
-      tracker: {
-        ...delivery.tracker,
-        async createMaintenanceTicket() {
-          return maintenance;
-        },
-        async closeParent() {
-          parentCloses += 1;
-        },
-      },
-      gitWorkspace: {
-        ...delivery.gitWorkspace,
-        async createWorktree(input) {
-          if (input.worktree.includes("/maintenance-")) {
-            maintenanceBranch = input.branch;
-            return;
-          }
-          await delivery.gitWorkspace.createWorktree!(input);
-        },
-        async inspect(input) {
-          if (input.worktree.includes("/maintenance-")) {
-            return {
-              worktree: input.worktree,
-              branch: maintenanceBranch,
-              base: input.base,
-              commits: [],
-              clean: true,
-            };
-          }
-          return delivery.gitWorkspace.inspect!(input);
-        },
-      },
-      agentExecutor: {
-        async execute(input) {
-          return input.ticket === maintenance.number
-            ? {
-                outcome: "blocked",
-                summary: "documentation instructions are incomplete",
-                commits: [],
-                checks: [],
-                blocker: "missing Documentation Base",
-              }
-            : delivery.agentExecutor.execute!(input);
-        },
-      },
-    }),
+    dependencies,
   );
 
   assert.equal(result.summary.outcome, "incomplete");
@@ -5248,6 +5264,15 @@ test("blocked Documentation Maintenance preserves its standalone ticket and bloc
   );
   assert.equal(maintenance.state, "open");
   assert.equal(parentCloses, 0);
+  assert.equal(maintenanceCreates, 1);
+
+  const nextRun = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    dependencies,
+  );
+  assert.equal(nextRun.summary.outcome, "succeeded");
+  assert.equal(maintenanceCreates, 1);
+  assert.equal(parentCloses, 1);
 });
 
 test("Maintenance Ticket label reads and writes use normal supervised failure handling", async () => {
@@ -5294,6 +5319,7 @@ test("Maintenance Ticket label reads and writes use normal supervised failure ha
     assert.equal(labelReads, failure === "read" ? 5 : 1);
     assert.equal(labelWrites, failure === "label" ? 1 : 0);
     assert.equal(ticketWrites, failure === "ticket" ? 1 : 0);
+    assert.deepEqual(result.summary.completedTickets, [9]);
   }
 });
 
