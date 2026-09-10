@@ -12,11 +12,22 @@ import type {
   AgentExecutor,
   CheckEvidence,
   CommitEvidence,
+  ReviewAttemptInput,
+  ReviewAttemptResult,
+  ReviewVerdict,
 } from "../run/contracts.ts";
 
 type SandcastleRun = (
   options: RunOptions,
-) => Promise<RunResult & { output: AgentAttemptResult }>;
+) => Promise<RunResult & { output: unknown }>;
+
+interface StandardSchema<T> {
+  "~standard": {
+    version: 1;
+    vendor: string;
+    validate(value: unknown): { value: T } | { issues: { message: string }[] };
+  };
+}
 
 function object(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -138,6 +149,95 @@ function resultSchema(
         }
       },
     },
+  } satisfies StandardSchema<AgentAttemptResult>;
+}
+
+function parseVerdict(value: unknown, name: string): ReviewVerdict {
+  const input = object(value, name);
+  if (input.verdict !== "passed" && input.verdict !== "blocked")
+    throw new Error(`${name}.verdict is unsupported`);
+  if (
+    !Array.isArray(input.unresolved_findings) ||
+    input.unresolved_findings.some(
+      (finding) => typeof finding !== "string" || finding.trim() === "",
+    )
+  ) {
+    throw new Error(`${name}.unresolved_findings must be strings`);
+  }
+  return {
+    verdict: input.verdict,
+    unresolved_findings: input.unresolved_findings as string[],
+  };
+}
+
+function parseReviewResult(value: unknown): ReviewAttemptResult {
+  const input = object(value, "Review Attempt Result");
+  const expected = [
+    "blocker",
+    "checks",
+    "outcome",
+    "spec",
+    "standards",
+    "summary",
+  ];
+  if (
+    Object.keys(input).length !== expected.length ||
+    expected.some((field) => !(field in input))
+  ) {
+    throw new Error("Review Attempt Result has unexpected fields");
+  }
+  if (input.outcome !== "passed" && input.outcome !== "blocked")
+    throw new Error("review outcome is unsupported");
+  if (!Array.isArray(input.checks)) throw new Error("checks must be an array");
+  const standards = parseVerdict(input.standards, "standards");
+  const spec = parseVerdict(input.spec, "spec");
+  if (
+    input.outcome === "passed" &&
+    (standards.verdict !== "passed" ||
+      spec.verdict !== "passed" ||
+      standards.unresolved_findings.length !== 0 ||
+      spec.unresolved_findings.length !== 0)
+  ) {
+    throw new Error("passed review requires both axes to pass cleanly");
+  }
+  const blocker =
+    input.outcome === "blocked"
+      ? nonempty(input.blocker, "blocker")
+      : input.blocker;
+  if (input.outcome === "passed" && blocker !== null)
+    throw new Error("blocker must be null when review passes");
+  return {
+    outcome: input.outcome,
+    summary: nonempty(input.summary, "summary"),
+    standards,
+    spec,
+    checks: input.checks.map(parseCheck),
+    blocker: blocker as string | null,
+  };
+}
+
+function reviewResultSchema(): StandardSchema<ReviewAttemptResult> {
+  return {
+    "~standard": {
+      version: 1,
+      vendor: "sandcastle-runner",
+      validate(value: unknown) {
+        try {
+          return { value: parseReviewResult(value) };
+        } catch (error) {
+          return {
+            issues: [
+              {
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "invalid Review Attempt Result",
+              },
+            ],
+          };
+        }
+      },
+    },
   };
 }
 
@@ -148,7 +248,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     this.run = run;
   }
 
-  async execute(input: Parameters<AgentExecutor["execute"]>[0]) {
+  private async runOutput<T>(
+    input: ReviewAttemptInput,
+    tag: string,
+    schema: StandardSchema<T>,
+  ): Promise<T> {
     const controller = new AbortController();
     const relayAbort = () => controller.abort(input.signal.reason);
     if (input.signal.aborted) relayAbort();
@@ -174,8 +278,8 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         branchStrategy: { type: "head" },
         logging: { type: "file", path: input.logFile },
         output: Output.object({
-          tag: "agent_attempt_result",
-          schema: resultSchema(input.pullRequestMetadata),
+          tag,
+          schema,
           maxRetries: 1,
         }),
         signal: controller.signal,
@@ -184,14 +288,24 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       clearTimeout(timeout);
       input.signal.removeEventListener("abort", relayAbort);
     }
-    const openingTags =
-      result.stdout.split("<agent_attempt_result>").length - 1;
-    const closingTags =
-      result.stdout.split("</agent_attempt_result>").length - 1;
+    const openingTags = result.stdout.split(`<${tag}>`).length - 1;
+    const closingTags = result.stdout.split(`</${tag}>`).length - 1;
     if (openingTags !== 1 || closingTags !== 1)
       throw new Error(
         "Agent Attempt output must contain exactly one result tag",
       );
-    return result.output;
+    return result.output as T;
+  }
+
+  execute(input: Parameters<AgentExecutor["execute"]>[0]) {
+    return this.runOutput(
+      input,
+      "agent_attempt_result",
+      resultSchema(input.pullRequestMetadata),
+    );
+  }
+
+  executeReview(input: Parameters<AgentExecutor["executeReview"]>[0]) {
+    return this.runOutput(input, "review_attempt_result", reviewResultSchema());
   }
 }

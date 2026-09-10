@@ -35,6 +35,22 @@ function parseTicket(value: unknown, includeRepository: boolean): Ticket {
     state: issue.state,
     stateReason,
   };
+  if (
+    issue.title !== undefined ||
+    issue.body !== undefined ||
+    issue.html_url !== undefined
+  ) {
+    if (
+      typeof issue.title !== "string" ||
+      (typeof issue.body !== "string" && issue.body !== null) ||
+      typeof issue.html_url !== "string"
+    ) {
+      throw new Error("GitHub issue has an invalid review snapshot");
+    }
+    ticket.title = issue.title;
+    ticket.body = issue.body ?? "";
+    ticket.source = issue.html_url;
+  }
   for (const [field, target] of [
     ["assignees", "login"],
     ["labels", "name"],

@@ -12,6 +12,8 @@ import type {
   GitWorkspace,
   PullRequestIdentity,
   RequiredCheck,
+  ReviewAttemptResult,
+  Ticket,
 } from "./contracts.ts";
 import {
   type DeliveryBoundaryResult,
@@ -37,6 +39,10 @@ export interface VerifiedHandoff {
   prTitle: string;
   prBody: string;
   verification: "verified" | "operator_override";
+  implementationCommits?: CommitEvidence[];
+  reviewCommits?: CommitEvidence[];
+  reviewChecks?: AgentAttemptResult["checks"];
+  reviewVerification?: "verified" | "operator_override";
 }
 
 interface AgentOperationInput extends DiscoveryInput {
@@ -53,6 +59,183 @@ interface AttemptInput extends AgentOperationInput {
   checkout: string;
   promptFile: string;
   agent: AgentConfig;
+  review: boolean;
+  reviewPrompt: string;
+  reviewAgent?: AgentConfig;
+}
+
+function snapshot(
+  ticket: Ticket,
+  name: string,
+): { source: string; title: string; body: string } {
+  if (!ticket.source || !ticket.title || ticket.body === undefined)
+    throw new Error(`${name} snapshot is incomplete`);
+  return { source: ticket.source, title: ticket.title, body: ticket.body };
+}
+
+function parseReviewSnapshot(value: string, number: number): Ticket {
+  const input = JSON.parse(value) as Record<string, unknown>;
+  if (
+    typeof input.title !== "string" ||
+    typeof input.body !== "string" ||
+    typeof input.source !== "string"
+  ) {
+    throw new Error("override has no complete ticket snapshot");
+  }
+  return {
+    number,
+    state: "open",
+    stateReason: null,
+    title: input.title,
+    body: input.body,
+    source: input.source,
+  };
+}
+
+async function readReviewSnapshot(
+  input: AttemptInput,
+  ticket: number,
+  parent: boolean,
+) {
+  return snapshot(
+    await externalRead({
+      action: () =>
+        parent
+          ? input.tracker.getParent(input.repository, ticket)
+          : input.tracker.getTicket(input.repository, ticket),
+      parseOverride: (value) => parseReviewSnapshot(value, ticket),
+      audit: input.audit,
+      event: input.event(
+        "review",
+        parent ? "read_specification" : "read_ticket_snapshot",
+        `${parent ? "parent" : "ticket"}:${ticket}`,
+      ),
+      clock: input.clock,
+      operator: input.operator,
+    }),
+    parent ? "governing specification" : "Delivery Ticket",
+  );
+}
+
+async function reviewHandoff(
+  input: AttemptInput,
+  handoff: VerifiedHandoff,
+  signal: AbortSignal,
+): Promise<VerifiedHandoff> {
+  if (handoff.verification !== "verified" || handoff.commits.length === 0)
+    throw new Error(
+      "Review requires a committed implementation Verified Handoff",
+    );
+  if (!input.reviewAgent) throw new Error("Review agent is not configured");
+  const implementationHead = handoff.commits.at(-1)!.sha;
+  let attemptNumber = 0;
+  for (;;) {
+    await boundary(input, handoff.ticket);
+    attemptNumber += 1;
+    const event = input.event(
+      "review",
+      "agent_attempt",
+      `ticket:${handoff.ticket}`,
+    )(attemptNumber);
+    await appendOperation(input, event, "started", null);
+    try {
+      const [deliveryTicket, governingSpecification, standardsSources] =
+        await Promise.all([
+          readReviewSnapshot(input, handoff.ticket, false),
+          readReviewSnapshot(input, input.parentTicket, true),
+          input.gitWorkspace.readReviewStandards(
+            handoff.worktree,
+            handoff.base,
+          ),
+        ]);
+      const gitDirectory = await mkdtemp(
+        path.join(tmpdir(), "sandcastle-runner-git-"),
+      );
+      let result: ReviewAttemptResult;
+      try {
+        const gitConfigGlobal = path.join(gitDirectory, "config");
+        await writeFile(gitConfigGlobal, "");
+        result = await input.agentExecutor.executeReview({
+          ticket: handoff.ticket,
+          worktree: handoff.worktree,
+          branch: handoff.branch,
+          base: handoff.base,
+          promptFile: input.reviewPrompt,
+          promptArgs: {
+            REVIEW_HANDOFF: JSON.stringify({
+              repository: input.repository,
+              projectTargetBranch: input.targetBranch,
+              worktree: handoff.worktree,
+              deliveryBranch: handoff.branch,
+              originalFixedPoint: handoff.base,
+              implementationHead,
+              deliveryTicket,
+              governingSpecification,
+              standardsSources,
+              acceptedExceptions: [
+                "After a passing review, the Runner verifies only Worktree cleanliness and does not compare frozen HEAD, branch, or merge-base values.",
+              ],
+              implementationReportedChecks: handoff.checks,
+            }),
+          },
+          model: input.reviewAgent.model,
+          effort: input.reviewAgent.reasoningEffort,
+          gitConfigGlobal,
+          logFile: path.join(
+            input.projectDirectory,
+            "logs",
+            `review-${handoff.ticket}-${randomUUID()}.log`,
+          ),
+          timeoutMs: input.timeoutMs,
+          signal,
+        });
+      } finally {
+        await rm(gitDirectory, { recursive: true, force: true });
+      }
+      await boundary(input, handoff.ticket);
+      if (result.outcome === "blocked")
+        throw new Error(`Review blocked: ${result.blocker}`);
+      const evidence = await input.gitWorkspace.inspectReview({
+        worktree: handoff.worktree,
+        base: handoff.base,
+        implementationHead,
+      });
+      if (!evidence.clean) throw new Error("Review left a dirty Worktree");
+      await appendOperation(input, event, "succeeded", null);
+      return {
+        ...handoff,
+        commits: evidence.deliveryCommits,
+        implementationCommits: handoff.commits,
+        reviewCommits: evidence.reviewCommits,
+        reviewChecks: result.checks,
+        reviewVerification: "verified",
+      };
+    } catch (error) {
+      if (error instanceof OperatorCancelled) throw error;
+      if (error instanceof BoundaryStop) {
+        await appendOperation(input, event, error.result.outcome, null);
+        throw error;
+      }
+      await appendOperation(
+        input,
+        event,
+        "failed",
+        error instanceof Error ? error.message : "Review Agent Attempt failed",
+      );
+      for (;;) {
+        const response = await pauseForOperator(
+          input.audit,
+          event,
+          input.operator,
+          "Review Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted passing result.",
+        );
+        if (response === "") break;
+        await boundary(input, handoff.ticket);
+        await appendOperation(input, event, "operator_override", null);
+        return { ...handoff, reviewVerification: "operator_override" };
+      }
+    }
+  }
 }
 
 export interface AttemptBatchResult {
@@ -364,7 +547,10 @@ async function implementTicket(
       signal: controller.signal,
       attemptCounter: { value: 0 },
     });
-    return "reason" in result ? result.reason : result;
+    if ("reason" in result) return result.reason;
+    return input.review
+      ? await reviewHandoff(input, result, controller.signal)
+      : result;
   } catch (error) {
     if (error instanceof BoundaryStop && error.result.outcome === "stopped")
       return error.result.reason;

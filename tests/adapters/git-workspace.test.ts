@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -144,5 +144,59 @@ test("LocalGitWorkspace surfaces a Worktree name collision without adopting it",
       base: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     }),
     /already exists/u,
+  );
+});
+
+test("LocalGitWorkspace supplies scoped standards and post-review commit evidence without frozen-state checks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "git-review-test-"));
+  const nested = path.join(root, "src", "feature");
+  await mkdir(nested, { recursive: true });
+  await writeFile(path.join(root, "AGENTS.md"), "root rules");
+  await writeFile(path.join(root, "src", "AGENTS.md"), "source rules");
+  const base = "a".repeat(40);
+  const implementationHead = "b".repeat(40);
+  const reviewHead = "c".repeat(40);
+  const calls: string[] = [];
+  const workspace = new LocalGitWorkspace("token", async (_cwd, args) => {
+    const command = args.join(" ");
+    calls.push(command);
+    if (command === `diff --name-only ${base}..HEAD`)
+      return "src/feature/index.ts\n";
+    if (args[0] === "ls-files")
+      return "AGENTS.md\nsrc/AGENTS.md\ntests/AGENTS.md\n";
+    if (command === "status --porcelain") return "";
+    if (command.endsWith(`${base}..HEAD`))
+      return `${implementationHead}\0feat: implementation\n${reviewHead}\0fix: review finding\n`;
+    if (command.endsWith(`${implementationHead}..HEAD`))
+      return `${reviewHead}\0fix: review finding\n`;
+    throw new Error(`unexpected Git command: ${command}`);
+  });
+
+  try {
+    assert.deepEqual(await workspace.readReviewStandards(root, base), [
+      { source: path.join(root, "AGENTS.md"), content: "root rules" },
+      { source: path.join(root, "src/AGENTS.md"), content: "source rules" },
+    ]);
+    assert.deepEqual(
+      await workspace.inspectReview({
+        worktree: root,
+        base,
+        implementationHead,
+      }),
+      {
+        clean: true,
+        deliveryCommits: [
+          { sha: implementationHead, message: "feat: implementation" },
+          { sha: reviewHead, message: "fix: review finding" },
+        ],
+        reviewCommits: [{ sha: reviewHead, message: "fix: review finding" }],
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  assert.equal(
+    calls.some((call) => /branch|merge-base|rev-parse/u.test(call)),
+    false,
   );
 });

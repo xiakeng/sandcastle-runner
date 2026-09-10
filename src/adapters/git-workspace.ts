@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { CommitEvidence, GitWorkspace } from "../run/contracts.ts";
@@ -158,5 +158,70 @@ export class LocalGitWorkspace implements GitWorkspace {
 
   async push(worktree: string, branch: string): Promise<void> {
     await this.remote(worktree, ["push", "origin", branch]);
+  }
+
+  async readReviewStandards(worktree: string, base: string) {
+    const [changed, instructionFiles] = await Promise.all([
+      this.command(worktree, ["diff", "--name-only", `${base}..HEAD`], {
+        timeout: 60_000,
+      }),
+      this.command(worktree, ["ls-files", "AGENTS.md", ":(glob)**/AGENTS.md"], {
+        timeout: 60_000,
+      }),
+    ]);
+    const changedFiles = changed.trim().split("\n").filter(Boolean);
+    const applicable = instructionFiles
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .filter((filename) => {
+        const directory = path.posix.dirname(filename);
+        return (
+          directory === "." ||
+          changedFiles.some((changedFile) =>
+            changedFile.startsWith(`${directory}/`),
+          )
+        );
+      });
+    return Promise.all(
+      applicable.map(async (filename) => ({
+        source: path.join(worktree, filename),
+        content: await readFile(path.join(worktree, filename), "utf8"),
+      })),
+    );
+  }
+
+  async inspectReview({
+    worktree,
+    base,
+    implementationHead,
+  }: {
+    worktree: string;
+    base: string;
+    implementationHead: string;
+  }) {
+    const [status, deliveryCommits, reviewCommits] = await Promise.all([
+      this.command(worktree, ["status", "--porcelain"], { timeout: 60_000 }),
+      this.command(
+        worktree,
+        ["log", "--reverse", "--format=%H%x00%s", `${base}..HEAD`],
+        { timeout: 60_000 },
+      ),
+      this.command(
+        worktree,
+        [
+          "log",
+          "--reverse",
+          "--format=%H%x00%s",
+          `${implementationHead}..HEAD`,
+        ],
+        { timeout: 60_000 },
+      ),
+    ]);
+    return {
+      clean: status === "",
+      deliveryCommits: commits(deliveryCommits),
+      reviewCommits: commits(reviewCommits),
+    };
   }
 }

@@ -16,6 +16,7 @@ projects/<project-key>/
 ├── config.json
 ├── prompts/
 │   ├── implement.md
+│   ├── review.md         # required when Review is enabled
 │   ├── ci-repair.md
 │   ├── conflict-repair.md
 │   └── documentation.md  # required when Documentation Maintenance is enabled
@@ -23,8 +24,8 @@ projects/<project-key>/
 ```
 
 `logs/` is created when the Run starts. The implementation and repair prompts must exist and be
-nonempty. The documentation prompt is required only when Documentation Maintenance is enabled. The
-implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
+nonempty. The review and documentation prompts are required only when their workflow nodes are
+enabled. The implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
 `{{WORKTREE_PATH}}`, `{{SOURCE_BRANCH}}`, `{{BASE_SHA}}`, and `{{PROJECT_TARGET_BRANCH}}`.
 `SOURCE_BRANCH` is Sandcastle's built-in delivery branch; `PROJECT_TARGET_BRANCH` is the Project
 Target Branch. Custom prompts must not pass or override Sandcastle's built-in `TARGET_BRANCH`, which
@@ -43,6 +44,16 @@ each documentation surface's full Documentation Base and receives no completed-t
 range, or synthesized context. Existing custom prompts must replace `BRANCH` with `SOURCE_BRANCH`
 and `TARGET_BRANCH` with `PROJECT_TARGET_BRANCH`.
 
+The review prompt has one custom placeholder, `{{REVIEW_HANDOFF}}`. Its JSON value contains the
+Project repository and Target Branch, absolute Worktree, delivery branch, original fixed point,
+observed implementation HEAD, Delivery Ticket and governing specification snapshots, applicable
+`AGENTS.md` sources, governing accepted exceptions, and implementation-reported checks as claims.
+It excludes the implementation's Pull Request title and body. The prompt must invoke `code-review`
+against the original fixed point, initially cover both Standards and Spec, fix and commit findings
+locally, and apply the repository's incremental-review rule within that fresh session. It requests
+one strict `<review_attempt_result>` with `outcome`, `summary`, separate `standards` and `spec`
+verdicts and `unresolved_findings`, `checks`, and `blocker`.
+
 ```json
 {
   "repository": "owner/repo",
@@ -60,10 +71,12 @@ and `TARGET_BRANCH` with `PROJECT_TARGET_BRANCH`.
     "adminMerge": false
   },
   "workflow": {
+    "review": true,
     "documentationMaintenance": true
   },
   "agents": {
     "implement": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
+    "review": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
     "ciRepair": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
     "conflictRepair": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
     "documentation": { "model": "gpt-5.6-sol", "reasoningEffort": "high" }
@@ -83,9 +96,15 @@ types must be `github`. Supported models are `gpt-5.2`, `gpt-5.5`, `gpt-5.6-luna
 `ticketClosure` must be `runner` or `code_host`. The named credential environment variables must be
 set; interactive `gh auth` is not used as a fallback. `workflow.documentationMaintenance` must be a
 boolean and defaults to `true` when either it or `workflow` is omitted. Workflow rejects unknown
-fields except `$comment`; `review` is also recognized for its owning review delivery. When
-Documentation Maintenance is disabled, `agents.documentation` and `prompts/documentation.md` may be
-omitted, the prompt is not read, and any supplied documentation profile is still validated.
+fields except `$comment`. `workflow.review` follows the same strict boolean and default-enabled
+rules. When a node is disabled, its profile and prompt may be omitted and its prompt is not read;
+any supplied profile is still validated. Enabled-node startup errors identify both the `agents.*`
+configuration path and fixed prompt path. Review uses `timeouts.agentMinutes`; there is no separate
+review timeout, fallback profile, fallback prompt, compatibility mode, or migration.
+
+Linux prerequisites are Node.js with npm, Git, GitHub CLI, and Codex available to Sandcastle. Set
+the configured credential environment variable before running. The configured checkout must be an
+absolute path to the target repository.
 
 ## Run
 
@@ -110,9 +129,17 @@ The Runner freshly fetches the Target Branch once for a reserved Batch, creates 
 Worktree for each Delivery Ticket at that exact commit, and starts the Agent Attempts concurrently.
 Each Attempt gets an isolated temporary `GIT_CONFIG_GLOBAL`, the configured model, effort and agent
 timeout, and the caller-owned implementation prompt. The temporary Git configuration is removed after
-Sandcastle settles; unresolved branches and Worktrees remain for operator action. Verified Handoffs
-are pushed with the configured code-host credential and published concurrently as non-draft Pull
-Requests using their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls
+Sandcastle settles; unresolved branches and Worktrees remain for operator action. When Review is
+enabled, only a committed initial Verified Handoff starts one fresh-context Review Agent Attempt on
+the same Worktree and branch before publication. Initial `no_change`/`blocked`, maintenance, CI
+repair, and conflict repair never start Review. A passing review must report both axes passing with
+no unresolved findings. The Runner then gates only on Worktree cleanliness, derives review-only and
+complete-delivery commits, and retains the implementation's Pull Request metadata. A blocked, dirty,
+timed-out, cancelled, or repeatedly invalid review enters ordinary Operator Pause and cannot bypass
+publication. When Review is disabled, the original Verified Handoff flows directly to finalization.
+Accepted review verification deliberately adds no frozen HEAD, branch, or merge-base comparison.
+Passing Verified Handoffs are pushed with the configured code-host credential and published as
+non-draft Pull Requests using their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls
 each Pull Request's required checks through GitHub CLI semantics. Empty, passing, or skipped
 required-check sets are CI-ready; pending checks are polled every 10 seconds; failed or cancelled
 checks start a fresh CI-repair Agent Attempt on that Worktree and branch. A Verified repair is pushed
@@ -187,7 +214,7 @@ live GitHub mutation, or remote Git mutation.
 | Complete first-try and longest practical recovery Runs | `five Delivery Tickets complete through both maintenance barriers on the first try`; `the five-ticket topology succeeds through the composed recovery path` |
 | Startup, read/write retry, Operator Pause, and audit gaps | `startup validation errors return a failed summary without workflow or pause`; `an external read succeeds on the fifth call with fixed delays`; `a failed Parent close pauses immediately and retries only after empty input`; `an accepted audit creation gap does not suppress later appends` |
 | Discovery, blockers, Reservations, revalidation, and closeout | `eligibility reports ownership and Reservations after complete blocker pagination`; `successive revalidation changes cannot hide newly eligible work`; `the final complete scan closes a now-terminal Parent scope` |
-| Agent process failure, result correction, Verified Handoff failure, and override | `the five-ticket topology succeeds through the composed recovery path`; `SandcastleAgentExecutor supplies the complete controlled Codex invocation`; `empty input starts a fresh Agent Attempt with a new Git configuration`; `a trusted committed override extracts only downstream metadata and bypasses Git verification` |
+| Agent process failure, review gate, result correction, Verified Handoff failure, and override | `the five-ticket topology succeeds through the composed recovery path`; `SandcastleAgentExecutor supplies the complete controlled Codex invocation`; `a clean fresh-context review gates publication and preserves implementation metadata`; `review fix commits become part of the complete delivery without replacing implementation identity`; `blocked or dirty review pauses before publication`; `empty input starts a fresh Agent Attempt with a new Git configuration`; `a trusted committed override extracts only downstream metadata and bypasses Git verification` |
 | Publication, CI repair, conflict repair, merge confirmation, and closure | `a Verified Handoff is published unchanged and becomes CI-ready after check discovery`; `failed required checks are repaired on the existing branch and Pull Request`; `an explicit merge conflict is repaired on the original branch and Pull Request`; `a CI-ready Pull Request is delivered only after its merge and completed closure are confirmed` |
 | Batch concurrency, all-ready barrier, ordered integration, rescans, and maintenance | `a reserved Batch runs its Agent Attempts concurrently`; `a Batch publishes every PR before merging by creation order`; both five-ticket scenarios; `Documentation Maintenance reuses CI and conflict repair on its original Pull Request` |
 | Focused terminal outcomes and no restart/adoption | `q and EOF at an exhausted external read cancel the Run`; `valid no_change and blocked results stay unresolved without handoffs`; `a cross-repository child fails explicitly without Operator Pause`; `a completed Parent with an open child fails as contradictory`; `open children return an actionable incomplete summary`; `blocked Documentation Maintenance is preserved but ignored by a later Run`; `a fresh Run ignores existing audit logs` |

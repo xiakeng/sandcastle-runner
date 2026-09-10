@@ -6,7 +6,7 @@ import { GitHubTracker } from "../../src/adapters/github-tracker.ts";
 test("GitHubTracker maps Parent, paginated children, and completed closure operations", async () => {
   const calls: string[][] = [];
   const responses = [
-    '{"number":8,"state":"open","state_reason":null}',
+    '{"number":8,"state":"open","state_reason":null,"title":"Specification","body":"Accepted decisions.","html_url":"https://github.com/owner/repo/issues/8"}',
     '[{"number":9,"state":"closed","state_reason":"not_planned","repository_url":"https://api.github.com/repos/other/repo"}]',
     "{}",
   ];
@@ -19,6 +19,9 @@ test("GitHubTracker maps Parent, paginated children, and completed closure opera
     number: 8,
     state: "open",
     stateReason: null,
+    title: "Specification",
+    body: "Accepted decisions.",
+    source: "https://github.com/owner/repo/issues/8",
   });
   assert.deepEqual(await tracker.listChildrenPage("owner/repo", 8, 2), {
     children: [

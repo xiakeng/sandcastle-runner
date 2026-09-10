@@ -55,7 +55,14 @@ function createCliDependencies(
     overrides.tracker?.createMaintenanceTicket !== undefined;
   const tracker: Tracker = {
     async getParent() {
-      return { number: 8, state: "open", stateReason: null };
+      return {
+        number: 8,
+        state: "open",
+        stateReason: null,
+        title: "Parent Ticket 8",
+        body: "Governing specification.",
+        source: "https://github.com/owner/repo/issues/8",
+      };
     },
     async listChildrenPage() {
       return { children: [], nextPage: null };
@@ -77,7 +84,14 @@ function createCliDependencies(
         ? overrides.tracker.getTicket(repository, ticket)
         : completedTickets.has(ticket)
           ? { number: ticket, state: "closed", stateReason: "completed" }
-          : { number: ticket, state: "open", stateReason: null };
+          : {
+              number: ticket,
+              state: "open",
+              stateReason: null,
+              title: `Delivery Ticket ${ticket}`,
+              body: "Acceptance criteria.",
+              source: `https://github.com/owner/repo/issues/${ticket}`,
+            };
     },
     async listBlockersPage(repository, ticket, page) {
       if (maintenanceTickets.has(ticket))
@@ -153,6 +167,12 @@ function createCliDependencies(
       return "base";
     },
     async push() {},
+    async readReviewStandards() {
+      return [];
+    },
+    async inspectReview() {
+      return { clean: true, deliveryCommits: [], reviewCommits: [] };
+    },
     ...overrides.gitWorkspace,
     async createWorktree(input) {
       if (input.worktree.includes("/maintenance-")) {
@@ -210,6 +230,18 @@ function createCliDependencies(
         pr_body: "unused",
       };
     },
+    async executeReview(input) {
+      if (overrides.agentExecutor?.executeReview)
+        return overrides.agentExecutor.executeReview(input);
+      return {
+        outcome: "blocked",
+        summary: "not enabled for this scenario",
+        standards: { verdict: "blocked", unresolved_findings: [] },
+        spec: { verdict: "blocked", unresolved_findings: [] },
+        checks: [],
+        blocker: "not enabled for this scenario",
+      };
+    },
   };
   const clock: Clock = {
     now: () => new Date("2026-09-09T00:00:00.000Z"),
@@ -245,6 +277,9 @@ function createAttemptTracker(...numbers: number[]): {
     repository: string;
     assignees: string[];
     labels: string[];
+    title?: string;
+    body?: string;
+    source?: string;
   }[];
   tracker: Partial<Tracker>;
 } {
@@ -255,6 +290,9 @@ function createAttemptTracker(...numbers: number[]): {
     repository: string;
     assignees: string[];
     labels: string[];
+    title?: string;
+    body?: string;
+    source?: string;
   }[] = numbers.map((number) => ({
     number,
     state: "open",
@@ -262,6 +300,9 @@ function createAttemptTracker(...numbers: number[]): {
     repository: "owner/repo",
     assignees: [] as string[],
     labels: [] as string[],
+    title: `Delivery Ticket ${number}`,
+    body: "Acceptance criteria.",
+    source: `https://github.com/owner/repo/issues/${number}`,
   }));
   return {
     tickets,
@@ -410,16 +451,16 @@ const validConfig = {
     adminMerge: false,
   },
   agents: Object.fromEntries(
-    ["implement", "ciRepair", "conflictRepair", "documentation"].map((name) => [
-      name,
-      { model: "gpt-5.6-sol", reasoningEffort: "high" },
-    ]),
+    ["implement", "review", "ciRepair", "conflictRepair", "documentation"].map(
+      (name) => [name, { model: "gpt-5.6-sol", reasoningEffort: "high" }],
+    ),
   ),
   timeouts: {
     agentMinutes: 120,
     requiredChecksMinutes: 60,
     mergeQueueMinutes: 60,
   },
+  workflow: { review: false, documentationMaintenance: true },
   ticketClosure: "runner",
 };
 
@@ -433,7 +474,13 @@ async function createProject(): Promise<string> {
     JSON.stringify(validConfig),
   );
   await Promise.all(
-    ["implement", "ci-repair", "conflict-repair", "documentation"].map((name) =>
+    [
+      "implement",
+      "review",
+      "ci-repair",
+      "conflict-repair",
+      "documentation",
+    ].map((name) =>
       writeFile(path.join(project, "prompts", `${name}.md`), `${name} prompt`),
     ),
   );
@@ -1042,6 +1089,345 @@ test("an empty required prompt fails startup before workflow operations", async 
   assert.equal(workflowCalls, 0);
 });
 
+test("default-enabled review reports its required profile and prompt paths", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  const defaulted = config as Partial<typeof config> & {
+    agents: Partial<typeof config.agents>;
+  };
+  delete defaulted.workflow;
+  delete defaulted.agents.review;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  await rm(path.join(root, "projects/demo/prompts/review.md"));
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Review is enabled.*agents\.review.*prompts\/review\.md/u,
+  );
+});
+
+test("disabled review does not read its prompt but validates a supplied profile", async () => {
+  const root = await createProject();
+  await rm(path.join(root, "projects/demo/prompts/review.md"));
+
+  const disabled = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+  assert.equal(disabled.summary.outcome, "no_work");
+
+  const config = structuredClone(validConfig);
+  config.agents.review = { model: "unsupported", reasoningEffort: "high" };
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  const invalid = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+  assert.match(
+    invalid.summary.reasons[0] ?? "",
+    /agents\.review\.model is unsupported/u,
+  );
+});
+
+test("a clean fresh-context review gates publication and preserves implementation metadata", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  config.workflow.review = true;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  const delivery = createCommittedDelivery(9);
+  const implementation = {
+    sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    message: "feat: implementation",
+  };
+  let reviewInput: Parameters<AgentExecutor["executeReview"]>[0] | undefined;
+  let branch = "";
+  const operations: string[] = [];
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async getParent() {
+          return {
+            number: 8,
+            state: "open",
+            stateReason: null,
+            title: "Parent specification",
+            body: "Accepted specification body.",
+            source: "https://github.com/owner/repo/issues/8",
+          };
+        },
+        async getTicket(_repository, ticket) {
+          return {
+            ...delivery.tickets.find(({ number }) => number === ticket)!,
+            title: "Delivery ticket",
+            body: "Acceptance criteria body.",
+            source: "https://github.com/owner/repo/issues/9",
+          };
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits: [implementation],
+            clean: true,
+          };
+        },
+        async readReviewStandards(worktree) {
+          return [
+            {
+              source: path.join(worktree, "AGENTS.md"),
+              content: "Review both Standards and Spec.",
+            },
+          ];
+        },
+        async inspectReview() {
+          return {
+            clean: true,
+            deliveryCommits: [implementation],
+            reviewCommits: [],
+          };
+        },
+        async push() {
+          operations.push("push");
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return delivery.agentExecutor.execute!(input);
+        },
+        async executeReview(input) {
+          operations.push("review");
+          reviewInput = input;
+          return {
+            outcome: "passed",
+            summary: "Both review axes pass.",
+            standards: { verdict: "passed", unresolved_findings: [] },
+            spec: { verdict: "passed", unresolved_findings: [] },
+            checks: [
+              { command: "npm test", status: "passed", details: "all passed" },
+            ],
+            blocker: null,
+          };
+        },
+      },
+      codeHost: {
+        async createPullRequest(input) {
+          operations.push(`pr:${input.title}:${input.body}`);
+          return { number: 1, url: "https://github.com/owner/repo/pull/1" };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(operations.slice(0, 3), [
+    "review",
+    "push",
+    "pr:feat: implementation:Implementation body.",
+  ]);
+  assert.ok(reviewInput);
+  assert.deepEqual(Object.keys(reviewInput.promptArgs), ["REVIEW_HANDOFF"]);
+  const reviewHandoff = JSON.parse(
+    String(reviewInput.promptArgs.REVIEW_HANDOFF),
+  ) as Record<string, unknown>;
+  assert.equal(
+    reviewInput.promptFile,
+    path.join(root, "projects/demo/prompts/review.md"),
+  );
+  assert.equal(reviewInput.base, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  assert.equal(reviewInput.branch, branch);
+  assert.deepEqual(reviewHandoff.deliveryTicket, {
+    source: "https://github.com/owner/repo/issues/9",
+    title: "Delivery ticket",
+    body: "Acceptance criteria body.",
+  });
+  assert.deepEqual(reviewHandoff.governingSpecification, {
+    source: "https://github.com/owner/repo/issues/8",
+    title: "Parent specification",
+    body: "Accepted specification body.",
+  });
+  assert.equal(
+    JSON.stringify(reviewHandoff).includes("Implementation body."),
+    false,
+  );
+  assert.deepEqual(result.summary.handoffs?.[0]?.reviewCommits, []);
+});
+
+test("review fix commits become part of the complete delivery without replacing implementation identity", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  config.workflow.review = true;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  const delivery = createCommittedDelivery(9);
+  const implementation = {
+    sha: "b".repeat(40),
+    message: "feat: implementation",
+  };
+  const fix = { sha: "c".repeat(40), message: "fix: review finding" };
+  let branch = "";
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: delivery.tracker,
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "a".repeat(40);
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits: [implementation],
+            clean: true,
+          };
+        },
+        async readReviewStandards() {
+          return [];
+        },
+        async inspectReview() {
+          return {
+            clean: true,
+            deliveryCommits: [implementation, fix],
+            reviewCommits: [fix],
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return delivery.agentExecutor.execute!(input);
+        },
+        async executeReview() {
+          return {
+            outcome: "passed",
+            summary: "Fixed one finding.",
+            standards: { verdict: "passed", unresolved_findings: [] },
+            spec: { verdict: "passed", unresolved_findings: [] },
+            checks: [],
+            blocker: null,
+          };
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.handoffs?.[0]?.commits, [
+    implementation,
+    fix,
+  ]);
+  assert.deepEqual(result.summary.handoffs?.[0]?.implementationCommits, [
+    implementation,
+  ]);
+  assert.deepEqual(result.summary.handoffs?.[0]?.reviewCommits, [fix]);
+  assert.equal(result.summary.handoffs?.[0]?.prTitle, "feat: implementation");
+});
+
+test("blocked or dirty review pauses before publication", async () => {
+  for (const failure of ["blocked", "dirty"] as const) {
+    const root = await createProject();
+    const config = structuredClone(validConfig);
+    config.workflow.review = true;
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify(config),
+    );
+    const delivery = createCommittedDelivery(9);
+    let pushes = 0;
+    let pauses = 0;
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker: delivery.tracker,
+        gitWorkspace: {
+          ...delivery.gitWorkspace,
+          async readReviewStandards() {
+            return [];
+          },
+          async inspectReview() {
+            return {
+              clean: failure !== "dirty",
+              deliveryCommits: [],
+              reviewCommits: [],
+            };
+          },
+          async push() {
+            pushes += 1;
+          },
+        },
+        agentExecutor: {
+          async execute(input) {
+            return delivery.agentExecutor.execute!(input);
+          },
+          async executeReview() {
+            return failure === "blocked"
+              ? {
+                  outcome: "blocked",
+                  summary: "Review cannot pass.",
+                  standards: {
+                    verdict: "blocked",
+                    unresolved_findings: ["P1 unresolved"],
+                  },
+                  spec: { verdict: "passed", unresolved_findings: [] },
+                  checks: [],
+                  blocker: "P1 unresolved",
+                }
+              : {
+                  outcome: "passed",
+                  summary: "Axes pass but files are dirty.",
+                  standards: { verdict: "passed", unresolved_findings: [] },
+                  spec: { verdict: "passed", unresolved_findings: [] },
+                  checks: [],
+                  blocker: null,
+                };
+          },
+        },
+        operator: {
+          async pause() {
+            pauses += 1;
+            return "q";
+          },
+        },
+      }),
+    );
+    assert.equal(result.summary.outcome, "cancelled");
+    assert.equal(pauses, 1);
+    assert.equal(pushes, 0);
+  }
+});
+
 test("disabled Documentation Maintenance allows delivery and Parent closeout without maintenance effects", async () => {
   const root = await createProject();
   const config = structuredClone(validConfig);
@@ -1051,8 +1437,8 @@ test("disabled Documentation Maintenance allows delivery and Parent closeout wit
     JSON.stringify({
       ...config,
       workflow: {
-        $comment: "Review remains enabled for its owning ticket.",
-        review: true,
+        $comment: "Review is disabled to isolate maintenance behavior.",
+        review: false,
         documentationMaintenance: false,
       },
     }),
@@ -1101,6 +1487,10 @@ test("disabled Documentation Maintenance allows delivery and Parent closeout wit
 
 test("workflow configuration rejects malformed switches, unknown fields, and invalid supplied disabled profiles", async () => {
   const cases = [
+    {
+      workflow: { review: "false", documentationMaintenance: false },
+      expected: /workflow\.review must be a boolean/u,
+    },
     {
       workflow: { documentationMaintenance: "false" },
       expected: /workflow\.documentationMaintenance must be a boolean/u,
@@ -4728,6 +5118,12 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
     },
   ]) {
     const root = await createProject();
+    const config = structuredClone(validConfig);
+    config.workflow.review = true;
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify(config),
+    );
     let inspections = 0;
     let branch = "";
     const { tracker } = createAttemptTracker(9);
@@ -4762,6 +5158,11 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
               pr_title: "unused metadata",
               pr_body: "unused metadata",
             };
+          },
+          async executeReview() {
+            assert.fail(
+              "review must not follow no_change or blocked implementation",
+            );
           },
         },
       }),

@@ -9,6 +9,9 @@ export interface Ticket {
   repository?: string;
   assignees?: string[];
   labels?: string[];
+  title?: string;
+  body?: string;
+  source?: string;
 }
 
 export interface ChildPage {
@@ -159,6 +162,17 @@ export interface WorkspaceEvidence {
   clean: boolean;
 }
 
+export interface SourceSnapshot {
+  source: string;
+  content: string;
+}
+
+export interface ReviewWorkspaceEvidence {
+  clean: boolean;
+  deliveryCommits: CommitEvidence[];
+  reviewCommits: CommitEvidence[];
+}
+
 export interface GitWorkspace {
   fetchTargetBranch(checkout: string, targetBranch: string): Promise<string>;
   createWorktree(input: {
@@ -172,6 +186,15 @@ export interface GitWorkspace {
     base: string;
     requiredAncestor?: string;
   }): Promise<WorkspaceEvidence>;
+  readReviewStandards(
+    worktree: string,
+    base: string,
+  ): Promise<SourceSnapshot[]>;
+  inspectReview(input: {
+    worktree: string;
+    base: string;
+    implementationHead: string;
+  }): Promise<ReviewWorkspaceEvidence>;
   push(worktree: string, branch: string): Promise<void>;
 }
 
@@ -201,8 +224,25 @@ export interface AgentAttemptInput {
   signal: AbortSignal;
 }
 
+export interface ReviewVerdict {
+  verdict: "passed" | "blocked";
+  unresolved_findings: string[];
+}
+
+export interface ReviewAttemptResult {
+  outcome: "passed" | "blocked";
+  summary: string;
+  standards: ReviewVerdict;
+  spec: ReviewVerdict;
+  checks: CheckEvidence[];
+  blocker: string | null;
+}
+
+export type ReviewAttemptInput = Omit<AgentAttemptInput, "pullRequestMetadata">;
+
 export interface AgentExecutor {
   execute(input: AgentAttemptInput): Promise<AgentAttemptResult>;
+  executeReview(input: ReviewAttemptInput): Promise<ReviewAttemptResult>;
 }
 
 export interface Clock {

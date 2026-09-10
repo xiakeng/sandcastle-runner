@@ -51,6 +51,16 @@ function input() {
   };
 }
 
+function reviewInput() {
+  const { pullRequestMetadata, ...review } = input();
+  void pullRequestMetadata;
+  return {
+    ...review,
+    promptFile: "/runner/projects/demo/prompts/review.md",
+    promptArgs: { REVIEW_HANDOFF: "{}" },
+  };
+}
+
 function result(
   stdout: string,
   output: AgentAttemptResult,
@@ -126,6 +136,77 @@ test("SandcastleAgentExecutor rejects multiple result tags", async () => {
   );
 
   await assert.rejects(executor.execute(input()), /exactly one result tag/u);
+});
+
+test("SandcastleAgentExecutor runs a fresh strict review result with one correction opportunity", async () => {
+  const review = {
+    outcome: "passed" as const,
+    summary: "Both axes pass.",
+    standards: { verdict: "passed" as const, unresolved_findings: [] },
+    spec: { verdict: "passed" as const, unresolved_findings: [] },
+    checks: [{ command: "npm test", status: "passed" as const, details: "ok" }],
+    blocker: null,
+  };
+  let options: RunOptions | undefined;
+  const executor = new SandcastleAgentExecutor(async (received) => {
+    options = received;
+    const definition = object(received.output);
+    const standard = object(object(definition.schema)["~standard"]);
+    const validate = standard.validate as (value: unknown) => unknown;
+    assert.ok(
+      object(
+        await validate({
+          ...review,
+          standards: { verdict: "passed", unresolved_findings: ["P1"] },
+        }),
+      ).issues,
+    );
+    assert.ok(
+      object(await validate({ ...review, pr_title: "not owned" })).issues,
+    );
+    assert.deepEqual(await validate(review), { value: review });
+    return {
+      iterations: [{ sessionId: "fresh-review-session" }],
+      stdout: `<review_attempt_result>${JSON.stringify(review)}</review_attempt_result>`,
+      commits: [],
+      branch: input().branch,
+      output: review,
+    };
+  });
+  assert.deepEqual(await executor.executeReview(reviewInput()), review);
+  assert.equal(object(options?.output).maxRetries, 1);
+  assert.equal(options?.promptFile, "/runner/projects/demo/prompts/review.md");
+  assert.deepEqual(options?.promptArgs, { REVIEW_HANDOFF: "{}" });
+});
+
+test("SandcastleAgentExecutor applies timeout and caller cancellation to review", async () => {
+  const hanging = new SandcastleAgentExecutor(
+    (options) =>
+      new Promise((_resolve, reject) => {
+        options.signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              options.signal?.reason instanceof Error
+                ? options.signal.reason
+                : new Error("review aborted"),
+            ),
+          { once: true },
+        );
+      }),
+  );
+  await assert.rejects(
+    hanging.executeReview({ ...reviewInput(), timeoutMs: 5 }),
+    /Agent Attempt timed out/u,
+  );
+
+  const controller = new AbortController();
+  const execution = hanging.executeReview({
+    ...reviewInput(),
+    signal: controller.signal,
+  });
+  controller.abort(new Error("review cancelled"));
+  await assert.rejects(execution, /review cancelled/u);
 });
 
 test("SandcastleAgentExecutor accepts repair results without Pull Request metadata", async () => {

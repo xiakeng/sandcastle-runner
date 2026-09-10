@@ -48,6 +48,7 @@ async function createProject(recovery: boolean): Promise<string> {
       tokenEnv: "TEST_GH_TOKEN",
       adminMerge: false,
     },
+    workflow: { review: false, documentationMaintenance: true },
     agents: Object.fromEntries(
       ["implement", "ciRepair", "conflictRepair", "documentation"].map(
         (name) => [name, { model: "gpt-5.6-sol", reasoningEffort: "high" }],
@@ -239,6 +240,12 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
           clean: true,
         };
       },
+      async readReviewStandards() {
+        return [];
+      },
+      async inspectReview() {
+        return { clean: true, deliveryCommits: [], reviewCommits: [] };
+      },
       async push(worktree) {
         const state = worktrees.get(worktree)!;
         const head = commits.get(state.ticket)?.at(-1)?.sha ?? sha("4");
@@ -341,6 +348,9 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
         } finally {
           activeAgents -= 1;
         }
+      },
+      async executeReview() {
+        throw new Error("review is disabled in the V1 full-contract scenario");
       },
     },
     codeHost: {
