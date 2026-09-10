@@ -23,6 +23,15 @@ projects/<project-key>/
 └── logs/
 ```
 
+Each Run also owns `projects/<project-key>/state/parent-<parent-number>.lock` for its full
+Linux invocation and stores its versioned recovery snapshot at the matching `.json` path. The
+lock is scoped to one Project/Parent pair, so different Parents may run concurrently; contention
+fails before workflow mutations. Snapshots are durable and atomically replaced, while diagnostic
+JSONL under `logs/` is never recovery input. A missing snapshot is a fresh Run; malformed or
+unsupported state pauses for operator repair. Unpublished local Worktrees are disposable on a
+restart, while later publication and cleanup phases retain their recorded identity for follow-up
+recovery.
+
 `logs/` is created when the Run starts. The implementation and repair prompts must exist and be
 nonempty. The review and documentation prompts are required only when their workflow nodes are
 enabled. The implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
