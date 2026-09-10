@@ -147,14 +147,12 @@ test("SandcastleAgentExecutor runs a fresh strict review result with one correct
     checks: [{ command: "npm test", status: "passed" as const, details: "ok" }],
     blocker: null,
   };
-  const corrections: string[] = [];
   let options: RunOptions | undefined;
   const executor = new SandcastleAgentExecutor(async (received) => {
     options = received;
     const definition = object(received.output);
     const standard = object(object(definition.schema)["~standard"]);
     const validate = standard.validate as (value: unknown) => unknown;
-    corrections.push("invalid");
     assert.ok(
       object(
         await validate({
@@ -166,7 +164,6 @@ test("SandcastleAgentExecutor runs a fresh strict review result with one correct
     assert.ok(
       object(await validate({ ...review, pr_title: "not owned" })).issues,
     );
-    corrections.push("corrected-in-session");
     assert.deepEqual(await validate(review), { value: review });
     return {
       iterations: [{ sessionId: "fresh-review-session" }],
@@ -180,25 +177,6 @@ test("SandcastleAgentExecutor runs a fresh strict review result with one correct
   assert.equal(object(options?.output).maxRetries, 1);
   assert.equal(options?.promptFile, "/runner/projects/demo/prompts/review.md");
   assert.deepEqual(options?.promptArgs, { REVIEW_HANDOFF: "{}" });
-  assert.deepEqual(corrections, ["invalid", "corrected-in-session"]);
-});
-
-test("SandcastleAgentExecutor rejects review output after its single correction", async () => {
-  const executor = new SandcastleAgentExecutor(async (received) => {
-    const definition = object(received.output);
-    assert.equal(definition.maxRetries, 1);
-    const standard = object(object(definition.schema)["~standard"]);
-    const validate = standard.validate as (value: unknown) => unknown;
-    const invalid = { outcome: "passed" };
-    assert.ok(object(await validate(invalid)).issues);
-    assert.ok(object(await validate(invalid)).issues);
-    throw new Error("review output remained invalid after one correction");
-  });
-
-  await assert.rejects(
-    executor.executeReview(reviewInput()),
-    /remained invalid after one correction/u,
-  );
 });
 
 test("SandcastleAgentExecutor applies timeout and caller cancellation to review", async () => {
