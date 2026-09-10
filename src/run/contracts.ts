@@ -75,6 +75,11 @@ export interface CodeHost {
     title: string;
     body: string;
   }): Promise<PullRequestIdentity>;
+  getRemoteBranchHead?(
+    repository: string,
+    branch: string,
+  ): Promise<string | null>;
+  listPullRequests?(repository: string): Promise<PullRequestRecord[]>;
   getRequiredChecks(
     repository: string,
     pullRequest: number,
@@ -89,6 +94,13 @@ export interface CodeHost {
     headSha: string;
     admin: boolean;
   }): Promise<MergeRequestResult>;
+}
+
+export interface PullRequestRecord extends PullRequestIdentity {
+  branch: string;
+  targetBranch: string;
+  headSha: string;
+  state: "open" | "closed" | "merged";
 }
 
 export interface PullRequestIdentity {

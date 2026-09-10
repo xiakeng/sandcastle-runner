@@ -31,6 +31,7 @@ import {
   serializeOperator,
   workflowWrite,
 } from "./operations.ts";
+import type { PublicationIntent } from "../recovery.ts";
 
 export interface PullRequestObservation extends PullRequestIdentity {
   ticket: number;
@@ -67,6 +68,7 @@ export interface PublicationInput extends ReadinessInput {
   mergeQueueTimeoutMs: number;
   ticketClosure: TicketClosurePolicy;
   ciRepairBudgets: Map<number, RepairBudget>;
+  persistPublication?: (intent: PublicationIntent | null) => Promise<void>;
 }
 
 interface RepairBudget {
@@ -748,6 +750,24 @@ export async function publishVerifiedHandoffs(
         handoff.ticket,
       );
       if (boundary.outcome !== "ready") return { boundary };
+      const intent: PublicationIntent = {
+        ticket: handoff.ticket,
+        originalBase: handoff.base,
+        targetBranch: input.targetBranch,
+        stableBranch: handoff.branch,
+        intendedHeadSha:
+          handoff.commits.at(-1)?.sha ??
+          handoff.implementationCommits?.at(-1)?.sha ??
+          "",
+        title: handoff.prTitle,
+        body: handoff.prBody,
+        phase: "pending_push",
+        implementationEvidence:
+          handoff.implementationCommits ?? handoff.commits,
+        reviewEvidence: handoff.reviewCommits ?? [],
+        completionEvidence: handoff,
+      };
+      await input.persistPublication?.(intent);
       await workflowWrite({
         action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
         audit: input.audit,
@@ -755,9 +775,11 @@ export async function publishVerifiedHandoffs(
           input.event("publish", "push_branch", `ticket:${handoff.ticket}`)(1),
         operator: concurrentInput.operator,
       });
+      await input.persistPublication?.({ ...intent, phase: "pushed" });
 
       boundary = await revalidateActiveTicket(concurrentInput, handoff.ticket);
       if (boundary.outcome !== "ready") return { boundary };
+      await input.persistPublication?.({ ...intent, phase: "pending_pr" });
       const pullRequest = await workflowWrite({
         action: () =>
           input.codeHost.createPullRequest({
@@ -776,6 +798,14 @@ export async function publishVerifiedHandoffs(
             `ticket:${handoff.ticket}`,
           )(1),
         operator: concurrentInput.operator,
+      });
+      await input.persistPublication?.({
+        ...intent,
+        phase: "pr_created",
+        pullRequest: {
+          ...pullRequest,
+          headSha: intent.intendedHeadSha,
+        },
       });
       let readiness = await observeRequiredChecks(
         concurrentInput,

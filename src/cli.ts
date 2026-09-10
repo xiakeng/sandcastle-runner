@@ -18,6 +18,7 @@ import {
   recoveryPaths,
   writeRecoverySnapshot,
   type RecoverySnapshot,
+  type PublicationIntent,
 } from "./recovery.ts";
 import type {
   AgentExecutor,
@@ -151,7 +152,7 @@ export async function executeCli(
     dependencies.operator.write(JSON.stringify(summary));
     return { exitCode: 1, summary, logPath: null };
   }
-  const startedSnapshot: RecoverySnapshot = {
+  let currentSnapshot: RecoverySnapshot = {
     ...(previous ?? {}),
     schemaVersion: recoverySchemaVersion,
     project,
@@ -165,7 +166,7 @@ export async function executeCli(
     updatedAt: timestamp,
   };
   try {
-    await writeRecoverySnapshot(paths.snapshot, startedSnapshot);
+    await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
   } catch (error) {
     await lock.release();
     throw error;
@@ -179,6 +180,20 @@ export async function executeCli(
     dependencies.gitWorkspace ?? new LocalGitWorkspace(loaded.codeHostToken);
   const agentExecutor =
     dependencies.agentExecutor ?? new SandcastleAgentExecutor();
+  let publicationWrite = Promise.resolve();
+  const persistPublication = async (intent: PublicationIntent | null) => {
+    publicationWrite = publicationWrite.then(async () => {
+      const next = { ...currentSnapshot };
+      if (intent === null) delete next.publication;
+      else next.publication = intent;
+      currentSnapshot = {
+        ...next,
+        updatedAt: dependencies.clock.now().toISOString(),
+      };
+      await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
+    });
+    await publicationWrite;
+  };
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -235,6 +250,7 @@ export async function executeCli(
       ticketClosure: loaded.config.ticketClosure,
       gitWorkspace,
       agentExecutor,
+      persistPublication,
     });
   } catch (error) {
     summary = {
@@ -253,7 +269,7 @@ export async function executeCli(
   }
   try {
     await writeRecoverySnapshot(paths.snapshot, {
-      ...startedSnapshot,
+      ...currentSnapshot,
       phase: summary.outcome,
       targetBranch: summary.targetBranch,
       updatedAt: dependencies.clock.now().toISOString(),

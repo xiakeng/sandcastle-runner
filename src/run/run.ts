@@ -23,6 +23,7 @@ import {
   publishVerifiedHandoffs,
   type PullRequestObservation,
 } from "./pull-request.ts";
+import type { PublicationIntent } from "../recovery.ts";
 
 export type RunOutcome =
   "succeeded" | "no_work" | "incomplete" | "cancelled" | "failed";
@@ -73,6 +74,7 @@ interface RunInput {
   ticketClosure: TicketClosurePolicy;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
+  persistPublication?: (intent: PublicationIntent | null) => Promise<void>;
 }
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -278,6 +280,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       gitWorkspace: input.gitWorkspace,
       codeHost: input.codeHost,
       agentExecutor: input.agentExecutor,
+      ...(input.persistPublication === undefined
+        ? {}
+        : { persistPublication: input.persistPublication }),
     };
     const publication =
       attempts.handoffs.length === 0
@@ -335,6 +340,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
         return summary("cancelled");
       }
       if (integration.outcome === "completed") {
+        await input.persistPublication?.(null);
         completedTickets.push(handoff.ticket);
         if (input.documentationMaintenance) maintenanceCredit += 1;
         reasons.push(

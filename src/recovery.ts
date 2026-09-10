@@ -12,6 +12,85 @@ import path from "node:path";
 
 export const recoverySchemaVersion = 1;
 
+export type PublicationPhase =
+  "pending_push" | "pushed" | "pending_pr" | "pr_created";
+
+export interface PublicationIntent {
+  ticket: number;
+  originalBase: string;
+  targetBranch: string;
+  stableBranch: string;
+  intendedHeadSha: string;
+  title: string;
+  body: string;
+  phase: PublicationPhase;
+  implementationEvidence: unknown;
+  reviewEvidence: unknown;
+  completionEvidence: unknown;
+  pullRequest?: { number: number; url: string; headSha: string };
+}
+
+export type PublicationReconciliation =
+  | { outcome: "restart"; reason: string }
+  | { outcome: "adopt"; reason: string }
+  | { outcome: "pause"; reason: string };
+
+export function reconcileInitialPush(
+  intent: PublicationIntent,
+  remoteHead: string | null,
+): PublicationReconciliation {
+  if (remoteHead === null)
+    return { outcome: "restart", reason: "stable remote branch is absent" };
+  if (remoteHead === intent.intendedHeadSha)
+    return { outcome: "adopt", reason: "remote branch matches intended head" };
+  return {
+    outcome: "pause",
+    reason: `stable remote branch head ${remoteHead} does not match intended head ${intent.intendedHeadSha}`,
+  };
+}
+
+export function reconcilePullRequest(
+  intent: PublicationIntent,
+  candidates: {
+    number: number;
+    url: string;
+    branch: string;
+    targetBranch: string;
+    headSha: string;
+  }[],
+): PublicationReconciliation {
+  const matches = candidates.filter(
+    (candidate) =>
+      candidate.branch === intent.stableBranch &&
+      candidate.targetBranch === intent.targetBranch &&
+      candidate.headSha === intent.intendedHeadSha,
+  );
+  const branchCandidates = candidates.filter(
+    (candidate) => candidate.branch === intent.stableBranch,
+  );
+  if (branchCandidates.length > matches.length)
+    return {
+      outcome: "pause",
+      reason: "Pull Request identity or head mismatch",
+    };
+  if (matches.length === 1)
+    return {
+      outcome: "adopt",
+      reason: `adopted Pull Request ${matches[0]!.number}`,
+    };
+  if (matches.length > 1)
+    return {
+      outcome: "pause",
+      reason: "multiple matching Pull Requests found",
+    };
+  if (branchCandidates.length > 0)
+    return {
+      outcome: "pause",
+      reason: "Pull Request identity or head mismatch",
+    };
+  return { outcome: "restart", reason: "no matching Pull Request exists" };
+}
+
 export interface RecoverySnapshot {
   schemaVersion: number;
   project: string;

@@ -18,4 +18,8 @@ On Linux, each Parent Ticket has a separate lock and durable state file under
 `projects/<project-key>/state/parent-<number>.{lock,json}`. Keep the state files permanently;
 they are the restart source, unlike `logs/`. A missing state file starts fresh, malformed state
 pauses for operator repair, and an unpublished restart uses a newly fetched Target Branch and a
-new disposable Worktree rather than adopting old local artifacts.
+new disposable Worktree rather than adopting old local artifacts. Once publication starts, the
+snapshot records the stable remote branch, intended head, exact PR title/body, and completion
+evidence. Restart adopts only an exact remote head or unique exact PR identity; missing artifacts
+restart from a fresh base, and unexpected or ambiguous artifacts pause without force-push or
+metadata rewriting.
