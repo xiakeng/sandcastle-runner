@@ -4996,6 +4996,8 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
             "TICKET_REFERENCE",
             "WORKTREE_PATH",
           ]);
+          assert.match(input.branch, /\/maintenance-100$/u);
+          assert.notEqual(input.branch, input.promptArgs.PROJECT_TARGET_BRANCH);
           assert.equal(input.promptArgs.PROJECT_TARGET_BRANCH, "main");
           return {
             outcome: "committed",
