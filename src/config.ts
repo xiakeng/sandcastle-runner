@@ -3,12 +3,9 @@ import path from "node:path";
 
 import type { TicketClosurePolicy } from "./run/contracts.ts";
 
-const promptNames = [
-  "implement",
-  "ci-repair",
-  "conflict-repair",
-  "documentation",
-] as const;
+const promptNames = ["implement", "ci-repair", "conflict-repair"] as const;
+const documentationConfigurationError =
+  "Documentation Maintenance is enabled; supply agents.documentation and prompts/documentation.md";
 const supportedModels = new Set([
   "gpt-5.2",
   "gpt-5.5",
@@ -34,11 +31,12 @@ export interface ProjectConfig {
     reservationLabel: string;
   };
   codeHost: { type: "github"; tokenEnv: string; adminMerge: boolean };
+  workflow: { review: boolean; documentationMaintenance: boolean };
   agents: {
     implement: AgentConfig;
     ciRepair: AgentConfig;
     conflictRepair: AgentConfig;
-    documentation: AgentConfig;
+    documentation?: AgentConfig;
   };
   timeouts: {
     agentMinutes: number;
@@ -75,6 +73,12 @@ function positive(value: unknown, name: string): number {
   return value;
 }
 
+function switchValue(value: unknown, name: string): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
+  return value;
+}
+
 function agent(value: unknown, name: string): AgentConfig {
   const input = record(value, name);
   const model = text(input.model, `${name}.model`);
@@ -92,6 +96,15 @@ function parseConfig(value: unknown): ProjectConfig {
   const tracker = record(input.tracker, "tracker");
   const codeHost = record(input.codeHost, "codeHost");
   const agents = record(input.agents, "agents");
+  const workflow =
+    input.workflow === undefined ? {} : record(input.workflow, "workflow");
+  const unknownWorkflowField = Object.keys(workflow).find(
+    (name) =>
+      !["$comment", "review", "documentationMaintenance"].includes(name),
+  );
+  if (unknownWorkflowField) {
+    throw new Error(`workflow contains unknown field ${unknownWorkflowField}`);
+  }
   const timeouts = record(input.timeouts, "timeouts");
   const repository = text(input.repository, "repository");
   if (!/^[^/\s]+\/[^/\s]+$/u.test(repository))
@@ -105,6 +118,17 @@ function parseConfig(value: unknown): ProjectConfig {
     throw new Error("codeHost.adminMerge is required");
   if (input.ticketClosure !== "runner" && input.ticketClosure !== "code_host") {
     throw new Error("ticketClosure is unsupported");
+  }
+  const documentationMaintenance = switchValue(
+    workflow.documentationMaintenance,
+    "workflow.documentationMaintenance",
+  );
+  const documentation =
+    agents.documentation === undefined
+      ? undefined
+      : agent(agents.documentation, "agents.documentation");
+  if (documentationMaintenance && documentation === undefined) {
+    throw new Error(documentationConfigurationError);
   }
 
   return {
@@ -127,11 +151,15 @@ function parseConfig(value: unknown): ProjectConfig {
       tokenEnv: text(codeHost.tokenEnv, "codeHost.tokenEnv"),
       adminMerge: codeHost.adminMerge,
     },
+    workflow: {
+      review: switchValue(workflow.review, "workflow.review"),
+      documentationMaintenance,
+    },
     agents: {
       implement: agent(agents.implement, "agents.implement"),
       ciRepair: agent(agents.ciRepair, "agents.ciRepair"),
       conflictRepair: agent(agents.conflictRepair, "agents.conflictRepair"),
-      documentation: agent(agents.documentation, "agents.documentation"),
+      ...(documentation === undefined ? {} : { documentation }),
     },
     timeouts: {
       agentMinutes: positive(timeouts.agentMinutes, "timeouts.agentMinutes"),
@@ -171,6 +199,22 @@ export async function loadProject(
       }
     }),
   );
+  if (config.workflow.documentationMaintenance) {
+    try {
+      if (
+        (
+          await readFile(
+            path.join(directory, "prompts", "documentation.md"),
+            "utf8",
+          )
+        ).trim() === ""
+      ) {
+        throw new Error("empty prompt");
+      }
+    } catch {
+      throw new Error(documentationConfigurationError);
+    }
+  }
   const trackerToken = env[config.tracker.tokenEnv];
   const codeHostToken = env[config.codeHost.tokenEnv];
   if (!trackerToken)

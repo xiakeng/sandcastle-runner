@@ -1042,6 +1042,169 @@ test("an empty required prompt fails startup before workflow operations", async 
   assert.equal(workflowCalls, 0);
 });
 
+test("disabled Documentation Maintenance allows delivery and Parent closeout without maintenance effects", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  delete config.agents.documentation;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({
+      ...config,
+      workflow: {
+        $comment: "Review remains enabled for its owning ticket.",
+        review: true,
+        documentationMaintenance: false,
+      },
+    }),
+  );
+  await rm(path.join(root, "projects/demo/prompts/documentation.md"));
+  const delivery = createCommittedDelivery(9);
+  const attempts: number[] = [];
+  let parentCloses = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...delivery.tracker,
+        async listLabelsPage() {
+          throw new Error("maintenance labels must not be read");
+        },
+        async createLabel() {
+          throw new Error("maintenance labels must not be created");
+        },
+        async createMaintenanceTicket() {
+          throw new Error("Maintenance Tickets must not be created");
+        },
+        async closeParent() {
+          parentCloses += 1;
+        },
+      },
+      gitWorkspace: delivery.gitWorkspace,
+      agentExecutor: {
+        async execute(input) {
+          attempts.push(input.ticket);
+          return delivery.agentExecutor.execute!(input);
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.deepEqual(attempts, [9]);
+  assert.equal(parentCloses, 1);
+  assert.doesNotMatch(result.summary.reasons.join(" "), /maintenance/iu);
+  assert.ok(result.logPath);
+  assert.doesNotMatch(await readFile(result.logPath, "utf8"), /maintenance/iu);
+});
+
+test("workflow configuration rejects malformed switches, unknown fields, and invalid supplied disabled profiles", async () => {
+  const cases = [
+    {
+      workflow: { documentationMaintenance: "false" },
+      expected: /workflow\.documentationMaintenance must be a boolean/u,
+    },
+    {
+      workflow: { documentationMaintenance: false, extra: true },
+      expected: /workflow contains unknown field extra/u,
+    },
+    {
+      workflow: { documentationMaintenance: false },
+      documentation: { model: "unknown", reasoningEffort: "high" },
+      expected: /agents\.documentation\.model is unsupported/u,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const root = await createProject();
+    const config = structuredClone(validConfig);
+    if (scenario.documentation) {
+      config.agents.documentation = scenario.documentation;
+    }
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify({ ...config, workflow: scenario.workflow }),
+    );
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root),
+    );
+
+    assert.equal(result.summary.outcome, "failed");
+    assert.match(result.summary.reasons[0] ?? "", scenario.expected);
+    assert.equal(result.logPath, null);
+  }
+});
+
+test("default-enabled Documentation Maintenance reports its required configuration and prompt paths", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify({
+      ...validConfig,
+      workflow: {
+        $comment: "The maintenance switch is intentionally omitted.",
+      },
+    }),
+  );
+  await rm(path.join(root, "projects/demo/prompts/documentation.md"));
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Documentation Maintenance is enabled.*agents\.documentation.*prompts\/documentation\.md/u,
+  );
+  assert.equal(result.logPath, null);
+});
+
+test("enabled Documentation Maintenance rejects a missing profile", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  delete config.agents.documentation;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Documentation Maintenance is enabled.*agents\.documentation.*prompts\/documentation\.md/u,
+  );
+  assert.equal(result.logPath, null);
+});
+
+test("enabled Documentation Maintenance rejects an empty prompt", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/prompts/documentation.md"),
+    " \n",
+  );
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Documentation Maintenance is enabled.*agents\.documentation.*prompts\/documentation\.md/u,
+  );
+  assert.equal(result.logPath, null);
+});
+
 test("an accepted audit creation gap does not suppress later appends", async () => {
   const root = await createProject();
   const logs = path.join(root, "projects", "demo", "logs");
