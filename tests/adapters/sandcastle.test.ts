@@ -38,8 +38,8 @@ function input() {
       TICKET_NUMBER: 9,
       IMPLEMENT_SKILL: "$implement",
       WORKTREE_PATH: "/repo/worktree",
-      BRANCH: "sandcastle/run-id/ticket-9",
       BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      PROJECT_TARGET_BRANCH: "main",
     },
     pullRequestMetadata: "required" as const,
     model: "gpt-5.6-sol",
@@ -106,6 +106,8 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
     "/runner/projects/demo/prompts/implement.md",
   );
   assert.deepEqual(options.promptArgs, input().promptArgs);
+  assert.equal(Object.hasOwn(options.promptArgs, "SOURCE_BRANCH"), false);
+  assert.equal(Object.hasOwn(options.promptArgs, "TARGET_BRANCH"), false);
   assert.equal(options.maxIterations, 1);
   assert.deepEqual(options.completionSignal, []);
   assert.equal(options.idleTimeoutSeconds, 120);
