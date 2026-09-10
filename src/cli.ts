@@ -134,6 +134,11 @@ export async function executeCli(
         "implement.md",
       ),
       implementationAgent: loaded.config.agents.implement,
+      review: loaded.config.workflow.review,
+      reviewPrompt: path.join(loaded.directory, "prompts", "review.md"),
+      ...(loaded.config.agents.review === undefined
+        ? {}
+        : { reviewAgent: loaded.config.agents.review }),
       ciRepairPrompt: path.join(loaded.directory, "prompts", "ci-repair.md"),
       ciRepairAgent: loaded.config.agents.ciRepair,
       conflictRepairPrompt: path.join(

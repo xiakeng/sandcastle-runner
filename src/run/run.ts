@@ -56,6 +56,9 @@ interface RunInput {
   projectDirectory: string;
   implementationPrompt: string;
   implementationAgent: AgentConfig;
+  review: boolean;
+  reviewPrompt: string;
+  reviewAgent?: AgentConfig;
   ciRepairPrompt: string;
   ciRepairAgent: AgentConfig;
   conflictRepairPrompt: string;
@@ -234,6 +237,11 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       projectDirectory: input.projectDirectory,
       promptFile: input.implementationPrompt,
       agent: input.implementationAgent,
+      review: input.review,
+      reviewPrompt: input.reviewPrompt,
+      ...(input.reviewAgent === undefined
+        ? {}
+        : { reviewAgent: input.reviewAgent }),
       timeoutMs: input.agentTimeoutMs,
       gitWorkspace: input.gitWorkspace,
       agentExecutor: input.agentExecutor,

@@ -6,6 +6,8 @@ import type { TicketClosurePolicy } from "./run/contracts.ts";
 const promptNames = ["implement", "ci-repair", "conflict-repair"] as const;
 const documentationConfigurationError =
   "Documentation Maintenance is enabled; supply agents.documentation and prompts/documentation.md";
+const reviewConfigurationError =
+  "Review is enabled; supply agents.review and prompts/review.md";
 const supportedModels = new Set([
   "gpt-5.2",
   "gpt-5.5",
@@ -34,6 +36,7 @@ export interface ProjectConfig {
   workflow: { review: boolean; documentationMaintenance: boolean };
   agents: {
     implement: AgentConfig;
+    review?: AgentConfig;
     ciRepair: AgentConfig;
     conflictRepair: AgentConfig;
     documentation?: AgentConfig;
@@ -127,6 +130,14 @@ function parseConfig(value: unknown): ProjectConfig {
     agents.documentation === undefined
       ? undefined
       : agent(agents.documentation, "agents.documentation");
+  const reviewEnabled = switchValue(workflow.review, "workflow.review");
+  const review =
+    agents.review === undefined
+      ? undefined
+      : agent(agents.review, "agents.review");
+  if (reviewEnabled && review === undefined) {
+    throw new Error(reviewConfigurationError);
+  }
   if (documentationMaintenance && documentation === undefined) {
     throw new Error(documentationConfigurationError);
   }
@@ -152,11 +163,12 @@ function parseConfig(value: unknown): ProjectConfig {
       adminMerge: codeHost.adminMerge,
     },
     workflow: {
-      review: switchValue(workflow.review, "workflow.review"),
+      review: reviewEnabled,
       documentationMaintenance,
     },
     agents: {
       implement: agent(agents.implement, "agents.implement"),
+      ...(review === undefined ? {} : { review }),
       ciRepair: agent(agents.ciRepair, "agents.ciRepair"),
       conflictRepair: agent(agents.conflictRepair, "agents.conflictRepair"),
       ...(documentation === undefined ? {} : { documentation }),
@@ -213,6 +225,19 @@ export async function loadProject(
       }
     } catch {
       throw new Error(documentationConfigurationError);
+    }
+  }
+  if (config.workflow.review) {
+    try {
+      if (
+        (
+          await readFile(path.join(directory, "prompts", "review.md"), "utf8")
+        ).trim() === ""
+      ) {
+        throw new Error("empty prompt");
+      }
+    } catch {
+      throw new Error(reviewConfigurationError);
     }
   }
   const trackerToken = env[config.tracker.tokenEnv];

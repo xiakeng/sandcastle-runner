@@ -73,12 +73,16 @@ A Project rule that chooses whether the Runner closes PR-backed tickets after me
 _Avoid_: Auto-close mode, issue-closing flag
 
 **Agent Attempt**:
-One Codex invocation for implementation, CI repair, conflict repair, or document maintenance.
+One Codex invocation for implementation, review, CI repair, conflict repair, or document maintenance.
 _Avoid_: Agent session, worker
 
 **Agent Attempt Result**:
 A schema-validated JSON account of an Agent Attempt's outcome, summary, claimed commits, checks, and blockers. It is evidence for the runner, not proof of delivery.
 _Avoid_: Completion marker, final message
+
+**Review Attempt Result**:
+A schema-validated account of a fresh-context review's Standards and Spec verdicts, unresolved findings, checks, and blocker. It never owns Pull Request metadata or commit claims.
+_Avoid_: Review Handoff, approval
 
 **Verified Handoff**:
 An Agent Attempt Result accepted after the runner independently validates the actual branch, commits, and worktree state.
