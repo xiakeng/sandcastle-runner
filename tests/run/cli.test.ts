@@ -1163,6 +1163,48 @@ test("default-enabled Documentation Maintenance reports its required configurati
   assert.equal(result.logPath, null);
 });
 
+test("enabled Documentation Maintenance rejects a missing profile", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  delete config.agents.documentation;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Documentation Maintenance is enabled.*agents\.documentation.*prompts\/documentation\.md/u,
+  );
+  assert.equal(result.logPath, null);
+});
+
+test("enabled Documentation Maintenance rejects an empty prompt", async () => {
+  const root = await createProject();
+  await writeFile(
+    path.join(root, "projects/demo/prompts/documentation.md"),
+    " \n",
+  );
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root),
+  );
+
+  assert.equal(result.summary.outcome, "failed");
+  assert.match(
+    result.summary.reasons[0] ?? "",
+    /Documentation Maintenance is enabled.*agents\.documentation.*prompts\/documentation\.md/u,
+  );
+  assert.equal(result.logPath, null);
+});
+
 test("an accepted audit creation gap does not suppress later appends", async () => {
   const root = await createProject();
   const logs = path.join(root, "projects", "demo", "logs");

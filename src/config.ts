@@ -4,6 +4,8 @@ import path from "node:path";
 import type { TicketClosurePolicy } from "./run/contracts.ts";
 
 const promptNames = ["implement", "ci-repair", "conflict-repair"] as const;
+const documentationConfigurationError =
+  "Documentation Maintenance is enabled; supply agents.documentation and prompts/documentation.md";
 const supportedModels = new Set([
   "gpt-5.2",
   "gpt-5.5",
@@ -126,9 +128,7 @@ function parseConfig(value: unknown): ProjectConfig {
       ? undefined
       : agent(agents.documentation, "agents.documentation");
   if (documentationMaintenance && documentation === undefined) {
-    throw new Error(
-      "Documentation Maintenance is enabled; supply agents.documentation and prompts/documentation.md",
-    );
+    throw new Error(documentationConfigurationError);
   }
 
   return {
@@ -212,9 +212,7 @@ export async function loadProject(
         throw new Error("empty prompt");
       }
     } catch {
-      throw new Error(
-        "Documentation Maintenance is enabled; supply agents.documentation and prompts/documentation.md",
-      );
+      throw new Error(documentationConfigurationError);
     }
   }
   const trackerToken = env[config.tracker.tokenEnv];
