@@ -117,6 +117,29 @@ async function readReviewSnapshot(
   );
 }
 
+async function acceptReview(
+  input: AttemptInput,
+  handoff: VerifiedHandoff,
+  implementationHead: string,
+  checks: AgentAttemptResult["checks"],
+  verification: "verified" | "operator_override",
+): Promise<VerifiedHandoff> {
+  const evidence = await input.gitWorkspace.inspectReview({
+    worktree: handoff.worktree,
+    base: handoff.base,
+    implementationHead,
+  });
+  if (!evidence.clean) throw new Error("Review left a dirty Worktree");
+  return {
+    ...handoff,
+    commits: evidence.deliveryCommits,
+    implementationCommits: handoff.commits,
+    reviewCommits: evidence.reviewCommits,
+    reviewChecks: checks,
+    reviewVerification: verification,
+  };
+}
+
 async function reviewHandoff(
   input: AttemptInput,
   handoff: VerifiedHandoff,
@@ -195,21 +218,15 @@ async function reviewHandoff(
       await boundary(input, handoff.ticket);
       if (result.outcome === "blocked")
         throw new Error(`Review blocked: ${result.blocker}`);
-      const evidence = await input.gitWorkspace.inspectReview({
-        worktree: handoff.worktree,
-        base: handoff.base,
+      const reviewed = await acceptReview(
+        input,
+        handoff,
         implementationHead,
-      });
-      if (!evidence.clean) throw new Error("Review left a dirty Worktree");
+        result.checks,
+        "verified",
+      );
       await appendOperation(input, event, "succeeded", null);
-      return {
-        ...handoff,
-        commits: evidence.deliveryCommits,
-        implementationCommits: handoff.commits,
-        reviewCommits: evidence.reviewCommits,
-        reviewChecks: result.checks,
-        reviewVerification: "verified",
-      };
+      return reviewed;
     } catch (error) {
       if (error instanceof OperatorCancelled) throw error;
       if (error instanceof BoundaryStop) {
@@ -231,8 +248,19 @@ async function reviewHandoff(
         );
         if (response === "") break;
         await boundary(input, handoff.ticket);
-        await appendOperation(input, event, "operator_override", null);
-        return { ...handoff, reviewVerification: "operator_override" };
+        try {
+          const reviewed = await acceptReview(
+            input,
+            handoff,
+            implementationHead,
+            [],
+            "operator_override",
+          );
+          await appendOperation(input, event, "operator_override", null);
+          return reviewed;
+        } catch {
+          await appendOperation(input, event, "invalid_override", null);
+        }
       }
     }
   }

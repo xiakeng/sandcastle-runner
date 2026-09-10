@@ -1355,8 +1355,8 @@ test("review fix commits become part of the complete delivery without replacing 
   assert.equal(result.summary.handoffs?.[0]?.prTitle, "feat: implementation");
 });
 
-test("blocked or dirty review pauses before publication", async () => {
-  for (const failure of ["blocked", "dirty"] as const) {
+test("blocked, dirty, or invalid review pauses before publication", async () => {
+  for (const failure of ["blocked", "dirty", "invalid"] as const) {
     const root = await createProject();
     const config = structuredClone(validConfig);
     config.workflow.review = true;
@@ -1392,6 +1392,8 @@ test("blocked or dirty review pauses before publication", async () => {
             return delivery.agentExecutor.execute!(input);
           },
           async executeReview() {
+            if (failure === "invalid")
+              throw new Error("second invalid review result");
             return failure === "blocked"
               ? {
                   outcome: "blocked",
@@ -1426,6 +1428,72 @@ test("blocked or dirty review pauses before publication", async () => {
     assert.equal(pauses, 1);
     assert.equal(pushes, 0);
   }
+});
+
+test("review retry uses a fresh attempt and a trusted result still verifies the Worktree", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  config.workflow.review = true;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  const delivery = createCommittedDelivery(9);
+  const implementation = {
+    sha: "b".repeat(40),
+    message: "feat: implementation",
+  };
+  const fix = { sha: "c".repeat(40), message: "fix: review finding" };
+  const gitConfigs: string[] = [];
+  let reviews = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: delivery.tracker,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async readReviewStandards() {
+          return [];
+        },
+        async inspectReview() {
+          return {
+            clean: true,
+            deliveryCommits: [implementation, fix],
+            reviewCommits: [fix],
+          };
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return delivery.agentExecutor.execute!(input);
+        },
+        async executeReview(input) {
+          gitConfigs.push(input.gitConfigGlobal);
+          reviews += 1;
+          throw new Error("review failed after committing a fix");
+        },
+      },
+      operator: {
+        async pause() {
+          return reviews === 1 ? "" : "trusted passing result";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "succeeded");
+  assert.equal(reviews, 2);
+  assert.notEqual(gitConfigs[0], gitConfigs[1]);
+  assert.deepEqual(result.summary.handoffs?.[0]?.commits, [
+    implementation,
+    fix,
+  ]);
+  assert.deepEqual(result.summary.handoffs?.[0]?.reviewCommits, [fix]);
+  assert.equal(
+    result.summary.handoffs?.[0]?.reviewVerification,
+    "operator_override",
+  );
 });
 
 test("disabled Documentation Maintenance allows delivery and Parent closeout without maintenance effects", async () => {
@@ -2831,6 +2899,7 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
     path.join(root, "projects/demo/config.json"),
     JSON.stringify({
       ...validConfig,
+      workflow: { ...validConfig.workflow, review: true },
       agents: {
         ...validConfig.agents,
         conflictRepair: { model: "gpt-5.5", reasoningEffort: "medium" },
@@ -2861,6 +2930,7 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
   let mergeRequests = 0;
   let headSha = implementation.sha;
   let merged = false;
+  let reviewCalls = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
@@ -2889,6 +2959,16 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
                 : [implementation];
           return { worktree, branch, base, commits, clean: true };
         },
+        async readReviewStandards() {
+          return [];
+        },
+        async inspectReview() {
+          return {
+            clean: true,
+            deliveryCommits: [implementation],
+            reviewCommits: [],
+          };
+        },
         async push() {
           pushes += 1;
           if (pushes === 2) headSha = conflictRepair.sha;
@@ -2909,6 +2989,17 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
             blocker: null,
             pr_title: "feat: implementation",
             pr_body: "Implementation body.",
+          };
+        },
+        async executeReview() {
+          reviewCalls += 1;
+          return {
+            outcome: "passed",
+            summary: "Initial implementation review passed.",
+            standards: { verdict: "passed", unresolved_findings: [] },
+            spec: { verdict: "passed", unresolved_findings: [] },
+            checks: [],
+            blocker: null,
           };
         },
       },
@@ -2956,6 +3047,7 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
   assert.equal(pullRequests, 1);
   assert.equal(mergeRequests, 2);
   assert.equal(agentInputs.length, 3);
+  assert.equal(reviewCalls, 1);
   assert.equal(
     agentInputs[1]?.promptFile,
     path.join(root, "projects/demo/prompts/conflict-repair.md"),
@@ -5496,7 +5588,11 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
   const root = await createProject();
   await writeFile(
     path.join(root, "projects/demo/config.json"),
-    JSON.stringify({ ...validConfig, ticketClosure: "code_host" }),
+    JSON.stringify({
+      ...validConfig,
+      workflow: { ...validConfig.workflow, review: true },
+      ticketClosure: "code_host",
+    }),
   );
   const delivery = createCommittedBatch(9, 10, 11);
   const maintenance = {
@@ -5508,6 +5604,7 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
   };
   const merged = new Set<number>();
   const operations: string[] = [];
+  let reviewCalls = 0;
 
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
@@ -5546,7 +5643,25 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
           operations.push("parent:close");
         },
       },
-      gitWorkspace: delivery.gitWorkspace,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async readReviewStandards() {
+          return [];
+        },
+        async inspectReview({ worktree }) {
+          const ticket = Number(worktree.split("-").at(-1));
+          return {
+            clean: true,
+            deliveryCommits: [
+              {
+                sha: String(ticket).at(-1)!.repeat(40),
+                message: `feat: ticket ${ticket}`,
+              },
+            ],
+            reviewCommits: [],
+          };
+        },
+      },
       agentExecutor: {
         async execute(input) {
           if (input.ticket !== maintenance.number)
@@ -5576,6 +5691,17 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
             blocker: null,
             pr_title: "docs: maintain project documentation",
             pr_body: "Maintain documentation.",
+          };
+        },
+        async executeReview() {
+          reviewCalls += 1;
+          return {
+            outcome: "passed",
+            summary: "Initial implementation review passed.",
+            standards: { verdict: "passed", unresolved_findings: [] },
+            spec: { verdict: "passed", unresolved_findings: [] },
+            checks: [],
+            blocker: null,
           };
         },
       },
@@ -5623,6 +5749,7 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
   );
   assert.equal(result.summary.outcome, "succeeded");
   assert.deepEqual(result.summary.completedTickets, [9, 10, 11]);
+  assert.equal(reviewCalls, 3);
   assert.ok(
     operations.indexOf("maintenance:agent") > operations.indexOf("merge:111"),
   );
