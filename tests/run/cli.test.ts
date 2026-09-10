@@ -1496,6 +1496,57 @@ test("review retry uses a fresh attempt and a trusted result still verifies the 
   );
 });
 
+test("a trusted review result cannot bypass the clean Worktree gate", async () => {
+  const root = await createProject();
+  const config = structuredClone(validConfig);
+  config.workflow.review = true;
+  await writeFile(
+    path.join(root, "projects/demo/config.json"),
+    JSON.stringify(config),
+  );
+  const delivery = createCommittedDelivery(9);
+  let pauses = 0;
+  let pushes = 0;
+
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: delivery.tracker,
+      gitWorkspace: {
+        ...delivery.gitWorkspace,
+        async readReviewStandards() {
+          return [];
+        },
+        async inspectReview() {
+          return { clean: false, deliveryCommits: [], reviewCommits: [] };
+        },
+        async push() {
+          pushes += 1;
+        },
+      },
+      agentExecutor: {
+        async execute(input) {
+          return delivery.agentExecutor.execute!(input);
+        },
+        async executeReview() {
+          throw new Error("review failed");
+        },
+      },
+      operator: {
+        async pause() {
+          pauses += 1;
+          return pauses === 1 ? "trusted passing result" : "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(pauses, 2);
+  assert.equal(pushes, 0);
+  assert.match(await readFile(result.logPath!, "utf8"), /invalid_override/u);
+});
+
 test("disabled Documentation Maintenance allows delivery and Parent closeout without maintenance effects", async () => {
   const root = await createProject();
   const config = structuredClone(validConfig);
