@@ -102,6 +102,10 @@ any supplied profile is still validated. Enabled-node startup errors identify bo
 configuration path and fixed prompt path. Review uses `timeouts.agentMinutes`; there is no separate
 review timeout, fallback profile, fallback prompt, compatibility mode, or migration.
 
+Configuration files are ordinary JSON. A `$comment` field may document configuration objects and is
+ignored while real fields retain their validation. Copy [`projects/example`](projects/example), then
+replace its obvious repository, account, and absolute-checkout values and edit its five prompts.
+
 Linux prerequisites are Node.js with npm, Git, GitHub CLI, and Codex available to Sandcastle. Set
 the configured credential environment variable before running. The configured checkout must be an
 absolute path to the target repository.

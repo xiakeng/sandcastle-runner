@@ -1604,6 +1604,72 @@ test("disabled Documentation Maintenance allows delivery and Parent closeout wit
   assert.doesNotMatch(await readFile(result.logPath, "utf8"), /maintenance/iu);
 });
 
+test("Review and Documentation Maintenance switches operate independently and default on", async () => {
+  const scenarios = [
+    {
+      workflow: { review: true, documentationMaintenance: false },
+      reviews: 1,
+      maintenance: 0,
+    },
+    {
+      workflow: { review: false, documentationMaintenance: true },
+      reviews: 0,
+      maintenance: 1,
+    },
+    { workflow: undefined, reviews: 1, maintenance: 1 },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const root = await createProject();
+    const config: Omit<typeof validConfig, "workflow"> & {
+      workflow?: typeof validConfig.workflow;
+    } = structuredClone(validConfig);
+    if (scenario.workflow === undefined) delete config.workflow;
+    else config.workflow = scenario.workflow;
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify(config),
+    );
+    const delivery = createCommittedDelivery();
+    let reviews = 0;
+    let maintenance = 0;
+
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root, {
+        tracker: {
+          ...delivery.tracker,
+          async listLabelsPage() {
+            maintenance += 1;
+            return { labels: ["doc-maintain"], nextPage: null };
+          },
+        },
+        gitWorkspace: delivery.gitWorkspace,
+        agentExecutor: {
+          async execute(input) {
+            return delivery.agentExecutor.execute!(input);
+          },
+          async executeReview() {
+            reviews += 1;
+            return {
+              outcome: "passed",
+              summary: "Both review axes pass.",
+              standards: { verdict: "passed", unresolved_findings: [] },
+              spec: { verdict: "passed", unresolved_findings: [] },
+              checks: [],
+              blocker: null,
+            };
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.summary.outcome, "succeeded");
+    assert.equal(reviews, scenario.reviews);
+    assert.equal(maintenance, scenario.maintenance);
+  }
+});
+
 test("workflow configuration rejects malformed switches, unknown fields, and invalid supplied disabled profiles", async () => {
   const cases = [
     {
