@@ -30,8 +30,9 @@ enabled. The implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERE
 `SOURCE_BRANCH` is Sandcastle's built-in delivery branch; `PROJECT_TARGET_BRANCH` is the Project
 Target Branch. Custom prompts must not pass or override Sandcastle's built-in `TARGET_BRANCH`, which
 has head-strategy semantics distinct from the Project Target Branch. The prompt must restrict the
-Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag with
-`outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and `pr_body`.
+Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag. A
+`committed` result includes `outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and
+`pr_body`; `no_change` and `blocked` omit `pr_title` and `pr_body`.
 The CI-repair prompt receives the same arguments plus `{{PULL_REQUEST_NUMBER}}`,
 `{{PULL_REQUEST_URL}}`, and `{{FAILED_CHECKS}}`, a JSON array of failing check names, states, and
 links. Repair PR metadata is ignored because the Runner retains the original Pull Request.
