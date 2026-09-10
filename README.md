@@ -18,11 +18,12 @@ projects/<project-key>/
 │   ├── implement.md
 │   ├── ci-repair.md
 │   ├── conflict-repair.md
-│   └── documentation.md
+│   └── documentation.md  # required when Documentation Maintenance is enabled
 └── logs/
 ```
 
-`logs/` is created when the Run starts. All four prompt files must exist and be nonempty. The
+`logs/` is created when the Run starts. The implementation and repair prompts must exist and be
+nonempty. The documentation prompt is required only when Documentation Maintenance is enabled. The
 implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
 `{{WORKTREE_PATH}}`, `{{SOURCE_BRANCH}}`, `{{BASE_SHA}}`, and `{{PROJECT_TARGET_BRANCH}}`.
 `SOURCE_BRANCH` is Sandcastle's built-in delivery branch; `PROJECT_TARGET_BRANCH` is the Project
@@ -58,6 +59,9 @@ and `TARGET_BRANCH` with `PROJECT_TARGET_BRANCH`.
     "tokenEnv": "GH_TOKEN",
     "adminMerge": false
   },
+  "workflow": {
+    "documentationMaintenance": true
+  },
   "agents": {
     "implement": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
     "ciRepair": { "model": "gpt-5.6-sol", "reasoningEffort": "high" },
@@ -77,7 +81,11 @@ and `TARGET_BRANCH` with `PROJECT_TARGET_BRANCH`.
 types must be `github`. Supported models are `gpt-5.2`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`,
 `gpt-5.6-terra`, and `gpt-6-astra`; reasoning effort must be `low`, `medium`, `high`, or `xhigh`.
 `ticketClosure` must be `runner` or `code_host`. The named credential environment variables must be
-set; interactive `gh auth` is not used as a fallback.
+set; interactive `gh auth` is not used as a fallback. `workflow.documentationMaintenance` must be a
+boolean and defaults to `true` when either it or `workflow` is omitted. Workflow rejects unknown
+fields except `$comment`; `review` is also recognized for its owning review delivery. When
+Documentation Maintenance is disabled, `agents.documentation` and `prompts/documentation.md` may be
+omitted, the prompt is not read, and any supplied documentation profile is still validated.
 
 ## Run
 
@@ -141,12 +149,15 @@ unblocked work can be selected. Before reporting exhaustion or closing the Paren
 final complete scan. Only an initially empty Parent returns `no_work`; if a Parent had children
 earlier in the Run and a later scan becomes empty, that scan proceeds through Parent closeout.
 
-Each confirmed Completed Delivery Ticket adds one Run-local documentation credit. After a successful
-Batch, three credits trigger a standalone `doc-maintain` Maintenance Ticket before the next rescan;
-a final closeout scan also triggers one when any credit remains. Maintenance uses a fresh Worktree,
-the documentation prompt/profile, and the ordinary PR, CI/repair, merge, and closure path. A clean
-`no_change` result closes the Maintenance Ticket directly. Successful maintenance resets the counter
-to zero; blocked or failed maintenance leaves its artifacts unresolved and stops the Run.
+When Documentation Maintenance is enabled, each confirmed Completed Delivery Ticket adds one
+Run-local documentation credit. After a successful Batch, three credits trigger a standalone
+`doc-maintain` Maintenance Ticket before the next rescan; a final closeout scan also triggers one when
+any credit remains. Maintenance uses a fresh Worktree, the documentation prompt/profile, and the
+ordinary PR, CI/repair, merge, and closure path. A clean `no_change` result closes the Maintenance
+Ticket directly. Successful maintenance resets the counter to zero; blocked or failed maintenance
+leaves its artifacts unresolved and stops the Run. When disabled, the Run creates no maintenance
+credit, label, ticket, Agent Attempt, Pull Request workflow, closeout barrier, summary reason, or audit
+event; Delivery Tickets and Parent closeout continue normally.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any

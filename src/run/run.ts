@@ -60,8 +60,9 @@ interface RunInput {
   ciRepairAgent: AgentConfig;
   conflictRepairPrompt: string;
   conflictRepairAgent: AgentConfig;
+  documentationMaintenance: boolean;
   documentationPrompt: string;
-  documentationAgent: AgentConfig;
+  documentationAgent?: AgentConfig;
   agentTimeoutMs: number;
   requiredChecksTimeoutMs: number;
   mergeQueueTimeoutMs: number;
@@ -127,6 +128,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   });
 
   const maintain = async (): Promise<RunOutcome | null> => {
+    if (!input.documentationAgent) {
+      throw new Error("Documentation Maintenance agent is not configured");
+    }
     const result = await runDocumentationMaintenance({
       repository: input.repository,
       parentTicket: input.parentTicket,
@@ -188,7 +192,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     });
     if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {
-      if (maintenanceCredit > 0) {
+      if (input.documentationMaintenance && maintenanceCredit > 0) {
         const outcome = await maintain();
         if (outcome) return summary(outcome);
         continue;
@@ -324,7 +328,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       }
       if (integration.outcome === "completed") {
         completedTickets.push(handoff.ticket);
-        maintenanceCredit += 1;
+        if (input.documentationMaintenance) maintenanceCredit += 1;
         reasons.push(
           `Completed Delivery Ticket ${handoff.ticket} through Pull Request ${pullRequest.number}`,
         );
@@ -349,7 +353,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             : "incomplete",
       );
     }
-    if (maintenanceCredit >= 3) {
+    if (input.documentationMaintenance && maintenanceCredit >= 3) {
       const outcome = await maintain();
       if (outcome) return summary(outcome);
     }
