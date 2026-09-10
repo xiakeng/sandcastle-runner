@@ -24,7 +24,10 @@ projects/<project-key>/
 
 `logs/` is created when the Run starts. All four prompt files must exist and be nonempty. The
 implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`, `{{IMPLEMENT_SKILL}}`,
-`{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{BASE_SHA}}`, and `{{TARGET_BRANCH}}`. It must restrict the
+`{{WORKTREE_PATH}}`, `{{SOURCE_BRANCH}}`, `{{BASE_SHA}}`, and `{{PROJECT_TARGET_BRANCH}}`.
+`SOURCE_BRANCH` is Sandcastle's built-in delivery branch; `PROJECT_TARGET_BRANCH` is the Project
+Target Branch. Custom prompts must not pass or override Sandcastle's built-in `TARGET_BRANCH`, which
+has head-strategy semantics distinct from the Project Target Branch. The prompt must restrict the
 Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag with
 `outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and `pr_body`.
 The CI-repair prompt receives the same arguments plus `{{PULL_REQUEST_NUMBER}}`,
@@ -34,9 +37,10 @@ The conflict-repair prompt receives the Pull Request arguments plus `{{TARGET_BR
 `{{MERGE_CONFLICT}}`. The first is the freshly fetched Target Branch commit; the second is the
 explicit conflict reported by the merge request.
 The documentation prompt receives `{{TICKET_NUMBER}}`, `{{TICKET_REFERENCE}}`,
-`{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{BASE_SHA}}`, and `{{TARGET_BRANCH}}`. It owns each
-documentation surface's full Documentation Base and receives no completed-ticket list, commit range,
-or synthesized context.
+`{{WORKTREE_PATH}}`, `{{SOURCE_BRANCH}}`, `{{BASE_SHA}}`, and `{{PROJECT_TARGET_BRANCH}}`. It owns
+each documentation surface's full Documentation Base and receives no completed-ticket list, commit
+range, or synthesized context. Existing custom prompts must replace `BRANCH` with `SOURCE_BRANCH`
+and `TARGET_BRANCH` with `PROJECT_TARGET_BRANCH`.
 
 ```json
 {

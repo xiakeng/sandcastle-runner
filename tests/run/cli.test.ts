@@ -2010,9 +2010,8 @@ test("a Verified Handoff is published unchanged and becomes CI-ready after check
     TICKET_REFERENCE: "owner/repo#9",
     IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: prepared.worktree,
-    BRANCH: prepared.branch,
     BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    TARGET_BRANCH: "main",
+    PROJECT_TARGET_BRANCH: "main",
   });
   assert.equal(agentInput.model, "gpt-5.6-sol");
   assert.equal(agentInput.effort, "high");
@@ -2417,9 +2416,8 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
     TICKET_REFERENCE: "owner/repo#9",
     IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: agentInputs[0]?.worktree,
-    BRANCH: branch,
     BASE_SHA: implementation.sha,
-    TARGET_BRANCH: "main",
+    PROJECT_TARGET_BRANCH: "main",
     TARGET_BRANCH_SHA: targetBase,
     PULL_REQUEST_NUMBER: 41,
     PULL_REQUEST_URL: "https://github.com/owner/repo/pull/41",
@@ -3641,9 +3639,8 @@ test("failed required checks are repaired on the existing branch and Pull Reques
     TICKET_REFERENCE: "owner/repo#9",
     IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: agentInputs[1]?.worktree,
-    BRANCH: branch,
     BASE_SHA: implementation.sha,
-    TARGET_BRANCH: "main",
+    PROJECT_TARGET_BRANCH: "main",
     PULL_REQUEST_NUMBER: 41,
     PULL_REQUEST_URL: "https://github.com/owner/repo/pull/41",
     FAILED_CHECKS: JSON.stringify([
@@ -4994,12 +4991,12 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
           assert.match(input.promptFile, /prompts\/documentation\.md$/u);
           assert.deepEqual(Object.keys(input.promptArgs).sort(), [
             "BASE_SHA",
-            "BRANCH",
-            "TARGET_BRANCH",
+            "PROJECT_TARGET_BRANCH",
             "TICKET_NUMBER",
             "TICKET_REFERENCE",
             "WORKTREE_PATH",
           ]);
+          assert.equal(input.promptArgs.PROJECT_TARGET_BRANCH, "main");
           return {
             outcome: "committed",
             summary: "documentation updated",
