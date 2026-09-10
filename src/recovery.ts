@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 export const recoverySchemaVersion = 1;
@@ -31,14 +39,14 @@ export function recoveryPaths(projectDirectory: string, parentTicket: number) {
 
 export class ParentLock {
   private readonly filename: string;
-  private readonly handle: Awaited<ReturnType<typeof open>>;
+  private readonly holder: ChildProcessWithoutNullStreams;
 
   private constructor(
     filename: string,
-    handle: Awaited<ReturnType<typeof open>>,
+    holder: ChildProcessWithoutNullStreams,
   ) {
     this.filename = filename;
-    this.handle = handle;
+    this.holder = holder;
   }
 
   static async acquire(
@@ -46,31 +54,47 @@ export class ParentLock {
     metadata: object,
   ): Promise<ParentLock> {
     await mkdir(path.dirname(filename), { recursive: true });
-    let handle: Awaited<ReturnType<typeof open>>;
+    const handle = await open(filename, "a+", 0o600);
+    await handle.close();
+    await chmod(filename, 0o600);
+    const holder = spawn("flock", ["-n", filename, "-c", "printf ready; cat"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      let output = "";
+      const onExit = (code: number | null) => {
+        reject(
+          new Error(
+            code === 1
+              ? `Parent Ticket lock is already held: ${filename}`
+              : `unable to hold Parent Ticket lock: ${filename}`,
+          ),
+        );
+      };
+      holder.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+        if (output.includes("ready")) {
+          holder.removeListener("exit", onExit);
+          resolve();
+        }
+      });
+      holder.once("error", reject);
+      holder.once("exit", onExit);
+    });
     try {
-      handle = await open(filename, "wx", 0o600);
+      await writeFile(filename, JSON.stringify(metadata), "utf8");
+      return new ParentLock(filename, holder);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new Error(`Parent Ticket lock is already held: ${filename}`, {
-          cause: error,
-        });
-      }
-      throw error;
-    }
-    try {
-      await handle.writeFile(JSON.stringify(metadata));
-      await handle.sync();
-      return new ParentLock(filename, handle);
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      await rm(filename, { force: true }).catch(() => undefined);
+      holder.kill();
       throw error;
     }
   }
 
   async release(): Promise<void> {
-    await this.handle.close();
-    await rm(this.filename, { force: true });
+    if (!this.holder.killed) this.holder.kill();
+    await new Promise<void>((resolve) =>
+      this.holder.once("close", () => resolve()),
+    );
   }
 }
 
@@ -147,15 +171,5 @@ export async function writeRecoverySnapshot(
     await directory.sync();
   } finally {
     await directory.close();
-  }
-}
-
-export async function snapshotExists(filename: string): Promise<boolean> {
-  try {
-    await stat(filename);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
   }
 }

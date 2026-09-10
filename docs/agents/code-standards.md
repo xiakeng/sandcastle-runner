@@ -12,9 +12,11 @@ src/
   cli.ts          Command parsing, production wiring, exit status
   config.ts       Project configuration, credentials, prompt paths
   audit.ts        Diagnostic JSONL serialization and filesystem writes
+  recovery.ts     Per-Parent lock and durable recovery snapshot I/O
   run/            Workflow decisions and in-memory Run state
   adapters/       GitHub, Git, Sandcastle, clock, and terminal operations
 tests/
+  recovery.test.ts Recovery snapshot and lock behavior
   run/            Behavioral scenarios through the real Run
   adapters/       Production adapter contract checks
   support/        Scripted fakes and controlled time

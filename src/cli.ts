@@ -14,6 +14,7 @@ import {
   InvalidRecoverySnapshot,
   ParentLock,
   readRecoverySnapshot,
+  recoverySchemaVersion,
   recoveryPaths,
   writeRecoverySnapshot,
   type RecoverySnapshot,
@@ -152,7 +153,7 @@ export async function executeCli(
   }
   const startedSnapshot: RecoverySnapshot = {
     ...(previous ?? {}),
-    schemaVersion: 1,
+    schemaVersion: recoverySchemaVersion,
     project,
     repository: loaded.config.repository,
     checkout: loaded.config.checkout,
