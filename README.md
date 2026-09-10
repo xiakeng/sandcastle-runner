@@ -30,8 +30,9 @@ enabled. The implementation prompt may use `{{TICKET_NUMBER}}`, `{{TICKET_REFERE
 `SOURCE_BRANCH` is Sandcastle's built-in delivery branch; `PROJECT_TARGET_BRANCH` is the Project
 Target Branch. Custom prompts must not pass or override Sandcastle's built-in `TARGET_BRANCH`, which
 has head-strategy semantics distinct from the Project Target Branch. The prompt must restrict the
-Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag with
-`outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and `pr_body`.
+Agent Attempt to checks and local commits and request one `<agent_attempt_result>` JSON tag. A
+`committed` result includes `outcome`, `summary`, `commits`, `checks`, `blocker`, `pr_title`, and
+`pr_body`; `no_change` and `blocked` omit `pr_title` and `pr_body`.
 The CI-repair prompt receives the same arguments plus `{{PULL_REQUEST_NUMBER}}`,
 `{{PULL_REQUEST_URL}}`, and `{{FAILED_CHECKS}}`, a JSON array of failing check names, states, and
 links. Repair PR metadata is ignored because the Runner retains the original Pull Request.
@@ -101,6 +102,10 @@ rules. When a node is disabled, its profile and prompt may be omitted and its pr
 any supplied profile is still validated. Enabled-node startup errors identify both the `agents.*`
 configuration path and fixed prompt path. Review uses `timeouts.agentMinutes`; there is no separate
 review timeout, fallback profile, fallback prompt, compatibility mode, or migration.
+
+Configuration files are ordinary JSON. A `$comment` field may document configuration objects and is
+ignored while real fields retain their validation. Copy [`projects/example`](projects/example), then
+replace its obvious repository, account, and absolute-checkout values and edit its five prompts.
 
 Linux prerequisites are Node.js with npm, Git, GitHub CLI, and Codex available to Sandcastle. Set
 the configured credential environment variable before running. The configured checkout must be an
