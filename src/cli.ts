@@ -10,6 +10,15 @@ import { SandcastleAgentExecutor } from "./adapters/sandcastle.ts";
 import { TerminalOperator } from "./adapters/terminal.ts";
 import { AuditLog } from "./audit.ts";
 import { loadProject } from "./config.ts";
+import {
+  InvalidRecoverySnapshot,
+  ParentLock,
+  readRecoverySnapshot,
+  recoverySchemaVersion,
+  recoveryPaths,
+  writeRecoverySnapshot,
+  type RecoverySnapshot,
+} from "./recovery.ts";
 import type {
   AgentExecutor,
   Clock,
@@ -99,6 +108,68 @@ export async function executeCli(
   }
   const runId = randomUUID();
   const timestamp = dependencies.clock.now().toISOString();
+  const paths = recoveryPaths(loaded.directory, parentTicket);
+  let lock: ParentLock | undefined;
+  let previous: RecoverySnapshot | null;
+  try {
+    lock = await ParentLock.acquire(paths.lock, {
+      project,
+      parentTicket,
+      runId,
+      acquiredAt: timestamp,
+    });
+    previous = await readRecoverySnapshot(paths.snapshot);
+    if (
+      previous !== null &&
+      (previous.project !== project || previous.parentTicket !== parentTicket)
+    ) {
+      throw new InvalidRecoverySnapshot(
+        "recovery snapshot identity does not match this Run",
+      );
+    }
+  } catch (error) {
+    if (error instanceof InvalidRecoverySnapshot) {
+      try {
+        await dependencies.operator.pause(
+          `Recovery state is invalid: ${error.message}. Fix the snapshot and retry.`,
+        );
+      } finally {
+        await lock?.release();
+      }
+    } else {
+      await lock?.release();
+    }
+    const summary: RunSummary = {
+      outcome: "failed",
+      project,
+      parentTicket,
+      targetBranch: loaded.config.targetBranch ?? "unresolved",
+      reasons: [
+        error instanceof Error ? error.message : "recovery startup failed",
+      ],
+    };
+    dependencies.operator.write(JSON.stringify(summary));
+    return { exitCode: 1, summary, logPath: null };
+  }
+  const startedSnapshot: RecoverySnapshot = {
+    ...(previous ?? {}),
+    schemaVersion: recoverySchemaVersion,
+    project,
+    repository: loaded.config.repository,
+    checkout: loaded.config.checkout,
+    parentTicket,
+    runId,
+    phase: "running",
+    targetBranch: loaded.config.targetBranch ?? null,
+    createdAt: previous?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+  try {
+    await writeRecoverySnapshot(paths.snapshot, startedSnapshot);
+  } catch (error) {
+    await lock.release();
+    throw error;
+  }
   const audit = new AuditLog(loaded.directory, timestamp, parentTicket, runId);
   const tracker =
     dependencies.tracker ?? new GitHubTracker(loaded.trackerToken);
@@ -179,6 +250,16 @@ export async function executeCli(
             : "Run failed",
       ],
     };
+  }
+  try {
+    await writeRecoverySnapshot(paths.snapshot, {
+      ...startedSnapshot,
+      phase: summary.outcome,
+      targetBranch: summary.targetBranch,
+      updatedAt: dependencies.clock.now().toISOString(),
+    });
+  } finally {
+    await lock.release();
   }
   dependencies.operator.write(JSON.stringify(summary));
   return {

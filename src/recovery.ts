@@ -1,0 +1,177 @@
+import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
+import path from "node:path";
+
+export const recoverySchemaVersion = 1;
+
+export interface RecoverySnapshot {
+  schemaVersion: number;
+  project: string;
+  repository: string;
+  checkout: string;
+  parentTicket: number;
+  runId: string;
+  phase: string;
+  targetBranch: string | null;
+  createdAt: string;
+  updatedAt: string;
+  [key: string]: unknown;
+}
+
+export class InvalidRecoverySnapshot extends Error {}
+
+export function recoveryPaths(projectDirectory: string, parentTicket: number) {
+  const stateDirectory = path.join(projectDirectory, "state");
+  return {
+    stateDirectory,
+    snapshot: path.join(stateDirectory, `parent-${parentTicket}.json`),
+    lock: path.join(stateDirectory, `parent-${parentTicket}.lock`),
+  };
+}
+
+export class ParentLock {
+  private readonly filename: string;
+  private readonly holder: ChildProcessWithoutNullStreams;
+  private readonly closed: Promise<void>;
+
+  private constructor(
+    filename: string,
+    holder: ChildProcessWithoutNullStreams,
+  ) {
+    this.filename = filename;
+    this.holder = holder;
+    this.closed = new Promise((resolve) =>
+      holder.once("close", () => resolve()),
+    );
+  }
+
+  static async acquire(
+    filename: string,
+    metadata: object,
+  ): Promise<ParentLock> {
+    await mkdir(path.dirname(filename), { recursive: true });
+    const handle = await open(filename, "a+", 0o600);
+    await handle.close();
+    await chmod(filename, 0o600);
+    const holder = spawn("flock", ["-n", filename, "-c", "printf ready; cat"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      let output = "";
+      const onExit = (code: number | null) => {
+        reject(
+          new Error(
+            code === 1
+              ? `Parent Ticket lock is already held: ${filename}`
+              : `unable to hold Parent Ticket lock: ${filename}`,
+          ),
+        );
+      };
+      holder.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+        if (output.includes("ready")) {
+          holder.removeListener("exit", onExit);
+          resolve();
+        }
+      });
+      holder.once("error", reject);
+      holder.once("exit", onExit);
+    });
+    try {
+      await writeFile(filename, JSON.stringify(metadata), "utf8");
+      return new ParentLock(filename, holder);
+    } catch (error) {
+      holder.kill();
+      throw error;
+    }
+  }
+
+  async release(): Promise<void> {
+    if (!this.holder.killed) this.holder.kill();
+    await this.closed;
+  }
+}
+
+function parseSnapshot(value: unknown): RecoverySnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InvalidRecoverySnapshot("recovery snapshot must be an object");
+  }
+  const snapshot = value as Record<string, unknown>;
+  if (snapshot.schemaVersion !== recoverySchemaVersion) {
+    throw new InvalidRecoverySnapshot("unsupported recovery snapshot schema");
+  }
+  for (const field of [
+    "project",
+    "repository",
+    "checkout",
+    "runId",
+    "phase",
+    "createdAt",
+    "updatedAt",
+  ]) {
+    if (typeof snapshot[field] !== "string" || snapshot[field] === "") {
+      throw new InvalidRecoverySnapshot(`snapshot is missing ${field}`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(snapshot.parentTicket) ||
+    (snapshot.parentTicket as number) <= 0
+  ) {
+    throw new InvalidRecoverySnapshot("snapshot has no Parent Ticket");
+  }
+  if (
+    snapshot.targetBranch !== null &&
+    typeof snapshot.targetBranch !== "string"
+  ) {
+    throw new InvalidRecoverySnapshot("snapshot has an invalid Target Branch");
+  }
+  return snapshot as RecoverySnapshot;
+}
+
+export async function readRecoverySnapshot(
+  filename: string,
+): Promise<RecoverySnapshot | null> {
+  try {
+    return parseSnapshot(
+      JSON.parse(await readFile(filename, "utf8")) as unknown,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof InvalidRecoverySnapshot) throw error;
+    if (error instanceof SyntaxError) {
+      throw new InvalidRecoverySnapshot("recovery snapshot is malformed JSON");
+    }
+    throw error;
+  }
+}
+
+export async function writeRecoverySnapshot(
+  filename: string,
+  snapshot: RecoverySnapshot,
+): Promise<void> {
+  parseSnapshot(snapshot);
+  await mkdir(path.dirname(filename), { recursive: true });
+  const temporary = `${filename}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(snapshot)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, filename);
+  const directory = await open(path.dirname(filename), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}

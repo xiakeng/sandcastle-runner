@@ -13,3 +13,9 @@ This directory is a complete Linux Project template for Sandcastle Runner.
 7. From the Sandcastle Runner repository, run `npm ci`, then `npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>`.
 
 Both workflow switches are enabled in this example. Either may be set to `false` independently. A disabled node may omit its profile and prompt; supplied profiles are still validated. See the root `README.md` for the complete schema, defaults, and placeholder sets.
+
+On Linux, each Parent Ticket has a separate lock and durable state file under
+`projects/<project-key>/state/parent-<number>.{lock,json}`. Keep the state files permanently;
+they are the restart source, unlike `logs/`. A missing state file starts fresh, malformed state
+pauses for operator repair, and an unpublished restart uses a newly fetched Target Branch and a
+new disposable Worktree rather than adopting old local artifacts.
