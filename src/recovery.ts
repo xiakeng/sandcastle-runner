@@ -40,6 +40,7 @@ export function recoveryPaths(projectDirectory: string, parentTicket: number) {
 export class ParentLock {
   private readonly filename: string;
   private readonly holder: ChildProcessWithoutNullStreams;
+  private readonly closed: Promise<void>;
 
   private constructor(
     filename: string,
@@ -47,6 +48,9 @@ export class ParentLock {
   ) {
     this.filename = filename;
     this.holder = holder;
+    this.closed = new Promise((resolve) =>
+      holder.once("close", () => resolve()),
+    );
   }
 
   static async acquire(
@@ -92,9 +96,7 @@ export class ParentLock {
 
   async release(): Promise<void> {
     if (!this.holder.killed) this.holder.kill();
-    await new Promise<void>((resolve) =>
-      this.holder.once("close", () => resolve()),
-    );
+    await this.closed;
   }
 }
 
