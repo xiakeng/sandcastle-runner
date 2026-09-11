@@ -7,6 +7,7 @@ import type { AuditEvent } from "../audit.ts";
 import type { AgentConfig } from "../config.ts";
 import type {
   AgentAttemptResult,
+  AgentDiagnostics,
   AgentExecutor,
   CommitEvidence,
   GitWorkspace,
@@ -72,6 +73,41 @@ function snapshot(
   if (!ticket.source || !ticket.title || ticket.body === undefined)
     throw new Error(`${name} snapshot is incomplete`);
   return { source: ticket.source, title: ticket.title, body: ticket.body };
+}
+
+function diagnosticValue(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "unavailable";
+  return value;
+}
+
+function agentPauseMessage(
+  prefix: string,
+  diagnostics: AgentDiagnostics | undefined,
+  result?: Pick<
+    AgentAttemptResult,
+    "outcome" | "summary" | "blocker" | "commits" | "checks"
+  >,
+): string {
+  const d = diagnostics ?? {};
+  const reply = diagnosticValue(d.assistantReply);
+  const previous = d.assistantReply
+    ? ""
+    : d.previousAssistantReply
+      ? `\nPrevious complete assistant reply (no new reply): ${d.previousAssistantReply}`
+      : "";
+  return [
+    `${prefix}: ${diagnosticValue(d.error)}`,
+    `Operation: ${diagnosticValue(d.operation)}; error category: ${diagnosticValue(d.errorCategory)}`,
+    `Attempt: ${d.attemptOrdinal ?? "unavailable"}; retryable: ${d.retryable ?? "unavailable"}`,
+    `Attempt Result: ${diagnosticValue(result?.outcome)}; summary: ${diagnosticValue(result?.summary)}; blocker: ${diagnosticValue(result?.blocker)}`,
+    `Claimed commits: ${result?.commits ? JSON.stringify(result.commits) : "unavailable"}; checks: ${result?.checks ? JSON.stringify(result.checks) : "unavailable"}`,
+    `Run: ${diagnosticValue(d.runId)}; Agent Attempt: ${diagnosticValue(d.agentAttemptId)}`,
+    `Provider/model: ${diagnosticValue(d.provider)}/${diagnosticValue(d.model)}; working directory: ${diagnosticValue(d.workingDirectory)}`,
+    `Provider session: ${diagnosticValue(d.sessionId)}; resume: codex resume ${diagnosticValue(d.sessionId)}`,
+    `Assistant reply: ${reply}${previous}`,
+    `Diagnostic log: ${diagnosticValue(d.diagnosticLogPath)}`,
+    "Enter to continue, q to cancel, or provide recovery instructions.",
+  ].join("\n");
 }
 
 function parseReviewSnapshot(value: string, number: number): Ticket {
@@ -227,12 +263,28 @@ async function reviewHandoff(
       }
       await boundary(input, handoff.ticket);
       if (result.outcome === "blocked") {
-        await appendOperation(input, event, "blocked", null);
+        await appendOperation(
+          input,
+          event,
+          "blocked",
+          null,
+          result.diagnostics,
+        );
         const response = await pauseForOperator(
           input.audit,
           event,
           input.operator,
-          `Review Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+          agentPauseMessage(
+            "Review Agent Attempt blocked",
+            result.diagnostics,
+            {
+              outcome: result.outcome,
+              summary: result.summary,
+              blocker: result.blocker,
+              commits: [],
+              checks: result.checks,
+            },
+          ),
         );
         continuationPrompt = response === "" ? "continue" : response;
         continue;
@@ -244,7 +296,13 @@ async function reviewHandoff(
         result.checks,
         "verified",
       );
-      await appendOperation(input, event, "succeeded", null);
+      await appendOperation(
+        input,
+        event,
+        "succeeded",
+        null,
+        result.diagnostics,
+      );
       return reviewed;
     } catch (error) {
       if (error instanceof OperatorCancelled) throw error;
@@ -263,7 +321,16 @@ async function reviewHandoff(
           input.audit,
           event,
           input.operator,
-          "Review Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted passing result.",
+          agentPauseMessage("Review Agent Attempt failed", {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Review Agent Attempt failed",
+            errorCategory: "agent_attempt",
+            attemptOrdinal: attemptNumber,
+            retryable: true,
+            diagnosticLogPath: logFile,
+          }),
         );
         continuationPrompt = response === "" ? "continue" : response;
         break;
@@ -310,9 +377,22 @@ async function appendOperation(
   event: Omit<AuditEvent, "result" | "error">,
   result: string,
   error: string | null,
+  diagnostics?: AgentDiagnostics,
 ): Promise<void> {
   await supervisedAuditWrite(
-    () => input.audit.append({ ...event, result, error }),
+    () =>
+      input.audit.append({
+        ...event,
+        result,
+        error,
+        ...(diagnostics?.agentAttemptId === undefined
+          ? {}
+          : { agentAttemptId: diagnostics.agentAttemptId }),
+        ...(diagnostics?.diagnosticLogPath === undefined
+          ? {}
+          : { diagnosticLogPath: diagnostics.diagnosticLogPath }),
+        ...(diagnostics === undefined ? {} : { diagnostics }),
+      }),
     input.operator,
   );
 }
@@ -444,12 +524,22 @@ async function runAgentOperation(
 
       await boundary(input, operation.ticket);
       if (result.outcome === "blocked") {
-        await appendOperation(input, event, "blocked", null);
+        await appendOperation(
+          input,
+          event,
+          "blocked",
+          null,
+          result.diagnostics,
+        );
         const response = await pauseForOperator(
           input.audit,
           event,
           input.operator,
-          `Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+          agentPauseMessage(
+            "Agent Attempt blocked",
+            result.diagnostics,
+            result,
+          ),
         );
         continuationPrompt = response === "" ? "continue" : response;
         continue;
@@ -499,7 +589,13 @@ async function runAgentOperation(
         prBody,
         verification: "verified",
       };
-      await appendOperation(input, event, "succeeded", null);
+      await appendOperation(
+        input,
+        event,
+        "succeeded",
+        null,
+        result.diagnostics,
+      );
       return handoff;
     } catch (error) {
       if (error instanceof OperatorCancelled) throw error;
@@ -518,7 +614,14 @@ async function runAgentOperation(
           input.audit,
           event,
           input.operator,
-          "Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted committed result.",
+          agentPauseMessage("Agent Attempt failed", {
+            error:
+              error instanceof Error ? error.message : "Agent Attempt failed",
+            errorCategory: "agent_attempt",
+            attemptOrdinal: attemptNumber,
+            retryable: true,
+            workingDirectory: operation.worktree,
+          }),
         );
         if (response === "") {
           continuationPrompt = "continue";

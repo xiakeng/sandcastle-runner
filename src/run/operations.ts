@@ -113,13 +113,43 @@ export async function pauseForOperator(
   operator: OperatorIO,
   message: string,
 ): Promise<string> {
-  await appendPauseEvent(audit, event, operator, "started");
+  await supervisedAuditWrite(
+    () =>
+      audit.append({
+        ...event,
+        operation: "operator_pause",
+        result: "started",
+        error: null,
+        transition: "pause_started",
+      }),
+    operator,
+  );
   const response = await operator.pause(message);
   if (response === null || response === "q") {
-    await appendPauseEvent(audit, event, operator, "cancelled");
+    await supervisedAuditWrite(
+      () =>
+        audit.append({
+          ...event,
+          operation: "operator_pause",
+          result: "cancelled",
+          error: null,
+          transition: "cancelled",
+        }),
+      operator,
+    );
     throw new OperatorCancelled("operator cancelled");
   }
-  if (response === "") await appendPauseEvent(audit, event, operator, "retry");
+  await supervisedAuditWrite(
+    () =>
+      audit.append({
+        ...event,
+        operation: "operator_pause",
+        result: response === "" ? "retry" : "continue",
+        error: null,
+        transition: response === "" ? "retry" : "operator_prompt",
+      }),
+    operator,
+  );
   return response;
 }
 

@@ -12,6 +12,10 @@ export interface AuditEvent {
   attempt: number;
   result: string | null;
   error: string | null;
+  agentAttemptId?: string;
+  diagnosticLogPath?: string;
+  transition?: string;
+  diagnostics?: object;
 }
 
 export class AuditLog {
