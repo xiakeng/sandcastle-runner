@@ -18,8 +18,11 @@ On Linux, each Parent Ticket has a separate lock and durable state file under
 `projects/<project-key>/state/parent-<number>.{lock,json}`. Keep the state files permanently;
 they are the restart source, unlike `logs/`. A missing state file starts fresh, malformed state
 pauses for operator repair, and an unpublished restart uses a newly fetched Target Branch and a
-new disposable Worktree rather than adopting old local artifacts. Once publication starts, the
-snapshot records each Ticket's stable remote branch, intended head, exact PR title/body, and
+new disposable Worktree rather than adopting old local artifacts. A missing snapshot does not
+search remote artifacts, so duplicate publication remains possible. Persisted configuration
+identities are retained for context but are not compared with the current configuration. Once
+publication starts, the snapshot records each Ticket's stable remote branch, intended head, exact
+PR title/body, and
 completion evidence. An absent pending branch restarts from a fresh base. A matching branch with no
 PR creates one only after a second head check; exact existing PR identity is adopted. Unexpected or
 ambiguous artifacts pause without force-push or metadata rewriting.
@@ -41,4 +44,8 @@ snapshot before side effects. Startup retries that same Ticket before Delivery d
 closeout, including pending no-change closure and published repair states. A blocked or failed occurrence
 remains a recoverable barrier. Disabling maintenance atomically forgets only unfinished maintenance
 state without touching its Ticket, branch, Pull Request, or Worktree; terminal records remain and
-re-enabling does not rediscover the forgotten occurrence.
+re-enabling does not rediscover the forgotten occurrence. Lost-create and redundant-occurrence
+windows are accepted for maintenance scheduling, so it is not exactly-once; disabled maintenance
+performs no artifact reads, reconciliation, execution, or cleanup. Delivery completion remains
+exactly-once after merged plus completed closure. Old Agent Attempts are unmanaged and may continue;
+unpublished Worktrees are disposable and may be removed after terminal tracker confirmation.

@@ -217,6 +217,17 @@ records `operator_override` but never the raw override input.
 
 Each invocation creates a fresh UUID and diagnostic JSONL file under the Project's `logs/` directory.
 Logs are never read as recovery state, and a new invocation does not adopt or remove earlier artifacts.
+If the snapshot is missing, the Run is intentionally fresh and does not search old branches, Pull
+Requests, Worktrees, or Agent Attempts, so duplicate publication remains possible. Persisted
+configuration identities are diagnostic context only; they are not compared with current
+configuration. Old Agent Attempts are unmanaged and may continue running, while unpublished
+Worktrees are disposable and may be removed after terminal tracker confirmation. Delivery completion
+is credited exactly once after merged plus completed closure; maintenance scheduling is not.
+
+When Documentation Maintenance is disabled, unfinished maintenance state is deliberately forgotten
+without reading or changing its Ticket, branch, Pull Request, or Worktree. Re-enabling does not
+rediscover it. Lost-create and redundant-occurrence windows are accepted for maintenance scheduling
+and do not weaken exactly-once Delivery completion.
 
 After a Delivery or standalone Maintenance Ticket is confirmed `closed/completed` or
 `closed/not_planned`, the Run cleans only registered Git Worktrees under the configured `worktrees/`

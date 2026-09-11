@@ -70,7 +70,13 @@ async function createProject(recovery: boolean): Promise<string> {
   return root;
 }
 
-function createFiveTicketScenario(root: string, recovery: boolean) {
+type RestartPoint = "publication" | "integration" | null;
+
+function createFiveTicketScenario(
+  root: string,
+  recovery: boolean,
+  restartPoint: { current: RestartPoint } = { current: null },
+) {
   const parent: Ticket = { number: 8, state: "open", stateReason: null };
   const tickets = new Map<number, Ticket>(
     [1, 2, 3, 4, 5].map((number) => [
@@ -113,6 +119,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
   let resolveTargetBranchCalls = 0;
   let correctionSessions = 0;
   let trustedOverrideTicket: number | undefined;
+  let interrupted = false;
   let activeAgents = 0;
   let maxActiveAgents = 0;
   const firstBatchStarted = new Set<number>();
@@ -254,6 +261,14 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
         const pullRequest = branchPullRequests.get(publishedBranch);
         if (pullRequest) pullRequests.get(pullRequest)!.headSha = head;
         operations.push(`push:${state.ticket}:${publishedBranch}`);
+        if (
+          restartPoint.current === "publication" &&
+          state.ticket === 1 &&
+          !interrupted
+        ) {
+          interrupted = true;
+          throw new Error("simulated restart after publication effect");
+        }
       },
     },
     agentExecutor: {
@@ -433,6 +448,15 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
         mergeCalls.set(pullRequest, attempt);
         operations.push(`merge:${state.ticket}:${attempt}`);
         if (
+          restartPoint.current === "integration" &&
+          state.ticket === 1 &&
+          !interrupted
+        ) {
+          state.merged = true;
+          interrupted = true;
+          throw new Error("simulated restart during partial integration");
+        }
+        if (
           recovery &&
           attempt === 1 &&
           (state.ticket === 3 || state.ticket === 101)
@@ -461,7 +485,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
             pr_body: "Completes ticket 4.",
           });
         }
-        return "";
+        return restartPoint.current === null ? "" : "q";
       },
     },
   };
@@ -484,6 +508,9 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
     },
     get correctionSessions() {
       return correctionSessions;
+    },
+    resetInterruption() {
+      interrupted = false;
     },
   };
 }
@@ -672,5 +699,44 @@ test(
     const audit = await readFile(result.logPath, "utf8");
     assert.match(audit, /"result":"operator_override"/u);
     assert.equal(audit.includes("Completes ticket 4."), false);
+  },
+);
+
+test(
+  "repeated CLI invocations retain the composed batch across publication and integration restarts",
+  { timeout: 10_000 },
+  async () => {
+    const root = await createProject(false);
+    const restartPoint = { current: "publication" as RestartPoint };
+    const scenario = createFiveTicketScenario(root, false, restartPoint);
+    const args = ["run", "--project", "demo", "--parent", "8"];
+
+    const first = await executeCli(args, scenario.dependencies);
+    assert.equal(first.summary.outcome, "cancelled");
+    assert.ok(
+      scenario.operations.some(
+        (operation) =>
+          operation.startsWith("push:1:") && operation.includes("/ticket-1"),
+      ),
+    );
+
+    scenario.resetInterruption();
+    restartPoint.current = "integration";
+    const second = await executeCli(args, scenario.dependencies);
+    assert.equal(second.summary.outcome, "cancelled");
+    assert.ok(scenario.operations.includes("merge:1:1"));
+
+    scenario.resetInterruption();
+    restartPoint.current = null;
+    const final = await executeCli(args, scenario.dependencies);
+    assert.equal(final.summary.outcome, "succeeded");
+    assert.deepEqual(final.summary.batch, [1, 2, 3, 4, 5]);
+    assert.deepEqual(final.summary.completedTickets, [1, 2, 3, 4, 5]);
+    assert.deepEqual(scenario.maintenanceTickets, [101, 102]);
+    assert.equal(
+      scenario.operations.filter((operation) => operation === "parent:close")
+        .length,
+      1,
+    );
   },
 );
