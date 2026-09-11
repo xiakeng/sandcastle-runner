@@ -259,56 +259,46 @@ export async function recoverPublishedHandoffs(
     let merged = false;
     if (reconciliation.outcome === "restart") {
       if (intent.phase === "pr_created") {
-        await pauseRecoveredPublication(
-          input,
-          intent,
-          "recorded Pull Request is absent",
-        );
-        return {
-          outcome: "incomplete",
-          reasons: ["recorded Pull Request is absent"],
-          pullRequests: published.map(({ observation }) => observation),
-          published,
-          restarted,
-        };
+        pullRequest = intent.pullRequest!;
+      } else {
+        if ((await readRemoteHead()) !== intent.intendedHeadSha) {
+          await pauseRecoveredPublication(
+            input,
+            intent,
+            "remote branch changed before Pull Request creation",
+          );
+          return {
+            outcome: "incomplete",
+            reasons: ["remote branch changed before Pull Request creation"],
+            pullRequests: published.map(({ observation }) => observation),
+            published,
+            restarted,
+          };
+        }
+        await input.persistPublication?.(intent.ticket, {
+          ...intent,
+          phase: "pending_pr",
+        });
+        pullRequest = await workflowWrite({
+          action: () =>
+            input.codeHost.createPullRequest({
+              repository: input.repository,
+              targetBranch: intent.targetBranch,
+              branch: intent.stableBranch,
+              title: intent.title,
+              body: intent.body,
+            }),
+          parseOverride: pullRequestOverride,
+          audit: input.audit,
+          event: () =>
+            input.event(
+              "publication_recovery",
+              "create_pull_request",
+              `ticket:${intent.ticket}`,
+            )(1),
+          operator: input.operator,
+        });
       }
-      if ((await readRemoteHead()) !== intent.intendedHeadSha) {
-        await pauseRecoveredPublication(
-          input,
-          intent,
-          "remote branch changed before Pull Request creation",
-        );
-        return {
-          outcome: "incomplete",
-          reasons: ["remote branch changed before Pull Request creation"],
-          pullRequests: published.map(({ observation }) => observation),
-          published,
-          restarted,
-        };
-      }
-      await input.persistPublication?.(intent.ticket, {
-        ...intent,
-        phase: "pending_pr",
-      });
-      pullRequest = await workflowWrite({
-        action: () =>
-          input.codeHost.createPullRequest({
-            repository: input.repository,
-            targetBranch: intent.targetBranch,
-            branch: intent.stableBranch,
-            title: intent.title,
-            body: intent.body,
-          }),
-        parseOverride: pullRequestOverride,
-        audit: input.audit,
-        event: () =>
-          input.event(
-            "publication_recovery",
-            "create_pull_request",
-            `ticket:${intent.ticket}`,
-          )(1),
-        operator: input.operator,
-      });
     } else if (reconciliation.outcome === "adopt") {
       if (
         intent.pullRequest &&
@@ -332,20 +322,6 @@ export async function recoverPublishedHandoffs(
       }
       pullRequest = reconciliation.pullRequest;
       merged = reconciliation.pullRequest.state === "merged";
-      if (reconciliation.pullRequest.state === "closed") {
-        await pauseRecoveredPublication(
-          input,
-          intent,
-          "matching Pull Request is closed without merge",
-        );
-        return {
-          outcome: "incomplete",
-          reasons: ["matching Pull Request is closed without merge"],
-          pullRequests: published.map(({ observation }) => observation),
-          published,
-          restarted,
-        };
-      }
     } else {
       await pauseRecoveredPublication(input, intent, reconciliation.reason);
       return {

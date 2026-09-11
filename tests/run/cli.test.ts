@@ -6237,6 +6237,14 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
     "pr:create:100",
     "merge:200",
   ]);
+  assert.equal(
+    (
+      await readRecoverySnapshot(
+        recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
+      )
+    )?.publications,
+    undefined,
+  );
 });
 
 test("final closeout credit triggers one clean no_change Maintenance Ticket without a Pull Request", async () => {
