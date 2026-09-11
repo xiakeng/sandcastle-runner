@@ -52,6 +52,7 @@ test("a Parent lock is nonblocking and released explicitly", async () => {
 test("publication reconciliation adopts only exact remote evidence", () => {
   const intent = {
     ticket: 9,
+    kind: "delivery" as const,
     originalBase: "base",
     targetBranch: "main",
     stableBranch: "ticket-9",
@@ -74,6 +75,7 @@ test("publication reconciliation adopts only exact remote evidence", () => {
         branch: "ticket-9",
         targetBranch: "main",
         headSha: "abc",
+        state: "open",
       },
     ]).outcome,
     "adopt",
@@ -86,6 +88,41 @@ test("publication reconciliation adopts only exact remote evidence", () => {
         branch: "ticket-9",
         targetBranch: "main",
         headSha: "def",
+        state: "open",
+      },
+    ]).outcome,
+    "pause",
+  );
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "other-branch",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "open",
+      },
+    ]).outcome,
+    "pause",
+  );
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "open",
+      },
+      {
+        number: 5,
+        url: "https://example.test/pull/5",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "closed",
       },
     ]).outcome,
     "pause",

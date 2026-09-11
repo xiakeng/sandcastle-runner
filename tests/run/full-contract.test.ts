@@ -381,6 +381,19 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
           url: `https://github.com/owner/repo/pull/${number}`,
         };
       },
+      async getRemoteBranchHead(_repository, branch) {
+        return branchHeads.get(branch) ?? null;
+      },
+      async listPullRequests() {
+        return [...pullRequests].map(([number, pullRequest]) => ({
+          number,
+          url: `https://github.com/owner/repo/pull/${number}`,
+          branch: pullRequest.branch,
+          targetBranch: "main",
+          headSha: pullRequest.headSha,
+          state: pullRequest.merged ? ("merged" as const) : ("open" as const),
+        }));
+      },
       async getRequiredChecks(_repository, pullRequest) {
         const count = (checkCalls.get(pullRequest) ?? 0) + 1;
         checkCalls.set(pullRequest, count);

@@ -70,7 +70,9 @@ export class GitHubCodeHost implements CodeHost {
           `repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`,
         ]),
       ) as { object?: { sha?: unknown } };
-      return typeof value.object?.sha === "string" ? value.object.sha : null;
+      if (typeof value.object?.sha !== "string")
+        throw new Error("GitHub returned invalid remote branch head");
+      return value.object.sha;
     } catch (error) {
       if (error instanceof Error && /404|not found/iu.test(error.message))
         return null;

@@ -19,7 +19,7 @@ On Linux, each Parent Ticket has a separate lock and durable state file under
 they are the restart source, unlike `logs/`. A missing state file starts fresh, malformed state
 pauses for operator repair, and an unpublished restart uses a newly fetched Target Branch and a
 new disposable Worktree rather than adopting old local artifacts. Once publication starts, the
-snapshot records the stable remote branch, intended head, exact PR title/body, and completion
-evidence. Restart adopts only an exact remote head or unique exact PR identity; missing artifacts
-restart from a fresh base, and unexpected or ambiguous artifacts pause without force-push or
-metadata rewriting.
+snapshot records each Ticket's stable remote branch, intended head, exact PR title/body, and
+completion evidence. An absent pending branch restarts from a fresh base. A matching branch with no
+PR creates one only after a second head check; exact existing PR identity is adopted. Unexpected or
+ambiguous artifacts pause without force-push or metadata rewriting.

@@ -75,11 +75,11 @@ export interface CodeHost {
     title: string;
     body: string;
   }): Promise<PullRequestIdentity>;
-  getRemoteBranchHead?(
+  getRemoteBranchHead(
     repository: string,
     branch: string,
   ): Promise<string | null>;
-  listPullRequests?(repository: string): Promise<PullRequestRecord[]>;
+  listPullRequests(repository: string): Promise<PullRequestRecord[]>;
   getRequiredChecks(
     repository: string,
     pullRequest: number,

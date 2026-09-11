@@ -10,6 +10,7 @@ import type {
   GitWorkspace,
   MergeRequestResult,
   PullRequestIdentity,
+  PullRequestRecord,
   PullRequestState,
   RequiredCheck,
   Ticket,
@@ -31,7 +32,11 @@ import {
   serializeOperator,
   workflowWrite,
 } from "./operations.ts";
-import type { PublicationIntent } from "../recovery.ts";
+import {
+  reconcileInitialPush,
+  reconcilePullRequest,
+  type PublicationIntent,
+} from "../recovery.ts";
 
 export interface PullRequestObservation extends PullRequestIdentity {
   ticket: number;
@@ -68,7 +73,10 @@ export interface PublicationInput extends ReadinessInput {
   mergeQueueTimeoutMs: number;
   ticketClosure: TicketClosurePolicy;
   ciRepairBudgets: Map<number, RepairBudget>;
-  persistPublication?: (intent: PublicationIntent | null) => Promise<void>;
+  persistPublication?: (
+    ticket: number,
+    intent: PublicationIntent | null,
+  ) => Promise<void>;
 }
 
 interface RepairBudget {
@@ -81,6 +89,301 @@ export interface PublicationResult {
   reasons: string[];
   pullRequests: PullRequestObservation[];
   published: PublishedHandoff[];
+}
+
+export interface RecoveredPublicationResult extends PublicationResult {
+  restarted: number[];
+}
+
+function remoteHeadOverride(value: string): string | null {
+  const parsed = JSON.parse(value) as { headSha?: unknown };
+  if (parsed.headSha !== null && typeof parsed.headSha !== "string")
+    throw new Error("override has invalid remote branch head");
+  return parsed.headSha ?? null;
+}
+
+function pullRequestsOverride(value: string): PullRequestRecord[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed))
+    throw new Error("override has invalid Pull Requests");
+  return parsed.map((candidate) => {
+    if (typeof candidate !== "object" || candidate === null)
+      throw new Error("override has invalid Pull Request");
+    const pullRequest = candidate as Record<string, unknown>;
+    if (
+      !Number.isSafeInteger(pullRequest.number) ||
+      typeof pullRequest.url !== "string" ||
+      typeof pullRequest.branch !== "string" ||
+      typeof pullRequest.targetBranch !== "string" ||
+      typeof pullRequest.headSha !== "string" ||
+      !["open", "closed", "merged"].includes(String(pullRequest.state))
+    )
+      throw new Error("override has invalid Pull Request");
+    return pullRequest as unknown as PullRequestRecord;
+  });
+}
+
+function recoveredHandoff(intent: PublicationIntent): VerifiedHandoff {
+  const value = intent.completionEvidence;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error(
+      `Delivery Ticket ${intent.ticket} has invalid completion evidence`,
+    );
+  const handoff = value as Partial<VerifiedHandoff>;
+  const completedHead =
+    handoff.commits?.at(-1)?.sha ??
+    (handoff.verification === "operator_override" ? handoff.base : undefined);
+  if (
+    handoff.ticket !== intent.ticket ||
+    handoff.branch !== intent.stableBranch ||
+    handoff.base !== intent.originalBase ||
+    !Array.isArray(handoff.commits) ||
+    completedHead !== intent.intendedHeadSha ||
+    handoff.prTitle !== intent.title ||
+    handoff.prBody !== intent.body
+  )
+    throw new Error(
+      `Delivery Ticket ${intent.ticket} has inconsistent completion evidence`,
+    );
+  return handoff as VerifiedHandoff;
+}
+
+async function pauseRecoveredPublication(
+  input: PublicationInput,
+  intent: PublicationIntent,
+  reason: string,
+): Promise<void> {
+  await pauseForOperator(
+    input.audit,
+    input.event(
+      "publication_recovery",
+      "inconsistent_remote_state",
+      `ticket:${intent.ticket}`,
+    )(1),
+    input.operator,
+    `${reason}. Resolve the remote state, then restart the Run, or q to cancel.`,
+  );
+}
+
+export async function recoverPublishedHandoffs(
+  input: PublicationInput,
+  intents: PublicationIntent[],
+): Promise<RecoveredPublicationResult> {
+  const published: PublishedHandoff[] = [];
+  const restarted: number[] = [];
+  for (const intent of intents) {
+    const handoff = recoveredHandoff(intent);
+    if (intent.kind === "maintenance") {
+      await pauseRecoveredPublication(
+        input,
+        intent,
+        "unfinished Documentation Maintenance requires maintenance recovery",
+      );
+      return {
+        outcome: "incomplete",
+        reasons: ["unfinished Documentation Maintenance is still pending"],
+        pullRequests: [],
+        published: [],
+        restarted,
+      };
+    }
+    if (intent.targetBranch !== input.targetBranch) {
+      await pauseRecoveredPublication(
+        input,
+        intent,
+        `persisted Target Branch ${intent.targetBranch} does not match ${input.targetBranch}`,
+      );
+      return {
+        outcome: "incomplete",
+        reasons: ["publication recovery requires Operator Pause"],
+        pullRequests: published.map(({ observation }) => observation),
+        published,
+        restarted,
+      };
+    }
+    const boundary = await revalidateActiveTicket(input, intent.ticket);
+    if (boundary.outcome !== "ready")
+      return { ...stopped(boundary, [], published), restarted };
+    const readRemoteHead = () =>
+      externalRead({
+        action: () =>
+          input.codeHost.getRemoteBranchHead(
+            input.repository,
+            intent.stableBranch,
+          ),
+        parseOverride: remoteHeadOverride,
+        audit: input.audit,
+        event: input.event(
+          "publication_recovery",
+          "remote_branch_head",
+          `branch:${intent.stableBranch}`,
+        ),
+        clock: input.clock,
+        operator: input.operator,
+      });
+    const remoteHead = await readRemoteHead();
+    const push = reconcileInitialPush(intent, remoteHead);
+    if (push.outcome === "restart" && intent.phase === "pending_push") {
+      await input.persistPublication?.(intent.ticket, null);
+      restarted.push(intent.ticket);
+      continue;
+    }
+    if (push.outcome !== "adopt") {
+      await pauseRecoveredPublication(input, intent, push.reason);
+      return {
+        outcome: "incomplete",
+        reasons: [push.reason],
+        pullRequests: published.map(({ observation }) => observation),
+        published,
+        restarted,
+      };
+    }
+    await input.persistPublication?.(intent.ticket, {
+      ...intent,
+      phase: "pushed",
+    });
+    const candidates = await externalRead({
+      action: () => input.codeHost.listPullRequests(input.repository),
+      parseOverride: pullRequestsOverride,
+      audit: input.audit,
+      event: input.event(
+        "publication_recovery",
+        "list_pull_requests",
+        `ticket:${intent.ticket}`,
+      ),
+      clock: input.clock,
+      operator: input.operator,
+    });
+    const reconciliation = reconcilePullRequest(intent, candidates);
+    let pullRequest: PullRequestIdentity;
+    let merged = false;
+    if (reconciliation.outcome === "restart") {
+      if (intent.phase === "pr_created") {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "recorded Pull Request is absent",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: ["recorded Pull Request is absent"],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+      if ((await readRemoteHead()) !== intent.intendedHeadSha) {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "remote branch changed before Pull Request creation",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: ["remote branch changed before Pull Request creation"],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+      await input.persistPublication?.(intent.ticket, {
+        ...intent,
+        phase: "pending_pr",
+      });
+      pullRequest = await workflowWrite({
+        action: () =>
+          input.codeHost.createPullRequest({
+            repository: input.repository,
+            targetBranch: intent.targetBranch,
+            branch: intent.stableBranch,
+            title: intent.title,
+            body: intent.body,
+          }),
+        parseOverride: pullRequestOverride,
+        audit: input.audit,
+        event: () =>
+          input.event(
+            "publication_recovery",
+            "create_pull_request",
+            `ticket:${intent.ticket}`,
+          )(1),
+        operator: input.operator,
+      });
+    } else if (reconciliation.outcome === "adopt") {
+      if (
+        intent.pullRequest &&
+        (intent.pullRequest.number !== reconciliation.pullRequest.number ||
+          intent.pullRequest.url !== reconciliation.pullRequest.url)
+      ) {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "persisted Pull Request identity does not match remote evidence",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: [
+            "persisted Pull Request identity does not match remote evidence",
+          ],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+      pullRequest = reconciliation.pullRequest;
+      merged = reconciliation.pullRequest.state === "merged";
+      if (reconciliation.pullRequest.state === "closed") {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "matching Pull Request is closed without merge",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: ["matching Pull Request is closed without merge"],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+    } else {
+      await pauseRecoveredPublication(input, intent, reconciliation.reason);
+      return {
+        outcome: "incomplete",
+        reasons: [reconciliation.reason],
+        pullRequests: published.map(({ observation }) => observation),
+        published,
+        restarted,
+      };
+    }
+    await input.persistPublication?.(intent.ticket, {
+      ...intent,
+      phase: "pr_created",
+      pullRequest: { ...pullRequest, headSha: intent.intendedHeadSha },
+    });
+    const readiness = merged
+      ? { readiness: "ready" as const, failedChecks: [] }
+      : await observeRequiredChecks(input, handoff, pullRequest);
+    if ("outcome" in readiness)
+      return { ...stopped(readiness, [], published), restarted };
+    published.push({
+      handoff,
+      pullRequest,
+      observation: {
+        ticket: intent.ticket,
+        branch: intent.stableBranch,
+        ...pullRequest,
+        ...readiness,
+      },
+    });
+  }
+  return {
+    outcome: "succeeded",
+    reasons: [],
+    pullRequests: published.map(({ observation }) => observation),
+    published,
+    restarted,
+  };
 }
 
 function stopped(
@@ -752,13 +1055,17 @@ export async function publishVerifiedHandoffs(
       if (boundary.outcome !== "ready") return { boundary };
       const intent: PublicationIntent = {
         ticket: handoff.ticket,
+        kind:
+          input.ticketKind === "Maintenance Ticket"
+            ? "maintenance"
+            : "delivery",
         originalBase: handoff.base,
         targetBranch: input.targetBranch,
         stableBranch: handoff.branch,
         intendedHeadSha:
           handoff.commits.at(-1)?.sha ??
           handoff.implementationCommits?.at(-1)?.sha ??
-          "",
+          handoff.base,
         title: handoff.prTitle,
         body: handoff.prBody,
         phase: "pending_push",
@@ -767,7 +1074,7 @@ export async function publishVerifiedHandoffs(
         reviewEvidence: handoff.reviewCommits ?? [],
         completionEvidence: handoff,
       };
-      await input.persistPublication?.(intent);
+      await input.persistPublication?.(handoff.ticket, intent);
       await workflowWrite({
         action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
         audit: input.audit,
@@ -775,11 +1082,17 @@ export async function publishVerifiedHandoffs(
           input.event("publish", "push_branch", `ticket:${handoff.ticket}`)(1),
         operator: concurrentInput.operator,
       });
-      await input.persistPublication?.({ ...intent, phase: "pushed" });
+      await input.persistPublication?.(handoff.ticket, {
+        ...intent,
+        phase: "pushed",
+      });
 
       boundary = await revalidateActiveTicket(concurrentInput, handoff.ticket);
       if (boundary.outcome !== "ready") return { boundary };
-      await input.persistPublication?.({ ...intent, phase: "pending_pr" });
+      await input.persistPublication?.(handoff.ticket, {
+        ...intent,
+        phase: "pending_pr",
+      });
       const pullRequest = await workflowWrite({
         action: () =>
           input.codeHost.createPullRequest({
@@ -799,7 +1112,7 @@ export async function publishVerifiedHandoffs(
           )(1),
         operator: concurrentInput.operator,
       });
-      await input.persistPublication?.({
+      await input.persistPublication?.(handoff.ticket, {
         ...intent,
         phase: "pr_created",
         pullRequest: {

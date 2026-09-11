@@ -181,18 +181,33 @@ export async function executeCli(
   const agentExecutor =
     dependencies.agentExecutor ?? new SandcastleAgentExecutor();
   let publicationWrite = Promise.resolve();
-  const persistPublication = async (intent: PublicationIntent | null) => {
-    publicationWrite = publicationWrite.then(async () => {
+  const persistPublication = async (
+    ticket: number,
+    intent: PublicationIntent | null,
+  ) => {
+    const previousWrite = publicationWrite;
+    let releaseWrite!: () => void;
+    publicationWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+    try {
+      const publications = (currentSnapshot.publications ?? []).filter(
+        (publication) => publication.ticket !== ticket,
+      );
+      if (intent !== null) publications.push(intent);
       const next = { ...currentSnapshot };
-      if (intent === null) delete next.publication;
-      else next.publication = intent;
-      currentSnapshot = {
+      if (publications.length === 0) delete next.publications;
+      else next.publications = publications;
+      const nextSnapshot = {
         ...next,
         updatedAt: dependencies.clock.now().toISOString(),
       };
-      await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
-    });
-    await publicationWrite;
+      await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
+      currentSnapshot = nextSnapshot;
+    } finally {
+      releaseWrite();
+    }
   };
   let summary: RunSummary;
   try {
@@ -251,6 +266,7 @@ export async function executeCli(
       gitWorkspace,
       agentExecutor,
       persistPublication,
+      recoveredPublications: previous?.publications ?? [],
     });
   } catch (error) {
     summary = {
