@@ -31,6 +31,8 @@ JSONL under `logs/` is never recovery input. A missing snapshot is a fresh Run; 
 unsupported state pauses for operator repair. Unpublished local Worktrees are disposable on a
 restart. Per-Ticket publication records retain the original Target Branch, stable remote delivery
 branch, intended head SHA, exact PR metadata, and review evidence. A pending push is adopted only when the
+snapshot records original Batch membership before attempts and completed Delivery Ticket numbers so
+recovery preserves order and does not re-credit a completion. A pending push is adopted only when the
 remote branch head matches exactly; absence restarts from a newly fetched base, while an unexpected
 head pauses. When the branch exists, interrupted PR creation adopts one exact
 repository/branch/base/head match, creates only after authoritative PR absence and a second branch

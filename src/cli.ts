@@ -209,6 +209,16 @@ export async function executeCli(
       releaseWrite();
     }
   };
+  const persistBatch = async (batch: number[], completed: number[]) => {
+    const nextSnapshot = {
+      ...currentSnapshot,
+      batch: [...batch],
+      completedDeliveries: [...new Set(completed)],
+      updatedAt: dependencies.clock.now().toISOString(),
+    };
+    await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
+    currentSnapshot = nextSnapshot;
+  };
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -266,7 +276,14 @@ export async function executeCli(
       gitWorkspace,
       agentExecutor,
       persistPublication,
+      persistBatch,
       recoveredPublications: previous?.publications ?? [],
+      ...(previous?.batch === undefined
+        ? {}
+        : { recoveredBatch: previous.batch }),
+      ...(previous?.completedDeliveries === undefined
+        ? {}
+        : { recoveredCompletedDeliveries: previous.completedDeliveries }),
     });
   } catch (error) {
     summary = {
