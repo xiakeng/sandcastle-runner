@@ -178,6 +178,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             await input.persistCleanup?.(ticket, discovered);
             cleanupRecords.set(ticket, discovered);
           },
+          pending.candidates,
         );
         await input.persistCleanup?.(ticket, result);
         cleanupRecords.set(ticket, result);

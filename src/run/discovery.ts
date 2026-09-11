@@ -523,8 +523,17 @@ export async function revalidateStandaloneMaintenanceTicket(
     operator: input.operator,
   });
   if (ticket.state === "closed") {
-    await input.cleanupTerminal?.(ticket.number);
-    return { outcome: "terminal", ticket };
+    if (
+      ticket.stateReason === "completed" ||
+      ticket.stateReason === "not_planned"
+    ) {
+      await input.cleanupTerminal?.(ticket.number);
+      return { outcome: "terminal", ticket };
+    }
+    return {
+      outcome: "stopped",
+      reason: `Maintenance Ticket ${ticketNumber} has no confirmed terminal reason`,
+    };
   }
   const blockers = await readBlockers(input, ticketNumber, "maintenance");
   if (blockers.some(({ state }) => state === "open")) {
