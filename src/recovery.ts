@@ -155,6 +155,8 @@ export interface RecoverySnapshot {
   targetBranch: string | null;
   createdAt: string;
   updatedAt: string;
+  batch?: number[];
+  completedDeliveries?: number[];
   publications?: PublicationIntent[];
   [key: string]: unknown;
 }
@@ -280,6 +282,16 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
           "snapshot has duplicate publication tickets",
         );
       tickets.add(publication.ticket);
+    }
+  }
+  for (const field of ["batch", "completedDeliveries"] as const) {
+    const value = snapshot[field];
+    if (
+      value !== undefined &&
+      (!Array.isArray(value) ||
+        value.some((ticket) => !Number.isSafeInteger(ticket) || ticket <= 0))
+    ) {
+      throw new InvalidRecoverySnapshot(`snapshot has invalid ${field}`);
     }
   }
   return snapshot as RecoverySnapshot;

@@ -81,7 +81,10 @@ interface RunInput {
     ticket: number,
     intent: PublicationIntent | null,
   ) => Promise<void>;
+  persistBatch?: (batch: number[], completed: number[]) => Promise<void>;
   recoveredPublications?: PublicationIntent[];
+  recoveredBatch?: number[];
+  recoveredCompletedDeliveries?: number[];
 }
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -121,7 +124,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const batches: number[] = [];
   const handoffs: VerifiedHandoff[] = [];
   const pullRequests: PullRequestObservation[] = [];
-  const completedTickets: number[] = [];
+  const completedTickets: number[] = [
+    ...(input.recoveredCompletedDeliveries ?? []),
+  ];
   const reasons: string[] = [];
   const publicationIntents = new Map<number, PublicationIntent>();
   for (const intent of input.recoveredPublications ?? [])
@@ -315,7 +320,10 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             ? "failed"
             : "incomplete";
       }
-      await input.persistPublication?.(handoff.ticket, null);
+      await input.persistBatch?.(batches, [
+        ...completedTickets,
+        handoff.ticket,
+      ]);
       completedTickets.push(handoff.ticket);
       if (input.documentationMaintenance) maintenanceCredit += 1;
       reasons.push(
@@ -332,15 +340,30 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     return null;
   };
 
-  if ((input.recoveredPublications?.length ?? 0) > 0) {
+  if (
+    (input.recoveredPublications?.length ?? 0) > 0 ||
+    (input.recoveredBatch?.length ?? 0) > 0
+  ) {
     hasBatchState = true;
-    const recovered = input.recoveredPublications!;
-    batches.push(...recovered.map(({ ticket }) => ticket));
-    let inputs = publicationInput([]);
-    const recoveredPublication = await recoverPublishedHandoffs(
-      inputs,
-      recovered,
+    const completed = new Set(input.recoveredCompletedDeliveries ?? []);
+    const recovered = (input.recoveredPublications ?? []).filter(
+      (intent) => !completed.has(intent.ticket),
     );
+    batches.push(
+      ...(input.recoveredBatch ?? recovered.map(({ ticket }) => ticket)),
+    );
+    let inputs = publicationInput([]);
+    const recoveredPublication = recovered.length
+      ? await recoverPublishedHandoffs(inputs, recovered)
+      : {
+          outcome: "succeeded" as const,
+          reasons: [],
+          pullRequests: [],
+          published: [],
+          restarted: (input.recoveredBatch ?? []).filter(
+            (ticket) => !completed.has(ticket),
+          ),
+        };
     let publication: PublicationResult = recoveredPublication;
     handoffs.push(...publication.published.map(({ handoff }) => handoff));
     let batchComplete = recoveredPublication.restarted.length === 0;
@@ -420,6 +443,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
 
     hadChildren = true;
     batches.push(...discovery.batch);
+    await input.persistBatch?.(discovery.batch, completedTickets);
     const attempts = await implementBatch(discovery.batch);
     handoffs.push(...attempts.handoffs);
     const batchComplete =
