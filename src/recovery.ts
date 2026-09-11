@@ -12,6 +12,23 @@ import path from "node:path";
 
 export const recoverySchemaVersion = 1;
 
+export type MaintenancePhase =
+  | "scheduled"
+  | "ticket_created"
+  | "attempting"
+  | "pending_closure"
+  | "blocked"
+  | "failed"
+  | "paused"
+  | "completed";
+
+export interface MaintenanceState {
+  phase: MaintenancePhase;
+  credit: number;
+  barrier: boolean;
+  ticket?: number;
+}
+
 export type PublicationPhase =
   "pending_push" | "pushed" | "pending_pr" | "pr_created";
 
@@ -166,6 +183,7 @@ export interface RecoverySnapshot {
       error?: string;
     }
   >;
+  maintenance?: MaintenanceState;
   publications?: PublicationIntent[];
   [key: string]: unknown;
 }
@@ -291,6 +309,34 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
           "snapshot has duplicate publication tickets",
         );
       tickets.add(publication.ticket);
+    }
+  }
+  if (snapshot.maintenance !== undefined) {
+    const maintenance = snapshot.maintenance as Record<string, unknown>;
+    if (
+      typeof snapshot.maintenance !== "object" ||
+      snapshot.maintenance === null ||
+      Array.isArray(snapshot.maintenance) ||
+      ![
+        "scheduled",
+        "ticket_created",
+        "attempting",
+        "pending_closure",
+        "blocked",
+        "failed",
+        "paused",
+        "completed",
+      ].includes(String(maintenance.phase)) ||
+      !Number.isSafeInteger(maintenance.credit) ||
+      (maintenance.credit as number) < 0 ||
+      typeof maintenance.barrier !== "boolean" ||
+      (maintenance.ticket !== undefined &&
+        (!Number.isSafeInteger(maintenance.ticket) ||
+          (maintenance.ticket as number) <= 0))
+    ) {
+      throw new InvalidRecoverySnapshot(
+        "snapshot has invalid maintenance state",
+      );
     }
   }
   for (const field of ["batch", "completedDeliveries"] as const) {

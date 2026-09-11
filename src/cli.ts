@@ -18,6 +18,7 @@ import {
   recoveryPaths,
   writeRecoverySnapshot,
   type RecoverySnapshot,
+  type MaintenanceState,
   type PublicationIntent,
 } from "./recovery.ts";
 import type {
@@ -166,6 +167,22 @@ export async function executeCli(
     createdAt: previous?.createdAt ?? timestamp,
     updatedAt: timestamp,
   };
+  if (
+    !loaded.config.workflow.documentationMaintenance &&
+    (currentSnapshot.maintenance?.barrier === true ||
+      currentSnapshot.publications?.some(({ kind }) => kind === "maintenance"))
+  ) {
+    const next = { ...currentSnapshot };
+    delete next.maintenance;
+    if (next.publications !== undefined) {
+      const publications = next.publications.filter(
+        ({ kind }) => kind !== "maintenance",
+      );
+      if (publications.length === 0) delete next.publications;
+      else next.publications = publications;
+    }
+    currentSnapshot = next;
+  }
   try {
     await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
   } catch (error) {
@@ -232,6 +249,15 @@ export async function executeCli(
     await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
     currentSnapshot = nextSnapshot;
   };
+  const persistMaintenance = async (state: MaintenanceState) => {
+    const nextSnapshot = {
+      ...currentSnapshot,
+      maintenance: state,
+      updatedAt: dependencies.clock.now().toISOString(),
+    };
+    await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
+    currentSnapshot = nextSnapshot;
+  };
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -291,16 +317,22 @@ export async function executeCli(
       persistPublication,
       persistBatch,
       persistCleanup,
-      recoveredPublications: previous?.publications ?? [],
-      ...(previous?.batch === undefined
+      persistMaintenance,
+      recoveredPublications: currentSnapshot.publications ?? [],
+      ...(currentSnapshot.maintenance === undefined
         ? {}
-        : { recoveredBatch: previous.batch }),
-      ...(previous?.completedDeliveries === undefined
+        : { recoveredMaintenance: currentSnapshot.maintenance }),
+      ...(currentSnapshot.batch === undefined
         ? {}
-        : { recoveredCompletedDeliveries: previous.completedDeliveries }),
-      ...(previous?.terminalCleanup === undefined
+        : { recoveredBatch: currentSnapshot.batch }),
+      ...(currentSnapshot.completedDeliveries === undefined
         ? {}
-        : { recoveredCleanup: previous.terminalCleanup }),
+        : {
+            recoveredCompletedDeliveries: currentSnapshot.completedDeliveries,
+          }),
+      ...(currentSnapshot.terminalCleanup === undefined
+        ? {}
+        : { recoveredCleanup: currentSnapshot.terminalCleanup }),
     });
   } catch (error) {
     summary = {

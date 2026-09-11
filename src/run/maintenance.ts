@@ -16,10 +16,12 @@ import {
 import {
   integratePullRequest,
   observePullRequestForIntegration,
+  recoverPublishedHandoffs,
   type PublicationInput,
   publishVerifiedHandoffs,
   type PullRequestObservation,
 } from "./pull-request.ts";
+import type { MaintenanceState, PublicationIntent } from "../recovery.ts";
 
 const LABEL = "doc-maintain";
 const TITLE = "Maintain project documentation";
@@ -32,6 +34,9 @@ interface MaintenanceInput extends Omit<
 > {
   documentationPrompt: string;
   documentationAgent: AgentConfig;
+  recovery?: MaintenanceState;
+  recoveryPublication?: PublicationIntent;
+  persistMaintenance?: (state: MaintenanceState) => Promise<void>;
 }
 
 export interface MaintenanceResult {
@@ -141,6 +146,12 @@ async function closeNoChange(
     });
     const confirmation = await boundary.afterMerge(ticket);
     if (confirmation.outcome === "terminal") {
+      await input.persistMaintenance?.({
+        phase: "completed",
+        ticket,
+        credit: 0,
+        barrier: false,
+      });
       return confirmation.ticket.stateReason === "completed"
         ? {
             outcome: "succeeded",
@@ -167,6 +178,12 @@ async function closeNoChange(
     );
     if (response === "") continue;
     await recordOperatorOverride(input.audit, event, input.operator);
+    await input.persistMaintenance?.({
+      phase: "completed",
+      ticket,
+      credit: 0,
+      barrier: false,
+    });
     return {
       outcome: "succeeded",
       reasons: [`Completed Maintenance Ticket ${ticket} with no changes`],
@@ -178,35 +195,148 @@ async function closeNoChange(
 export async function runDocumentationMaintenance(
   input: MaintenanceInput,
 ): Promise<MaintenanceResult> {
+  const persist = (state: MaintenanceState) =>
+    input.persistMaintenance?.(state) ?? Promise.resolve();
   const parent = await revalidateParentForOperation(input);
   if (parent.outcome !== "ready") return stopped(parent);
-  await ensureLabel(input);
-  const beforeCreate = await revalidateParentForOperation(input);
-  if (beforeCreate.outcome !== "ready") return stopped(beforeCreate);
-  const ticket = await workflowWrite({
-    action: () =>
-      input.tracker.createMaintenanceTicket(
-        input.repository,
-        TITLE,
-        BODY,
-        LABEL,
-      ),
-    parseOverride: createdTicket,
-    audit: input.audit,
-    event: () => input.event("maintenance", "create_ticket", LABEL)(1),
-    operator: input.operator,
-  });
-  if (
-    ticket.state !== "open" ||
-    (ticket.assignees ?? []).length !== 0 ||
-    !(ticket.labels ?? []).includes(LABEL) ||
-    (ticket.labels ?? []).includes(input.reservationLabel)
-  ) {
-    throw new Error(
-      "created Maintenance Ticket is not standalone and labelled",
-    );
+  let ticket: Ticket;
+  if (input.recovery?.ticket !== undefined) {
+    ticket = {
+      number: input.recovery.ticket,
+      state: "open",
+      stateReason: null,
+      assignees: [],
+      labels: [LABEL],
+    };
+  } else {
+    await ensureLabel(input);
+    const beforeCreate = await revalidateParentForOperation(input);
+    if (beforeCreate.outcome !== "ready") return stopped(beforeCreate);
+    await persist({
+      phase: "scheduled",
+      credit: input.recovery?.credit ?? 0,
+      barrier: true,
+    });
+    ticket = await workflowWrite({
+      action: () =>
+        input.tracker.createMaintenanceTicket(
+          input.repository,
+          TITLE,
+          BODY,
+          LABEL,
+        ),
+      parseOverride: createdTicket,
+      audit: input.audit,
+      event: () => input.event("maintenance", "create_ticket", LABEL)(1),
+      operator: input.operator,
+    });
+    if (
+      ticket.state !== "open" ||
+      (ticket.assignees ?? []).length !== 0 ||
+      !(ticket.labels ?? []).includes(LABEL) ||
+      (ticket.labels ?? []).includes(input.reservationLabel)
+    ) {
+      throw new Error(
+        "created Maintenance Ticket is not standalone and labelled",
+      );
+    }
+    await persist({
+      phase: "ticket_created",
+      ticket: ticket.number,
+      credit: input.recovery?.credit ?? 0,
+      barrier: true,
+    });
   }
   const ticketBoundary = boundaryFor(input);
+  if (input.recovery?.phase === "pending_closure") {
+    return closeNoChange(input, ticketBoundary, ticket.number);
+  }
+  await persist({
+    phase: "attempting",
+    ticket: ticket.number,
+    credit: input.recovery?.credit ?? 0,
+    barrier: true,
+  });
+  if (input.recoveryPublication) {
+    const publicationInput: PublicationInput = {
+      ...input,
+      handoffs: [],
+      ciRepairBudgets: new Map(),
+      ticketBoundary,
+      ticketKind: "Maintenance Ticket",
+      publicationIntents: new Map([
+        [input.recoveryPublication.ticket, input.recoveryPublication],
+      ]),
+    };
+    const recovered = await recoverPublishedHandoffs(publicationInput, [
+      input.recoveryPublication,
+    ]);
+    const published = recovered.published[0];
+    if (recovered.outcome === "succeeded" && published === undefined) {
+      await input.persistPublication?.(ticket.number, null);
+      await persist({
+        phase: "completed",
+        ticket: ticket.number,
+        credit: 0,
+        barrier: false,
+      });
+      return {
+        outcome: "succeeded",
+        reasons: recovered.reasons,
+        ticket: ticket.number,
+      };
+    }
+    if (recovered.outcome !== "succeeded" || published === undefined) {
+      await persist({
+        phase: "blocked",
+        ticket: ticket.number,
+        credit: input.recovery?.credit ?? 0,
+        barrier: true,
+      });
+      return {
+        outcome: recovered.outcome,
+        reasons: recovered.reasons,
+        ticket: ticket.number,
+      };
+    }
+    const state = await observePullRequestForIntegration(
+      publicationInput,
+      published.pullRequest.number,
+    );
+    const integration = await integratePullRequest(
+      publicationInput,
+      published.handoff,
+      published.pullRequest,
+      state,
+    );
+    if (integration.outcome === "completed") {
+      await input.persistPublication?.(ticket.number, null);
+      await persist({
+        phase: "completed",
+        ticket: ticket.number,
+        credit: 0,
+        barrier: false,
+      });
+      return {
+        outcome: "succeeded",
+        reasons: [`Completed Maintenance Ticket ${ticket.number}`],
+        ticket: ticket.number,
+        handoff: published.handoff,
+        pullRequest: published.observation,
+      };
+    }
+    await persist({
+      phase: "blocked",
+      ticket: ticket.number,
+      credit: input.recovery?.credit ?? 0,
+      barrier: true,
+    });
+    return {
+      ...stopped(integration, ticket.number),
+      handoff: published.handoff,
+      pullRequest: published.observation,
+    };
+  }
   const operationInput = {
     ...input,
     ticketBoundary,
@@ -223,6 +353,12 @@ export async function runDocumentationMaintenance(
   if (attempt.outcome === "boundary")
     return stopped(attempt.boundary, ticket.number);
   if (attempt.outcome === "blocked") {
+    await persist({
+      phase: "blocked",
+      ticket: ticket.number,
+      credit: input.recovery?.credit ?? 0,
+      barrier: true,
+    });
     return {
       outcome: "incomplete",
       reasons: [attempt.reason],
@@ -230,6 +366,12 @@ export async function runDocumentationMaintenance(
     };
   }
   if (attempt.outcome === "no_change") {
+    await persist({
+      phase: "pending_closure",
+      ticket: ticket.number,
+      credit: input.recovery?.credit ?? 0,
+      barrier: true,
+    });
     return closeNoChange(input, ticketBoundary, ticket.number);
   }
 
@@ -269,6 +411,12 @@ export async function runDocumentationMaintenance(
   );
   if (integration.outcome === "completed") {
     await input.persistPublication?.(ticket.number, null);
+    await persist({
+      phase: "completed",
+      ticket: ticket.number,
+      credit: 0,
+      barrier: false,
+    });
     return {
       outcome: "succeeded",
       reasons: [`Completed Maintenance Ticket ${ticket.number}`],
@@ -277,6 +425,12 @@ export async function runDocumentationMaintenance(
       pullRequest: published.observation,
     };
   }
+  await persist({
+    phase: "blocked",
+    ticket: ticket.number,
+    credit: input.recovery?.credit ?? 0,
+    barrier: true,
+  });
   return {
     ...stopped(integration, ticket.number),
     handoff: attempt.handoff,

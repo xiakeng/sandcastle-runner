@@ -1978,6 +1978,22 @@ test("disabled Documentation Maintenance allows delivery and Parent closeout wit
     }),
   );
   await rm(path.join(root, "projects/demo/prompts/documentation.md"));
+  await writeRecoverySnapshot(
+    recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
+    {
+      schemaVersion: 1,
+      project: "demo",
+      repository: "owner/repo",
+      checkout: "/tmp/repo",
+      parentTicket: 8,
+      runId: "interrupted",
+      phase: "blocked",
+      targetBranch: "main",
+      createdAt: "2026-09-11T00:00:00.000Z",
+      updatedAt: "2026-09-11T00:00:00.000Z",
+      maintenance: { phase: "blocked", ticket: 100, credit: 1, barrier: true },
+    },
+  );
   const delivery = createCommittedDelivery(9);
   const attempts: number[] = [];
   let parentCloses = 0;
@@ -2014,6 +2030,14 @@ test("disabled Documentation Maintenance allows delivery and Parent closeout wit
   assert.deepEqual(result.summary.completedTickets, [9]);
   assert.deepEqual(attempts, [9]);
   assert.equal(parentCloses, 1);
+  assert.equal(
+    (
+      await readRecoverySnapshot(
+        recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
+      )
+    )?.maintenance,
+    undefined,
+  );
   assert.doesNotMatch(result.summary.reasons.join(" "), /maintenance/iu);
   assert.ok(result.logPath);
   assert.doesNotMatch(await readFile(result.logPath, "utf8"), /maintenance/iu);
@@ -6423,7 +6447,7 @@ test("final closeout credit triggers one clean no_change Maintenance Ticket with
   assert.equal(parentCloses, 1);
 });
 
-test("blocked Documentation Maintenance is preserved but ignored by a later Run", async () => {
+test("blocked Documentation Maintenance is preserved and retried by a later Run", async () => {
   const root = await createProject();
   const delivery = createCommittedDelivery(9);
   const maintenance: Ticket = {
@@ -6497,14 +6521,23 @@ test("blocked Documentation Maintenance is preserved but ignored by a later Run"
   assert.equal(maintenance.state, "open");
   assert.equal(parentCloses, 0);
   assert.equal(maintenanceCreates, 1);
+  const snapshot = await readRecoverySnapshot(
+    recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
+  );
+  assert.deepEqual(snapshot?.maintenance, {
+    phase: "blocked",
+    ticket: 100,
+    credit: 1,
+    barrier: true,
+  });
 
   const nextRun = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     dependencies,
   );
-  assert.equal(nextRun.summary.outcome, "succeeded");
+  assert.equal(nextRun.summary.outcome, "incomplete");
   assert.equal(maintenanceCreates, 1);
-  assert.equal(parentCloses, 1);
+  assert.equal(parentCloses, 0);
 });
 
 test("Maintenance Ticket label reads and writes use normal supervised failure handling", async () => {

@@ -35,3 +35,10 @@ Maintenance Tickets, terminal cleanup removes only registered repository Worktre
 configured root with the exact Ticket delimiter prefix, records cleanup evidence, and leaves remote
 delivery branches untouched. This intentionally risks abandoned unpublished local work; failed cleanup
 pauses for retry or a trusted residual override, and never repeats delivery or completion credit.
+
+Enabled Documentation Maintenance records its active Ticket, phase, credit, and barrier in the Parent
+snapshot before side effects. Startup retries that same Ticket before Delivery discovery or Parent
+closeout, including pending no-change closure and published repair states. A blocked or failed occurrence
+remains a recoverable barrier. Disabling maintenance atomically forgets only unfinished maintenance
+state without touching its Ticket, branch, Pull Request, or Worktree; terminal records remain and
+re-enabling does not rediscover the forgotten occurrence.

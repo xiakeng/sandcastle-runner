@@ -27,7 +27,7 @@ import {
   type PublicationResult,
   type PullRequestObservation,
 } from "./pull-request.ts";
-import type { PublicationIntent } from "../recovery.ts";
+import type { MaintenanceState, PublicationIntent } from "../recovery.ts";
 import { cleanupTicketWorktrees, type CleanupRecord } from "./cleanup.ts";
 
 export type RunOutcome =
@@ -89,6 +89,8 @@ interface RunInput {
   recoveredCompletedDeliveries?: number[];
   persistCleanup?: (ticket: number, record: CleanupRecord) => Promise<void>;
   recoveredCleanup?: Record<string, CleanupRecord>;
+  persistMaintenance?: (state: MaintenanceState) => Promise<void>;
+  recoveredMaintenance?: MaintenanceState;
 }
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -139,7 +141,24 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const cleanupRecords = new Map<number, CleanupRecord>();
   for (const [ticket, record] of Object.entries(input.recoveredCleanup ?? {}))
     cleanupRecords.set(Number(ticket), record);
-  let maintenanceCredit = 0;
+  let maintenanceCredit = input.recoveredMaintenance?.credit ?? 0;
+  let maintenanceRecovery = input.recoveredMaintenance?.barrier
+    ? input.recoveredMaintenance
+    : undefined;
+  let maintenancePublication = input.recoveredPublications?.find(
+    ({ kind }) => kind === "maintenance",
+  );
+  if (
+    maintenanceRecovery === undefined &&
+    maintenancePublication !== undefined
+  ) {
+    maintenanceRecovery = {
+      phase: "attempting",
+      ticket: maintenancePublication.ticket,
+      credit: 0,
+      barrier: true,
+    };
+  }
   const summary = (
     outcome: RunOutcome,
     finalReasons: string[] = reasons,
@@ -220,6 +239,13 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     if (!input.documentationAgent) {
       throw new Error("Documentation Maintenance agent is not configured");
     }
+    const recovery =
+      maintenanceRecovery ??
+      ({
+        phase: "scheduled",
+        credit: maintenanceCredit,
+        barrier: true,
+      } satisfies MaintenanceState);
     const result = await runDocumentationMaintenance({
       repository: input.repository,
       parentTicket: input.parentTicket,
@@ -236,6 +262,15 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       projectDirectory: input.projectDirectory,
       documentationPrompt: input.documentationPrompt,
       documentationAgent: input.documentationAgent,
+      recovery,
+      ...(input.persistMaintenance === undefined
+        ? {}
+        : { persistMaintenance: input.persistMaintenance }),
+      ...(maintenancePublication === undefined
+        ? {}
+        : {
+            recoveryPublication: maintenancePublication,
+          }),
       ciRepairPrompt: input.ciRepairPrompt,
       ciRepairAgent: input.ciRepairAgent,
       conflictRepairPrompt: input.conflictRepairPrompt,
@@ -266,6 +301,8 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     if (result.outcome === "succeeded") {
       if (result.ticket !== undefined) await cleanupTerminal(result.ticket);
       maintenanceCredit = 0;
+      maintenanceRecovery = undefined;
+      maintenancePublication = undefined;
       return null;
     }
     return result.outcome;
@@ -413,14 +450,22 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     return null;
   };
 
+  if (input.documentationMaintenance && maintenanceRecovery?.barrier) {
+    const outcome = await maintain();
+    if (outcome) return summary(outcome);
+    maintenanceCredit = 0;
+  }
+
   if (
-    (input.recoveredPublications?.length ?? 0) > 0 ||
+    (input.recoveredPublications?.some(({ kind }) => kind !== "maintenance") ??
+      false) ||
     (input.recoveredBatch?.length ?? 0) > 0
   ) {
     hasBatchState = true;
     const completed = new Set(input.recoveredCompletedDeliveries ?? []);
     const recovered = (input.recoveredPublications ?? []).filter(
-      (intent) => !completed.has(intent.ticket),
+      (intent) =>
+        intent.kind !== "maintenance" && !completed.has(intent.ticket),
     );
     batches.push(
       ...(input.recoveredBatch ?? recovered.map(({ ticket }) => ticket)),
@@ -493,6 +538,11 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {
       if (input.documentationMaintenance && maintenanceCredit > 0) {
+        await input.persistMaintenance?.({
+          phase: "scheduled",
+          credit: maintenanceCredit,
+          barrier: true,
+        });
         const outcome = await maintain();
         if (outcome) return summary(outcome);
         continue;
@@ -537,6 +587,11 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     );
     if (outcome) return summary(outcome);
     if (input.documentationMaintenance && maintenanceCredit >= 3) {
+      await input.persistMaintenance?.({
+        phase: "scheduled",
+        credit: maintenanceCredit,
+        barrier: true,
+      });
       const outcome = await maintain();
       if (outcome) return summary(outcome);
     }
