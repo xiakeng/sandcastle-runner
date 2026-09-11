@@ -243,6 +243,7 @@ function reviewResultSchema(): StandardSchema<ReviewAttemptResult> {
 
 export class SandcastleAgentExecutor implements AgentExecutor {
   private readonly run: SandcastleRun;
+  private readonly sessions = new Map<string, string>();
 
   constructor(run: SandcastleRun = runSandcastle as SandcastleRun) {
     this.run = run;
@@ -270,7 +271,9 @@ export class SandcastleAgentExecutor implements AgentExecutor {
           env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
         }),
         cwd: input.worktree,
-        promptFile: input.promptFile,
+        ...(input.resumePrompt === undefined
+          ? { promptFile: input.promptFile }
+          : { prompt: input.resumePrompt }),
         promptArgs: input.promptArgs,
         maxIterations: 1,
         completionSignal: [],
@@ -282,6 +285,10 @@ export class SandcastleAgentExecutor implements AgentExecutor {
           schema,
           maxRetries: 1,
         }),
+        ...(input.resumePrompt === undefined ||
+        this.sessions.get(input.logFile) === undefined
+          ? {}
+          : { resumeSession: this.sessions.get(input.logFile)! }),
         signal: controller.signal,
       });
     } finally {
@@ -290,7 +297,12 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     }
     const openingTags = result.stdout.split(`<${tag}>`).length - 1;
     const closingTags = result.stdout.split(`</${tag}>`).length - 1;
-    if (openingTags !== 1 || closingTags !== 1)
+    const sessionId = result.iterations.at(-1)?.sessionId;
+    if (sessionId) this.sessions.set(input.logFile, sessionId);
+    if (
+      (openingTags !== 1 || closingTags !== 1) &&
+      result.iterations.length === 1
+    )
       throw new Error(
         "Agent Attempt output must contain exactly one result tag",
       );

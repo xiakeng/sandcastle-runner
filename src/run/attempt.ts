@@ -152,15 +152,27 @@ async function reviewHandoff(
     );
   if (!input.reviewAgent) throw new Error("Review agent is not configured");
   const implementationHead = handoff.commits.at(-1)!.sha;
-  let attemptNumber = 0;
+  let continuationPrompt: string | undefined;
+  let attemptNumber!: number;
+  let event!: Omit<AuditEvent, "result" | "error">;
+  const logFile = path.join(
+    input.projectDirectory,
+    "logs",
+    `review-${handoff.ticket}-${randomUUID()}.log`,
+  );
   for (;;) {
     await boundary(input, handoff.ticket);
-    attemptNumber += 1;
-    const event = input.event(
-      "review",
-      "agent_attempt",
-      `ticket:${handoff.ticket}`,
-    )(attemptNumber);
+    const resumePrompt = continuationPrompt;
+    // eslint-disable-next-line no-useless-assignment -- consume the one-shot continuation
+    continuationPrompt = undefined;
+    if (resumePrompt === undefined) {
+      attemptNumber = (attemptNumber || 0) + 1;
+      event = input.event(
+        "review",
+        "agent_attempt",
+        `ticket:${handoff.ticket}`,
+      )(attemptNumber);
+    }
     await appendOperation(input, event, "started", null);
     try {
       const [deliveryTicket, governingSpecification, standardsSources] =
@@ -205,20 +217,26 @@ async function reviewHandoff(
           model: input.reviewAgent.model,
           effort: input.reviewAgent.reasoningEffort,
           gitConfigGlobal,
-          logFile: path.join(
-            input.projectDirectory,
-            "logs",
-            `review-${handoff.ticket}-${randomUUID()}.log`,
-          ),
+          logFile,
           timeoutMs: input.timeoutMs,
           signal,
+          ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });
       } finally {
         await rm(gitDirectory, { recursive: true, force: true });
       }
       await boundary(input, handoff.ticket);
-      if (result.outcome === "blocked")
-        throw new Error(`Review blocked: ${result.blocker}`);
+      if (result.outcome === "blocked") {
+        await appendOperation(input, event, "blocked", null);
+        const response = await pauseForOperator(
+          input.audit,
+          event,
+          input.operator,
+          `Review Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+        );
+        continuationPrompt = response === "" ? "continue" : response;
+        continue;
+      }
       const reviewed = await acceptReview(
         input,
         handoff,
@@ -247,21 +265,8 @@ async function reviewHandoff(
           input.operator,
           "Review Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted passing result.",
         );
-        if (response === "") break;
-        await boundary(input, handoff.ticket);
-        try {
-          const reviewed = await acceptReview(
-            input,
-            handoff,
-            implementationHead,
-            [],
-            "operator_override",
-          );
-          await appendOperation(input, event, "operator_override", null);
-          return reviewed;
-        } catch {
-          await appendOperation(input, event, "invalid_override", null);
-        }
+        continuationPrompt = response === "" ? "continue" : response;
+        break;
       }
     }
   }
@@ -349,9 +354,9 @@ function trustedHandoff(
     parsed &&
     (parsed.outcome !== "committed" ||
       typeof parsed.pr_title !== "string" ||
-      parsed.pr_title.trim() === "" ||
+      !parsed.pr_title.trim() ||
       typeof parsed.pr_body !== "string" ||
-      parsed.pr_body.trim() === "")
+      !parsed.pr_body.trim())
   )
     throw new Error("override has no downstream PR metadata");
   return {
@@ -385,16 +390,25 @@ async function runAgentOperation(
     attemptCounter: { value: number };
   },
 ): Promise<VerifiedHandoff | AgentStop> {
+  let continuationPrompt: string | undefined;
+  let attemptNumber!: number;
+  let attemptId = "";
+  let event!: Omit<AuditEvent, "result" | "error">;
   for (;;) {
     await boundary(input, operation.ticket);
-    operation.attemptCounter.value += 1;
-    const attemptNumber = operation.attemptCounter.value;
-    const attemptId = randomUUID();
-    const event = input.event(
-      operation.phase,
-      "agent_attempt",
-      `ticket:${operation.ticket}`,
-    )(attemptNumber);
+    const resumePrompt = continuationPrompt;
+    // eslint-disable-next-line no-useless-assignment -- consume the one-shot continuation
+    continuationPrompt = undefined;
+    if (resumePrompt === undefined) {
+      operation.attemptCounter.value += 1;
+      attemptNumber = operation.attemptCounter.value;
+      attemptId = randomUUID();
+      event = input.event(
+        operation.phase,
+        "agent_attempt",
+        `ticket:${operation.ticket}`,
+      )(attemptNumber);
+    }
     await appendOperation(input, event, "started", null);
     try {
       const gitDirectory = await mkdtemp(
@@ -422,6 +436,7 @@ async function runAgentOperation(
           ),
           timeoutMs: input.timeoutMs,
           signal: operation.signal,
+          ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });
       } finally {
         await rm(gitDirectory, { recursive: true, force: true });
@@ -430,10 +445,14 @@ async function runAgentOperation(
       await boundary(input, operation.ticket);
       if (result.outcome === "blocked") {
         await appendOperation(input, event, "blocked", null);
-        return {
-          outcome: "blocked",
-          reason: `${input.ticketKind ?? "Delivery Ticket"} ${operation.ticket} blocked: ${result.blocker}`,
-        };
+        const response = await pauseForOperator(
+          input.audit,
+          event,
+          input.operator,
+          `Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+        );
+        continuationPrompt = response === "" ? "continue" : response;
+        continue;
       }
       const observed = await input.gitWorkspace.inspect({
         worktree: operation.worktree,
@@ -501,10 +520,12 @@ async function runAgentOperation(
           input.operator,
           "Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted committed result.",
         );
-        if (response === "") break;
-        let handoff: VerifiedHandoff;
+        if (response === "") {
+          continuationPrompt = "continue";
+          break;
+        }
         try {
-          handoff = trustedHandoff(
+          const handoff = trustedHandoff(
             response,
             operation.ticket,
             operation.worktree,
@@ -512,13 +533,13 @@ async function runAgentOperation(
             operation.base,
             operation.existingPrMetadata,
           );
+          await appendOperation(input, event, "operator_override", null);
+          return handoff;
         } catch {
-          await appendOperation(input, event, "invalid_override", null);
-          continue;
+          // Free-form input continues the same provider session.
         }
-        await boundary(input, operation.ticket);
-        await appendOperation(input, event, "operator_override", null);
-        return handoff;
+        continuationPrompt = response;
+        break;
       }
     }
   }

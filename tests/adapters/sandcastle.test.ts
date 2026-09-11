@@ -318,3 +318,22 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
   await assert.rejects(execution, /caller aborted/u);
   assert.equal(receivedSignal?.aborted, true);
 });
+
+test("SandcastleAgentExecutor resumes the captured session for continuation", async () => {
+  const prompts: RunOptions[] = [];
+  const executor = new SandcastleAgentExecutor(async (options) => {
+    prompts.push(options);
+    return result(
+      `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
+      committed,
+    );
+  });
+  await executor.execute(input());
+  await executor.execute({ ...input(), resumePrompt: "continue" });
+  assert.equal(prompts[1]?.prompt, "continue");
+  assert.equal(prompts[1]?.resumeSession, "session-id");
+  assert.equal(
+    prompts[1]?.logging && JSON.stringify(prompts[1].logging),
+    JSON.stringify(prompts[0]?.logging),
+  );
+});
