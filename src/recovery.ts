@@ -29,7 +29,12 @@ export interface PublicationIntent {
   reviewEvidence: unknown;
   completionEvidence: unknown;
   pullRequest?: { number: number; url: string; headSha: string };
+  repairBudgets?: {
+    ci?: RepairState;
+    conflict?: RepairState;
+  };
   repairState?: {
+    purpose?: "ci" | "conflict";
     consumed: number;
     generation: number;
     attempt: number;
@@ -37,9 +42,24 @@ export interface PublicationIntent {
     worktree?: string;
     branch?: string;
     attemptId?: string;
+    targetBase?: string;
     head?: string;
     pendingPush?: string;
   };
+}
+
+export interface RepairState {
+  purpose?: "ci" | "conflict";
+  consumed: number;
+  generation: number;
+  attempt: number;
+  base?: string;
+  worktree?: string;
+  branch?: string;
+  attemptId?: string;
+  targetBase?: string;
+  head?: string;
+  pendingPush?: string;
 }
 
 export type PublicationReconciliation =
@@ -276,35 +296,47 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
   const pullRequest = publication.pullRequest as Record<string, unknown> | null;
   const repairState = publication.repairState as
     Record<string, unknown> | undefined;
-  const validRepairState =
-    repairState === undefined ||
-    (Number.isSafeInteger(repairState.consumed) &&
-      (repairState.consumed as number) >= 0 &&
-      Number.isSafeInteger(repairState.generation) &&
-      (repairState.generation as number) >= 0 &&
-      Number.isSafeInteger(repairState.attempt) &&
-      (repairState.attempt as number) >= 0 &&
-      (repairState.base === undefined ||
-        (typeof repairState.base === "string" && repairState.base !== "")) &&
-      (repairState.worktree === undefined ||
-        (typeof repairState.worktree === "string" &&
-          repairState.worktree !== "")) &&
-      (repairState.branch === undefined ||
-        (typeof repairState.branch === "string" &&
-          repairState.branch !== "")) &&
-      (repairState.attemptId === undefined ||
-        (typeof repairState.attemptId === "string" &&
-          repairState.attemptId !== "")) &&
-      (repairState.head === undefined ||
-        (typeof repairState.head === "string" && repairState.head !== "")) &&
-      (repairState.pendingPush === undefined ||
-        (typeof repairState.pendingPush === "string" &&
-          repairState.pendingPush !== "")) &&
-      (repairState.pendingPush === undefined ||
-        (repairState.base !== undefined &&
-          repairState.worktree !== undefined &&
-          repairState.branch !== undefined &&
-          repairState.attemptId !== undefined)));
+  const repairBudgets = publication.repairBudgets as
+    Record<string, unknown> | undefined;
+  const validRepairState = (value: unknown): boolean => {
+    if (value === undefined) return true;
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return false;
+    const state = value as Record<string, unknown>;
+    return (
+      Number.isSafeInteger(state.consumed) &&
+      (state.consumed as number) >= 0 &&
+      Number.isSafeInteger(state.generation) &&
+      (state.generation as number) >= 0 &&
+      Number.isSafeInteger(state.attempt) &&
+      (state.attempt as number) >= 0 &&
+      (state.purpose === undefined ||
+        state.purpose === "ci" ||
+        state.purpose === "conflict") &&
+      [
+        "base",
+        "worktree",
+        "branch",
+        "attemptId",
+        "targetBase",
+        "head",
+        "pendingPush",
+      ].every(
+        (field) =>
+          state[field] === undefined ||
+          (typeof state[field] === "string" && state[field] !== ""),
+      ) &&
+      (state.pendingPush === undefined ||
+        (state.base !== undefined &&
+          state.worktree !== undefined &&
+          state.branch !== undefined &&
+          state.attemptId !== undefined))
+    );
+  };
+  const validBudgets =
+    repairBudgets === undefined ||
+    (validRepairState(repairBudgets.ci) &&
+      validRepairState(repairBudgets.conflict));
   return (
     Number.isSafeInteger(publication.ticket) &&
     (publication.ticket as number) > 0 &&
@@ -326,7 +358,8 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
     Array.isArray(publication.implementationEvidence) &&
     Array.isArray(publication.reviewEvidence) &&
     completion !== null &&
-    validRepairState &&
+    validRepairState(repairState) &&
+    validBudgets &&
     typeof completion === "object" &&
     completion.ticket === publication.ticket &&
     completion.branch === publication.stableBranch &&

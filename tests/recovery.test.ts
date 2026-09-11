@@ -36,6 +36,76 @@ test("recovery snapshots replace atomically and reject malformed input unchanged
   assert.equal(await readFile(filename, "utf8"), "{not-json");
 });
 
+test("recovery snapshots retain independent CI and conflict repair budgets", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-"));
+  const filename = recoveryPaths(root, 8).snapshot;
+  const handoff = {
+    ticket: 9,
+    branch: "ticket-9",
+    base: "base",
+    commits: [{ sha: "head", message: "repair" }],
+    prTitle: "fix",
+    prBody: "body",
+  };
+  const snapshot = {
+    schemaVersion: 1,
+    project: "demo",
+    repository: "owner/repo",
+    checkout: "/tmp/repo",
+    parentTicket: 8,
+    runId: "run-1",
+    phase: "running",
+    targetBranch: "main",
+    createdAt: "2026-09-11T00:00:00.000Z",
+    updatedAt: "2026-09-11T00:00:00.000Z",
+    publications: [
+      {
+        ticket: 9,
+        kind: "delivery" as const,
+        originalBase: "base",
+        targetBranch: "main",
+        stableBranch: "ticket-9",
+        intendedHeadSha: "head",
+        title: "fix",
+        body: "body",
+        phase: "pr_created" as const,
+        implementationEvidence: [],
+        reviewEvidence: [],
+        completionEvidence: handoff,
+        pullRequest: {
+          number: 1,
+          url: "https://example.test/pull/1",
+          headSha: "head",
+        },
+        repairState: {
+          purpose: "conflict" as const,
+          consumed: 1,
+          generation: 2,
+          attempt: 3,
+          targetBase: "target",
+        },
+        repairBudgets: {
+          ci: {
+            purpose: "ci" as const,
+            consumed: 2,
+            generation: 1,
+            attempt: 2,
+          },
+          conflict: {
+            purpose: "conflict" as const,
+            consumed: 1,
+            generation: 2,
+            attempt: 3,
+            targetBase: "target",
+          },
+        },
+      },
+    ],
+  };
+  await writeRecoverySnapshot(filename, snapshot);
+  assert.deepEqual(await readRecoverySnapshot(filename), snapshot);
+});
+
 test("a Parent lock is nonblocking and released explicitly", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sandcastle-lock-"));
   const filename = recoveryPaths(root, 8).lock;
