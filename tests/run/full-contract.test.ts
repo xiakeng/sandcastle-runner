@@ -698,7 +698,6 @@ test(
           operation.startsWith("push:1:") && operation.includes("/ticket-1"),
       ),
     );
-    const firstIdentities = scenario.pullRequestIdentities();
     assert.equal(
       scenario.operations.filter((operation) =>
         operation.startsWith("checks:2:"),
