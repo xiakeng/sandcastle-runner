@@ -616,6 +616,11 @@ test(
     assert.equal(scenario.agentCalls.get("conflict:3"), 1);
     assert.equal(scenario.agentCalls.get("ci:101"), 1);
     assert.equal(scenario.agentCalls.get("conflict:101"), 1);
+    assert.ok(
+      scenario.operations.filter((operation) =>
+        operation.startsWith("worktree:create:1"),
+      ).length >= 2,
+    );
     assert.equal(
       scenario.operations.filter((operation) =>
         operation.startsWith("checks:2:"),
