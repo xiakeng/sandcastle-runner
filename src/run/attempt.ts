@@ -641,7 +641,12 @@ export async function runCiRepairAttempt(
       ? { outcome: "consumed", reason: result.reason }
       : {
           outcome: "handoff",
-          handoff: { ...result, remoteBranch: input.handoff.remoteBranch },
+          handoff: {
+            ...result,
+            ...(input.handoff.remoteBranch === undefined
+              ? {}
+              : { remoteBranch: input.handoff.remoteBranch }),
+          },
         };
   } catch (error) {
     if (error instanceof BoundaryStop) {
@@ -702,7 +707,12 @@ export async function runConflictRepairAttempt(
       ? { outcome: "consumed", reason: result.reason }
       : {
           outcome: "handoff",
-          handoff: { ...result, remoteBranch: input.handoff.remoteBranch },
+          handoff: {
+            ...result,
+            ...(input.handoff.remoteBranch === undefined
+              ? {}
+              : { remoteBranch: input.handoff.remoteBranch }),
+          },
         };
   } catch (error) {
     if (error instanceof BoundaryStop) {
