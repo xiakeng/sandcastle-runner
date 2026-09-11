@@ -680,6 +680,7 @@ async function runAgentOperation(
           );
           if (response === "") break;
           try {
+            await boundary(input, operation.ticket);
             const handoff = trustedHandoff(
               response,
               operation.ticket,
@@ -708,6 +709,7 @@ async function runAgentOperation(
           break;
         }
         try {
+          await boundary(input, operation.ticket);
           const handoff = trustedHandoff(
             response,
             operation.ticket,
