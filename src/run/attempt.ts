@@ -639,7 +639,10 @@ export async function runCiRepairAttempt(
     });
     return "reason" in result
       ? { outcome: "consumed", reason: result.reason }
-      : { outcome: "handoff", handoff: result };
+      : {
+          outcome: "handoff",
+          handoff: { ...result, remoteBranch: input.handoff.remoteBranch },
+        };
   } catch (error) {
     if (error instanceof BoundaryStop) {
       return { outcome: "boundary", boundary: error.result };
@@ -697,7 +700,10 @@ export async function runConflictRepairAttempt(
     });
     return "reason" in result
       ? { outcome: "consumed", reason: result.reason }
-      : { outcome: "handoff", handoff: result };
+      : {
+          outcome: "handoff",
+          handoff: { ...result, remoteBranch: input.handoff.remoteBranch },
+        };
   } catch (error) {
     if (error instanceof BoundaryStop) {
       return { outcome: "boundary", boundary: error.result };

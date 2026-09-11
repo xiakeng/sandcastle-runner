@@ -260,10 +260,11 @@ export async function recoverPublishedHandoffs(
     const remoteHead = await readRemoteHead();
     const pendingRepair = intent.repairState?.pendingPush;
     const push =
-      pendingRepair === undefined
+      pendingRepair === undefined && intent.repairState?.head === undefined
         ? reconcileInitialPush(intent, remoteHead)
-        : remoteHead === pendingRepair ||
-            remoteHead === intent.repairState?.base
+        : remoteHead === (pendingRepair ?? intent.repairState?.head) ||
+            (pendingRepair !== undefined &&
+              remoteHead === intent.repairState?.base)
           ? {
               outcome: "adopt" as const,
               reason: "repair push can be reconciled",
