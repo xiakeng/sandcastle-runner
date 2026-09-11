@@ -162,6 +162,69 @@ test("recovery snapshots reject malformed repair budgets", async () => {
   await assert.rejects(readRecoverySnapshot(filename), InvalidRecoverySnapshot);
 });
 
+test("recovery snapshots reject inconsistent unfinished maintenance state", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "sandcastle-maintenance-state-"),
+  );
+  const filename = recoveryPaths(root, 8).snapshot;
+  const snapshot = {
+    schemaVersion: 1,
+    project: "demo",
+    repository: "owner/repo",
+    checkout: "/tmp/repo",
+    parentTicket: 8,
+    runId: "run-1",
+    phase: "running",
+    targetBranch: "main",
+    createdAt: "2026-09-11T00:00:00.000Z",
+    updatedAt: "2026-09-11T00:00:00.000Z",
+    maintenance: {
+      phase: "attempting" as const,
+      credit: 1,
+      barrier: true,
+      ticket: 10,
+    },
+    publications: [],
+  };
+  await writeRecoverySnapshot(filename, snapshot);
+  await writeFile(
+    filename,
+    JSON.stringify({
+      ...snapshot,
+      publications: [
+        {
+          ticket: 11,
+          kind: "maintenance" as const,
+          originalBase: "base",
+          targetBranch: "main",
+          stableBranch: "maintenance-11",
+          intendedHeadSha: "head",
+          title: "fix",
+          body: "body",
+          phase: "pr_created" as const,
+          implementationEvidence: [],
+          reviewEvidence: [],
+          completionEvidence: {
+            ticket: 11,
+            branch: "maintenance-11",
+            base: "base",
+            commits: [],
+            prTitle: "fix",
+            prBody: "body",
+          },
+          pullRequest: {
+            number: 1,
+            url: "https://example.test/pull/1",
+            headSha: "head",
+          },
+        },
+      ],
+    }),
+    "utf8",
+  );
+  await assert.rejects(readRecoverySnapshot(filename), InvalidRecoverySnapshot);
+});
+
 test("a Parent lock is nonblocking and released explicitly", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sandcastle-lock-"));
   const filename = recoveryPaths(root, 8).lock;
