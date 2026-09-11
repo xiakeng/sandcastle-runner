@@ -565,6 +565,8 @@ async function writePublicationState(
     targetBranch: "main",
     createdAt: "2026-09-08T00:00:00.000Z",
     updatedAt: "2026-09-08T00:00:00.000Z",
+    batch: publications.map(({ ticket }) => ticket),
+    completedDeliveries: [],
     publications,
   });
   return snapshot;
@@ -635,7 +637,9 @@ test("restart adopts an exact published Pull Request without rerunning implement
   assert.equal(result.summary.outcome, "succeeded");
   assert.deepEqual(result.summary.completedTickets, [9]);
   assert.equal(forbiddenCalls, 0);
-  assert.equal((await readRecoverySnapshot(snapshot))?.publications, undefined);
+  const recovered = await readRecoverySnapshot(snapshot);
+  assert.deepEqual(recovered?.completedDeliveries, [9]);
+  assert.deepEqual(recovered?.publications?.map(({ ticket }) => ticket), [9]);
 });
 
 test("restart abandons an absent pending push and creates fresh work", async () => {
@@ -6289,13 +6293,15 @@ test("three completed Delivery Tickets trigger committed Documentation Maintenan
     "pr:create:100",
     "merge:200",
   ]);
-  assert.equal(
+  assert.deepEqual(
     (
       await readRecoverySnapshot(
         recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
       )
-    )?.publications,
-    undefined,
+    )?.publications
+      ?.map(({ ticket }) => ticket)
+      .sort((left, right) => left - right),
+    [9, 10, 11],
   );
 });
 
