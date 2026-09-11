@@ -26,6 +26,8 @@ PR title/body, and
 completion evidence. An absent pending branch restarts from a fresh base. A matching branch with no
 PR creates one only after a second head check; exact existing PR identity is adopted. Unexpected or
 ambiguous artifacts pause without force-push or metadata rewriting.
+Reservations are owned by the recorded Run; startup reclaims only its own stale Reservation and
+releases it on terminal completion or cancellation, never another Run's Reservation.
 The snapshot also records the original Batch order and completed Delivery Ticket numbers. Recovery
 replays only unfinished Batch members, keeps their publication evidence, and credits each Delivery
 Ticket once after merge plus confirmed closure; completed evidence is retained permanently.

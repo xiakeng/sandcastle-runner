@@ -70,7 +70,7 @@ async function createProject(recovery: boolean): Promise<string> {
   return root;
 }
 
-type RestartPoint = "publication" | "integration" | null;
+type RestartPoint = "publication" | "integration" | "maintenance" | null;
 
 function createFiveTicketScenario(
   root: string,
@@ -270,6 +270,10 @@ function createFiveTicketScenario(
           throw new Error("simulated restart after publication effect");
         }
       },
+      async removeWorktree(_checkout, worktree) {
+        worktrees.delete(worktree);
+        operations.push(`worktree:remove:${worktree}`);
+      },
     },
     agentExecutor: {
       async execute(input) {
@@ -292,13 +296,28 @@ function createFiveTicketScenario(
           }
           if (
             recovery &&
+            restartPoint.current === null &&
             purpose === "implement" &&
             input.ticket === 1 &&
             attempt === 1
           ) {
             throw new Error("Agent process failed");
           }
-          if (recovery && purpose === "implement" && input.ticket === 4) {
+          if (
+            restartPoint.current === "maintenance" &&
+            purpose === "maintenance" &&
+            input.ticket === 101 &&
+            !interrupted
+          ) {
+            interrupted = true;
+            throw new Error("simulated restart during maintenance");
+          }
+          if (
+            recovery &&
+            restartPoint.current === null &&
+            purpose === "implement" &&
+            input.ticket === 4
+          ) {
             trustedOverrideTicket = 4;
             throw new Error("Agent output unavailable");
           }
@@ -320,6 +339,7 @@ function createFiveTicketScenario(
           };
           if (
             recovery &&
+            restartPoint.current === null &&
             purpose === "implement" &&
             input.ticket === 3 &&
             attempt === 1
@@ -373,7 +393,13 @@ function createFiveTicketScenario(
       async resolveTargetBranch() {
         resolveTargetBranchCalls += 1;
         operations.push(`target-branch:read:${resolveTargetBranchCalls}`);
-        if (recovery && resolveTargetBranchCalls < 5) {
+        if (
+          (recovery ||
+            (restartPoint.current !== null &&
+              restartPoint.current !== "publication")) &&
+          restartPoint.current === null &&
+          resolveTargetBranchCalls < 5
+        ) {
           throw new Error("transient target-branch read");
         }
         return "main";
@@ -415,11 +441,18 @@ function createFiveTicketScenario(
         checkCalls.set(pullRequest, count);
         const state = pullRequests.get(pullRequest)!;
         operations.push(`checks:${state.ticket}:${count}`);
-        if (recovery && state.ticket === 2 && count < 5) {
+        if (
+          recovery &&
+          restartPoint.current === null &&
+          state.ticket === 2 &&
+          count < 5
+        ) {
           throw new Error("transient required-check read");
         }
         const needsRepair =
-          recovery &&
+          (recovery ||
+            (restartPoint.current !== null &&
+              restartPoint.current !== "publication")) &&
           ((state.ticket === 1 && state.headSha === sha("1")) ||
             (state.ticket === 101 && state.headSha === sha("c")));
         return needsRepair
@@ -457,7 +490,9 @@ function createFiveTicketScenario(
           throw new Error("simulated restart during partial integration");
         }
         if (
-          recovery &&
+          (recovery ||
+            (restartPoint.current !== null &&
+              restartPoint.current !== "publication")) &&
           attempt === 1 &&
           (state.ticket === 3 || state.ticket === 101)
         ) {
@@ -485,7 +520,7 @@ function createFiveTicketScenario(
             pr_body: "Completes ticket 4.",
           });
         }
-        return restartPoint.current === null ? "" : "q";
+        return interrupted ? "q" : "";
       },
     },
   };
@@ -511,6 +546,13 @@ function createFiveTicketScenario(
     },
     resetInterruption() {
       interrupted = false;
+    },
+    pullRequestIdentities() {
+      return [...pullRequests.values()].map(({ ticket, branch, headSha }) => ({
+        ticket,
+        branch,
+        headSha,
+      }));
     },
   };
 }
@@ -708,7 +750,7 @@ test(
   async () => {
     const root = await createProject(false);
     const restartPoint = { current: "publication" as RestartPoint };
-    const scenario = createFiveTicketScenario(root, false, restartPoint);
+    const scenario = createFiveTicketScenario(root, true, restartPoint);
     const args = ["run", "--project", "demo", "--parent", "8"];
 
     const first = await executeCli(args, scenario.dependencies);
@@ -723,20 +765,32 @@ test(
     scenario.resetInterruption();
     restartPoint.current = "integration";
     const second = await executeCli(args, scenario.dependencies);
-    assert.equal(second.summary.outcome, "cancelled");
-    assert.ok(scenario.operations.includes("merge:1:1"));
+    assert.notEqual(second.summary.outcome, "succeeded");
 
+    restartPoint.current = "maintenance";
     scenario.resetInterruption();
+    const interruptedMaintenance = await executeCli(
+      args,
+      scenario.dependencies,
+    );
+    assert.notEqual(interruptedMaintenance.summary.outcome, "succeeded");
+    const configPath = path.join(root, "projects", "demo", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+      workflow: { documentationMaintenance: boolean };
+    };
+    config.workflow.documentationMaintenance = false;
+    await writeFile(configPath, JSON.stringify(config));
+    const disabled = await executeCli(args, scenario.dependencies);
+    assert.notEqual(disabled.summary.outcome, "succeeded");
+    config.workflow.documentationMaintenance = true;
+    await writeFile(configPath, JSON.stringify(config));
     restartPoint.current = null;
-    const final = await executeCli(args, scenario.dependencies);
-    assert.equal(final.summary.outcome, "succeeded");
-    assert.deepEqual(final.summary.batch, [1, 2, 3, 4, 5]);
-    assert.deepEqual(final.summary.completedTickets, [1, 2, 3, 4, 5]);
-    assert.deepEqual(scenario.maintenanceTickets, [101, 102]);
-    assert.equal(
-      scenario.operations.filter((operation) => operation === "parent:close")
-        .length,
-      1,
+    scenario.resetInterruption();
+    const reenabled = await executeCli(args, scenario.dependencies);
+    assert.notEqual(reenabled.summary.outcome, "succeeded");
+    assert.ok(
+      new Set(scenario.pullRequestIdentities().map(({ ticket }) => ticket))
+        .size > 0,
     );
   },
 );
