@@ -297,12 +297,9 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     }
     const openingTags = result.stdout.split(`<${tag}>`).length - 1;
     const closingTags = result.stdout.split(`</${tag}>`).length - 1;
-    if (
-      (openingTags !== 1 || closingTags !== 1) &&
-      result.iterations.length === 1
-    )
+    if (openingTags !== 1 || closingTags !== 1)
       throw new Error(
-        "Agent Attempt output must contain exactly one result tag",
+        `Agent Attempt output must contain exactly one result tag; output: ${result.stdout}`,
       );
     const sessionId = result.iterations.at(-1)?.sessionId;
     if (sessionId) this.sessions.set(input.logFile, sessionId);

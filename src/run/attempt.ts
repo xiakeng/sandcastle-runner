@@ -217,8 +217,17 @@ async function reviewHandoff(
         await rm(gitDirectory, { recursive: true, force: true });
       }
       await boundary(input, handoff.ticket);
-      if (result.outcome === "blocked")
-        throw new Error(`Review blocked: ${result.blocker}`);
+      if (result.outcome === "blocked") {
+        await appendOperation(input, event, "blocked", null);
+        const response = await pauseForOperator(
+          input.audit,
+          event,
+          input.operator,
+          `Review Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+        );
+        void response;
+        throw new Error(`Review blocked: ${result.blocker ?? "unavailable"}`);
+      }
       const reviewed = await acceptReview(
         input,
         handoff,
@@ -247,7 +256,9 @@ async function reviewHandoff(
           input.operator,
           "Review Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted passing result.",
         );
-        if (response === "") break;
+        if (response === "") {
+          break;
+        }
         await boundary(input, handoff.ticket);
         try {
           const reviewed = await acceptReview(
@@ -440,6 +451,13 @@ async function runAgentOperation(
       await boundary(input, operation.ticket);
       if (result.outcome === "blocked") {
         await appendOperation(input, event, "blocked", null);
+        const response = await pauseForOperator(
+          input.audit,
+          event,
+          input.operator,
+          `Agent Attempt blocked: ${result.blocker ?? "unavailable"}. Enter to continue, q to cancel, or provide recovery instructions.`,
+        );
+        void response;
         return {
           outcome: "blocked",
           reason: `${input.ticketKind ?? "Delivery Ticket"} ${operation.ticket} blocked: ${result.blocker}`,
@@ -525,6 +543,9 @@ async function runAgentOperation(
             operation.base,
             operation.existingPrMetadata,
           );
+          await boundary(input, operation.ticket);
+          await appendOperation(input, event, "operator_override", null);
+          return handoff;
         } catch {
           await appendOperation(input, event, "invalid_override", null);
           continue;
