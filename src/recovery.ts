@@ -37,6 +37,7 @@ export interface PublicationIntent {
     worktree?: string;
     branch?: string;
     attemptId?: string;
+    head?: string;
     pendingPush?: string;
   };
 }
@@ -288,6 +289,8 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
         typeof repairState.branch === "string") &&
       (repairState.attemptId === undefined ||
         typeof repairState.attemptId === "string") &&
+      (repairState.head === undefined ||
+        typeof repairState.head === "string") &&
       (repairState.pendingPush === undefined ||
         typeof repairState.pendingPush === "string"));
   return (
@@ -325,7 +328,8 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
         Number.isSafeInteger(pullRequest.number) &&
         typeof pullRequest.url === "string" &&
         pullRequest.url !== "" &&
-        pullRequest.headSha === publication.intendedHeadSha))
+        pullRequest.headSha ===
+          (repairState?.head ?? publication.intendedHeadSha)))
   );
 }
 

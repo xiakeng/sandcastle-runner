@@ -91,16 +91,30 @@ interface RepairBudget {
 function repairIntent(
   input: PublicationInput,
   ticket: number,
-  repairState: NonNullable<PublicationIntent["repairState"]>,
+  repairState: Omit<
+    NonNullable<PublicationIntent["repairState"]>,
+    "pendingPush"
+  > & { pendingPush?: string | null },
 ): Promise<void> {
   const current = input.publicationIntents?.get(ticket);
   if (!current || !input.persistPublication) return Promise.resolve();
+  repairState = { ...current.repairState, ...repairState };
+  if (repairState.pendingPush === null) delete repairState.pendingPush;
+  const persistedRepairState = repairState as NonNullable<
+    PublicationIntent["repairState"]
+  >;
   const next = {
     ...current,
-    ...(repairState.pendingPush === undefined
+    repairState: persistedRepairState,
+    ...(persistedRepairState.head === undefined ||
+    current.pullRequest === undefined
       ? {}
-      : { intendedHeadSha: repairState.pendingPush }),
-    repairState,
+      : {
+          pullRequest: {
+            ...current.pullRequest,
+            headSha: persistedRepairState.head,
+          },
+        }),
   };
   input.publicationIntents?.set(ticket, next);
   return input.persistPublication(ticket, next);
@@ -244,7 +258,20 @@ export async function recoverPublishedHandoffs(
         operator: input.operator,
       });
     const remoteHead = await readRemoteHead();
-    const push = reconcileInitialPush(intent, remoteHead);
+    const pendingRepair = intent.repairState?.pendingPush;
+    const push =
+      pendingRepair === undefined
+        ? reconcileInitialPush(intent, remoteHead)
+        : remoteHead === pendingRepair ||
+            remoteHead === intent.repairState?.base
+          ? {
+              outcome: "adopt" as const,
+              reason: "repair push can be reconciled",
+            }
+          : {
+              outcome: "pause" as const,
+              reason: "repair branch advanced while a repair push was pending",
+            };
     if (push.outcome === "restart" && intent.phase === "pending_push") {
       await input.persistPublication?.(intent.ticket, null);
       restarted.push(intent.ticket);
@@ -369,15 +396,17 @@ export async function recoverPublishedHandoffs(
       delete repairState.pendingPush;
       const repairedIntent = {
         ...intent,
-        intendedHeadSha:
-          repairHead === intent.repairState.base
-            ? intent.repairState.base
-            : repairHead,
-        repairState,
+        repairState: {
+          ...repairState,
+          ...(repairHead === intent.repairState.pendingPush
+            ? { head: repairHead }
+            : {}),
+        },
         pullRequest: { ...pullRequest, headSha: repairHead },
       };
       await input.persistPublication?.(intent.ticket, repairedIntent);
       input.publicationIntents?.set(intent.ticket, repairedIntent);
+      pullRequest = repairedIntent.pullRequest;
     }
     const readiness = merged
       ? { readiness: "ready" as const, failedChecks: [] }
@@ -1015,6 +1044,10 @@ async function repairRequiredChecks(
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
+        ...(repair.handoff.commits.at(-1)?.sha === undefined
+          ? {}
+          : { head: repair.handoff.commits.at(-1)!.sha }),
+        pendingPush: null,
       });
       const readiness = await observeRequiredChecks(
         input,
@@ -1164,6 +1197,10 @@ async function repairMergeConflict(
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
+        ...(repair.handoff.commits.at(-1)?.sha === undefined
+          ? {}
+          : { head: repair.handoff.commits.at(-1)!.sha }),
+        pendingPush: null,
       });
       let readiness = await observeRequiredChecks(
         input,
