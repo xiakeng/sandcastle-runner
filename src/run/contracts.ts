@@ -243,6 +243,8 @@ export interface AgentAttemptInput {
   logFile: string;
   timeoutMs: number;
   signal: AbortSignal;
+  /** Optional same-session continuation prompt. */
+  resumePrompt?: string;
 }
 
 export interface ReviewVerdict {

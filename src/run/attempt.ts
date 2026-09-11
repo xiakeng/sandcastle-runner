@@ -385,16 +385,25 @@ async function runAgentOperation(
     attemptCounter: { value: number };
   },
 ): Promise<VerifiedHandoff | AgentStop> {
+  let continuationPrompt: string | undefined;
+  let attemptNumber!: number;
+  let attemptId = "";
+  let event!: Omit<AuditEvent, "result" | "error">;
   for (;;) {
     await boundary(input, operation.ticket);
-    operation.attemptCounter.value += 1;
-    const attemptNumber = operation.attemptCounter.value;
-    const attemptId = randomUUID();
-    const event = input.event(
-      operation.phase,
-      "agent_attempt",
-      `ticket:${operation.ticket}`,
-    )(attemptNumber);
+    const resumePrompt = continuationPrompt;
+    // eslint-disable-next-line no-useless-assignment -- consume the one-shot continuation
+    continuationPrompt = undefined;
+    if (resumePrompt === undefined) {
+      operation.attemptCounter.value += 1;
+      attemptNumber = operation.attemptCounter.value;
+      attemptId = randomUUID();
+      event = input.event(
+        operation.phase,
+        "agent_attempt",
+        `ticket:${operation.ticket}`,
+      )(attemptNumber);
+    }
     await appendOperation(input, event, "started", null);
     try {
       const gitDirectory = await mkdtemp(
@@ -422,6 +431,7 @@ async function runAgentOperation(
           ),
           timeoutMs: input.timeoutMs,
           signal: operation.signal,
+          ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });
       } finally {
         await rm(gitDirectory, { recursive: true, force: true });
@@ -501,7 +511,10 @@ async function runAgentOperation(
           input.operator,
           "Agent Attempt failed. Enter to retry, q to cancel, or supply a trusted committed result.",
         );
-        if (response === "") break;
+        if (response === "") {
+          continuationPrompt = "continue";
+          break;
+        }
         let handoff: VerifiedHandoff;
         try {
           handoff = trustedHandoff(
