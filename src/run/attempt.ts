@@ -670,6 +670,32 @@ async function runAgentOperation(
         diagnostics.error!,
         diagnostics,
       );
+      if (diagnostics.retryable === false) {
+        for (;;) {
+          const response = await pauseForOperator(
+            input.audit,
+            event,
+            input.operator,
+            "Operation failed. Enter to retry, q to cancel, or supply a trusted result.",
+          );
+          if (response === "") break;
+          try {
+            const handoff = trustedHandoff(
+              response,
+              operation.ticket,
+              operation.worktree,
+              operation.branch,
+              operation.base,
+              operation.existingPrMetadata,
+            );
+            await appendOperation(input, event, "operator_override", null);
+            return handoff;
+          } catch {
+            // Invalid trusted results remain in the same Operator Pause.
+          }
+        }
+        continue;
+      }
       for (;;) {
         const response = await pauseForOperator(
           input.audit,
