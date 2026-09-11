@@ -364,15 +364,16 @@ export async function recoverPublishedHandoffs(
         };
       }
     }
+    const recordedHead = intent.repairState?.head ?? intent.intendedHeadSha;
     await input.persistPublication?.(intent.ticket, {
       ...intent,
       phase: "pr_created",
-      pullRequest: { ...pullRequest, headSha: intent.intendedHeadSha },
+      pullRequest: { ...pullRequest, headSha: recordedHead },
     });
     input.publicationIntents?.set(intent.ticket, {
       ...intent,
       phase: "pr_created",
-      pullRequest: { ...pullRequest, headSha: intent.intendedHeadSha },
+      pullRequest: { ...pullRequest, headSha: recordedHead },
     });
     if (intent.repairState?.pendingPush) {
       const repairHead = await readRemoteHead();
@@ -388,6 +389,20 @@ export async function recoverPublishedHandoffs(
         return {
           outcome: "incomplete",
           reasons: ["repair push cannot be reconciled automatically"],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+      if (repairHead === intent.repairState.base) {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "pending repair push was not observed on the stable branch",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: ["pending repair push requires retry"],
           pullRequests: published.map(({ observation }) => observation),
           published,
           restarted,
