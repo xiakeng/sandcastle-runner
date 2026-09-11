@@ -95,7 +95,13 @@ function repairIntent(
 ): Promise<void> {
   const current = input.publicationIntents?.get(ticket);
   if (!current || !input.persistPublication) return Promise.resolve();
-  const next = { ...current, repairState };
+  const next = {
+    ...current,
+    ...(repairState.pendingPush === undefined
+      ? {}
+      : { intendedHeadSha: repairState.pendingPush }),
+    repairState,
+  };
   input.publicationIntents?.set(ticket, next);
   return input.persistPublication(ticket, next);
 }
@@ -361,7 +367,15 @@ export async function recoverPublishedHandoffs(
       }
       const repairState = { ...intent.repairState };
       delete repairState.pendingPush;
-      const repairedIntent = { ...intent, repairState };
+      const repairedIntent = {
+        ...intent,
+        intendedHeadSha:
+          repairHead === intent.repairState.base
+            ? intent.repairState.base
+            : repairHead,
+        repairState,
+        pullRequest: { ...pullRequest, headSha: repairHead },
+      };
       await input.persistPublication?.(intent.ticket, repairedIntent);
       input.publicationIntents?.set(intent.ticket, repairedIntent);
     }
@@ -431,7 +445,6 @@ function pullRequestStateOverride(value: string): PullRequestState {
 async function freshRepairHandoff(
   input: PublicationInput,
   handoff: VerifiedHandoff,
-  pullRequest: PullRequestIdentity,
   purpose: "ci" | "conflict",
 ): Promise<VerifiedHandoff> {
   if (typeof input.codeHost.getRemoteBranchHead !== "function") return handoff;
@@ -620,7 +633,10 @@ async function pushRepair(
           operator: input.operator,
         });
   if (typeof input.codeHost.getRemoteBranchHead !== "function") return null;
-  if (remoteHead !== null && remoteHead !== handoff.base) {
+  if (
+    handoff.remoteBranch !== undefined &&
+    (remoteHead === null || remoteHead !== handoff.base)
+  ) {
     await pauseForOperator(
       input.audit,
       input.event(phase, "remote_advance", `branch:${remoteBranch}`)(attempt),
@@ -926,16 +942,12 @@ async function repairRequiredChecks(
       );
       if (pullRequestState.merged)
         return { readiness: "ready", failedChecks: [] };
-      const preparedRepair = await freshRepairHandoff(
-        input,
-        handoff,
-        pullRequest,
-        "ci",
-      );
+      const preparedRepair = await freshRepairHandoff(input, handoff, "ci");
       const repairHandoff =
         preparedRepair === handoff
           ? { ...handoff, base: pullRequestState.headSha }
           : preparedRepair;
+      const attemptId = randomUUID();
       await repairIntent(input, handoff.ticket, {
         consumed: budget.consumed,
         generation: budget.generation,
@@ -943,6 +955,7 @@ async function repairRequiredChecks(
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
+        attemptId,
       });
       const repair = await runCiRepairAttempt({
         ...input,
@@ -965,6 +978,7 @@ async function repairRequiredChecks(
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
+        attemptId,
       });
       if (repair.outcome === "consumed") continue;
 
@@ -983,6 +997,7 @@ async function repairRequiredChecks(
           base: repair.handoff.base,
           worktree: repair.handoff.worktree,
           branch: repair.handoff.branch,
+          attemptId,
           ...(repair.handoff.commits.at(-1)?.sha === undefined
             ? {}
             : { pendingPush: repair.handoff.commits.at(-1)!.sha }),
@@ -1089,13 +1104,22 @@ async function repairMergeConflict(
       const preparedRepair = await freshRepairHandoff(
         input,
         handoff,
-        pullRequest,
         "conflict",
       );
       const repairHandoff =
         preparedRepair === handoff
           ? { ...handoff, base: state.headSha }
           : preparedRepair;
+      const attemptId = randomUUID();
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+        base: repairHandoff.base,
+        worktree: repairHandoff.worktree,
+        branch: repairHandoff.branch,
+        attemptId,
+      });
       const repair = await runConflictRepairAttempt({
         ...input,
         handoff: repairHandoff,
@@ -1111,6 +1135,15 @@ async function repairMergeConflict(
       });
       if (repair.outcome === "boundary") return repair.boundary;
       budget.consumed += 1;
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+        base: repairHandoff.base,
+        worktree: repairHandoff.worktree,
+        branch: repairHandoff.branch,
+        attemptId,
+      });
       if (repair.outcome === "consumed") continue;
 
       const current = await observePullRequestForIntegration(
@@ -1127,6 +1160,11 @@ async function repairMergeConflict(
         budget.consumed,
       );
       if (boundary) return boundary;
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+      });
       let readiness = await observeRequiredChecks(
         input,
         repair.handoff,
@@ -1166,6 +1204,12 @@ async function repairMergeConflict(
     );
     if (response === "") {
       budget.consumed = 0;
+      budget.generation += 1;
+      await repairIntent(input, handoff.ticket, {
+        consumed: 0,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+      });
       continue;
     }
     const boundary = await revalidateActiveTicket(input, handoff.ticket);

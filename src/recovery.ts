@@ -36,6 +36,7 @@ export interface PublicationIntent {
     base?: string;
     worktree?: string;
     branch?: string;
+    attemptId?: string;
     pendingPush?: string;
   };
 }
@@ -285,6 +286,8 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
         typeof repairState.worktree === "string") &&
       (repairState.branch === undefined ||
         typeof repairState.branch === "string") &&
+      (repairState.attemptId === undefined ||
+        typeof repairState.attemptId === "string") &&
       (repairState.pendingPush === undefined ||
         typeof repairState.pendingPush === "string"));
   return (
