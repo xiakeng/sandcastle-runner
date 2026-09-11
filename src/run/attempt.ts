@@ -80,6 +80,12 @@ function diagnosticValue(value: unknown): string {
   return value;
 }
 
+function assistantReplyValue(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0)
+    return "no assistant reply captured";
+  return value;
+}
+
 function agentPauseMessage(
   prefix: string,
   diagnostics: AgentDiagnostics | undefined,
@@ -89,7 +95,7 @@ function agentPauseMessage(
   >,
 ): string {
   const d = diagnostics ?? {};
-  const reply = diagnosticValue(d.assistantReply);
+  const reply = assistantReplyValue(d.assistantReply);
   const previous = d.assistantReply
     ? ""
     : d.previousAssistantReply
@@ -190,6 +196,7 @@ async function reviewHandoff(
   const implementationHead = handoff.commits.at(-1)!.sha;
   let continuationPrompt: string | undefined;
   let attemptNumber!: number;
+  let attemptId = "";
   let event!: Omit<AuditEvent, "result" | "error">;
   const logFile = path.join(
     input.projectDirectory,
@@ -203,13 +210,21 @@ async function reviewHandoff(
     continuationPrompt = undefined;
     if (resumePrompt === undefined) {
       attemptNumber = (attemptNumber || 0) + 1;
+      attemptId = randomUUID();
       event = input.event(
         "review",
         "agent_attempt",
         `ticket:${handoff.ticket}`,
       )(attemptNumber);
     }
-    await appendOperation(input, event, "started", null);
+    await appendOperation(
+      input,
+      event,
+      "started",
+      null,
+      undefined,
+      resumePrompt === undefined ? undefined : "resumed",
+    );
     try {
       const [deliveryTicket, governingSpecification, standardsSources] =
         await Promise.all([
@@ -262,6 +277,10 @@ async function reviewHandoff(
         await rm(gitDirectory, { recursive: true, force: true });
       }
       await boundary(input, handoff.ticket);
+      if (result.diagnostics) {
+        result.diagnostics.agentAttemptId = attemptId;
+        result.diagnostics.attemptOrdinal = attemptNumber;
+      }
       if (result.outcome === "blocked") {
         await appendOperation(
           input,
@@ -310,27 +329,36 @@ async function reviewHandoff(
         await appendOperation(input, event, error.result.outcome, null);
         throw error;
       }
+      const diagnostics: AgentDiagnostics = {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Review Agent Attempt failed",
+        errorCategory: "agent_attempt",
+        attemptOrdinal: attemptNumber,
+        retryable: true,
+        agentAttemptId: attemptId,
+        diagnosticLogPath: logFile,
+      };
+      Object.assign(
+        diagnostics,
+        error instanceof Error && "diagnostics" in error
+          ? (error as Error & { diagnostics?: AgentDiagnostics }).diagnostics
+          : {},
+      );
       await appendOperation(
         input,
         event,
         "failed",
-        error instanceof Error ? error.message : "Review Agent Attempt failed",
+        diagnostics.error!,
+        diagnostics,
       );
       for (;;) {
         const response = await pauseForOperator(
           input.audit,
           event,
           input.operator,
-          agentPauseMessage("Review Agent Attempt failed", {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Review Agent Attempt failed",
-            errorCategory: "agent_attempt",
-            attemptOrdinal: attemptNumber,
-            retryable: true,
-            diagnosticLogPath: logFile,
-          }),
+          agentPauseMessage("Review Agent Attempt failed", diagnostics),
         );
         continuationPrompt = response === "" ? "continue" : response;
         break;
@@ -378,6 +406,7 @@ async function appendOperation(
   result: string,
   error: string | null,
   diagnostics?: AgentDiagnostics,
+  transition?: string,
 ): Promise<void> {
   await supervisedAuditWrite(
     () =>
@@ -392,6 +421,7 @@ async function appendOperation(
           ? {}
           : { diagnosticLogPath: diagnostics.diagnosticLogPath }),
         ...(diagnostics === undefined ? {} : { diagnostics }),
+        ...(transition === undefined ? {} : { transition }),
       }),
     input.operator,
   );
@@ -489,7 +519,14 @@ async function runAgentOperation(
         `ticket:${operation.ticket}`,
       )(attemptNumber);
     }
-    await appendOperation(input, event, "started", null);
+    await appendOperation(
+      input,
+      event,
+      "started",
+      null,
+      undefined,
+      resumePrompt === undefined ? undefined : "resumed",
+    );
     try {
       const gitDirectory = await mkdtemp(
         path.join(tmpdir(), "sandcastle-runner-git-"),
@@ -523,6 +560,10 @@ async function runAgentOperation(
       }
 
       await boundary(input, operation.ticket);
+      if (result.diagnostics) {
+        result.diagnostics.agentAttemptId = attemptId;
+        result.diagnostics.attemptOrdinal = attemptNumber;
+      }
       if (result.outcome === "blocked") {
         await appendOperation(
           input,
@@ -603,25 +644,38 @@ async function runAgentOperation(
         await appendOperation(input, event, error.result.outcome, null);
         throw error;
       }
+      const diagnostics: AgentDiagnostics = {
+        error: error instanceof Error ? error.message : "Agent Attempt failed",
+        errorCategory: "agent_attempt",
+        attemptOrdinal: attemptNumber,
+        retryable: true,
+        agentAttemptId: attemptId,
+        workingDirectory: operation.worktree,
+        diagnosticLogPath: path.join(
+          input.projectDirectory,
+          "logs",
+          `agent-${operation.ticket}-${attemptId}.log`,
+        ),
+      };
+      Object.assign(
+        diagnostics,
+        error instanceof Error && "diagnostics" in error
+          ? (error as Error & { diagnostics?: AgentDiagnostics }).diagnostics
+          : {},
+      );
       await appendOperation(
         input,
         event,
         "failed",
-        error instanceof Error ? error.message : "Agent Attempt failed",
+        diagnostics.error!,
+        diagnostics,
       );
       for (;;) {
         const response = await pauseForOperator(
           input.audit,
           event,
           input.operator,
-          agentPauseMessage("Agent Attempt failed", {
-            error:
-              error instanceof Error ? error.message : "Agent Attempt failed",
-            errorCategory: "agent_attempt",
-            attemptOrdinal: attemptNumber,
-            retryable: true,
-            workingDirectory: operation.worktree,
-          }),
+          agentPauseMessage("Agent Attempt failed", diagnostics),
         );
         if (response === "") {
           continuationPrompt = "continue";

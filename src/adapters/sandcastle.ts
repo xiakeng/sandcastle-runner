@@ -30,6 +30,18 @@ interface StandardSchema<T> {
   };
 }
 
+class AgentOutputError extends Error {
+  readonly diagnostics: AgentDiagnostics;
+
+  constructor(
+    message: string,
+    diagnostics: AgentDiagnostics,
+  ) {
+    super(message);
+    this.diagnostics = diagnostics;
+  }
+}
+
 function object(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error(`${name} must be an object`);
@@ -304,13 +316,6 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     const assistantReply = result.stdout.trim() || undefined;
     const previousAssistantReply = this.replies.get(input.logFile);
     if (assistantReply) this.replies.set(input.logFile, assistantReply);
-    if (
-      (openingTags !== 1 || closingTags !== 1) &&
-      result.iterations.length === 1
-    )
-      throw new Error(
-        "Agent Attempt output must contain exactly one result tag",
-      );
     const diagnostics: AgentDiagnostics = {
       ...(input.promptArgs.OPERATION === undefined
         ? {}
@@ -332,6 +337,14 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       diagnosticLogPath: input.logFile,
       raw: result.stdout,
     };
+    if (
+      (openingTags !== 1 || closingTags !== 1) &&
+      result.iterations.length === 1
+    )
+      throw new AgentOutputError(
+        "Agent Attempt output must contain exactly one result tag",
+        diagnostics,
+      );
     if (typeof result.output === "object" && result.output !== null) {
       Object.defineProperty(result.output, "diagnostics", {
         value: diagnostics,
