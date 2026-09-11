@@ -698,6 +698,7 @@ test(
           operation.startsWith("push:1:") && operation.includes("/ticket-1"),
       ),
     );
+    const firstIdentities = scenario.pullRequestIdentities();
     assert.equal(
       scenario.operations.filter((operation) =>
         operation.startsWith("checks:2:"),
@@ -808,6 +809,13 @@ test("unfinished maintenance is forgotten when disabled and not rediscovered", a
   );
   config.workflow.documentationMaintenance = true;
   await writeFile(configPath, JSON.stringify(config));
+  const beforeReenable = scenario.operations.length;
   await executeCli(args, scenario.dependencies);
   assert.deepEqual(scenario.maintenanceTickets, [101]);
+  assert.equal(
+    scenario.operations
+      .slice(beforeReenable)
+      .some((op) => op.includes("maintenance")),
+    false,
+  );
 });
