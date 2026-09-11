@@ -279,20 +279,32 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
   const validRepairState =
     repairState === undefined ||
     (Number.isSafeInteger(repairState.consumed) &&
+      (repairState.consumed as number) >= 0 &&
       Number.isSafeInteger(repairState.generation) &&
+      (repairState.generation as number) >= 0 &&
       Number.isSafeInteger(repairState.attempt) &&
+      (repairState.attempt as number) >= 0 &&
       (repairState.base === undefined ||
-        typeof repairState.base === "string") &&
+        (typeof repairState.base === "string" && repairState.base !== "")) &&
       (repairState.worktree === undefined ||
-        typeof repairState.worktree === "string") &&
+        (typeof repairState.worktree === "string" &&
+          repairState.worktree !== "")) &&
       (repairState.branch === undefined ||
-        typeof repairState.branch === "string") &&
+        (typeof repairState.branch === "string" &&
+          repairState.branch !== "")) &&
       (repairState.attemptId === undefined ||
-        typeof repairState.attemptId === "string") &&
+        (typeof repairState.attemptId === "string" &&
+          repairState.attemptId !== "")) &&
       (repairState.head === undefined ||
-        typeof repairState.head === "string") &&
+        (typeof repairState.head === "string" && repairState.head !== "")) &&
       (repairState.pendingPush === undefined ||
-        typeof repairState.pendingPush === "string"));
+        (typeof repairState.pendingPush === "string" &&
+          repairState.pendingPush !== "")) &&
+      (repairState.pendingPush === undefined ||
+        (repairState.base !== undefined &&
+          repairState.worktree !== undefined &&
+          repairState.branch !== undefined &&
+          repairState.attemptId !== undefined)));
   return (
     Number.isSafeInteger(publication.ticket) &&
     (publication.ticket as number) > 0 &&
