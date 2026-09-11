@@ -102,7 +102,10 @@ function repairIntent(
 ): Promise<void> {
   const current = input.publicationIntents?.get(ticket);
   if (!current || !input.persistPublication) return Promise.resolve();
-  repairState = { ...current.repairState, ...repairState };
+  repairState = {
+    ...(current.repairState?.purpose === purpose ? current.repairState : {}),
+    ...repairState,
+  };
   repairState.purpose = purpose;
   if (repairState.pendingPush === null) delete repairState.pendingPush;
   const persistedRepairState = repairState as NonNullable<
@@ -1046,7 +1049,7 @@ async function repairRequiredChecks(
       await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value,
+        attempt: budget.attempts.value + 1,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
@@ -1191,7 +1194,7 @@ async function repairMergeConflict(
       await repairIntent(input, handoff.ticket, "conflict", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value,
+        attempt: budget.attempts.value + 1,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
@@ -1233,6 +1236,21 @@ async function repairMergeConflict(
         "conflict_repair",
       );
       if (current.merged) return { state: current };
+      if (repair.outcome === "handoff") {
+        await repairIntent(input, handoff.ticket, "conflict", {
+          consumed: budget.consumed,
+          generation: budget.generation,
+          attempt: budget.attempts.value,
+          base: repair.handoff.base,
+          worktree: repair.handoff.worktree,
+          branch: repair.handoff.branch,
+          attemptId,
+          targetBase,
+          ...(repair.handoff.commits.at(-1)?.sha === undefined
+            ? {}
+            : { pendingPush: repair.handoff.commits.at(-1)!.sha }),
+        });
+      }
       const boundary = await pushRepair(
         input,
         repair.handoff,

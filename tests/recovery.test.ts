@@ -106,6 +106,62 @@ test("recovery snapshots retain independent CI and conflict repair budgets", asy
   assert.deepEqual(await readRecoverySnapshot(filename), snapshot);
 });
 
+test("recovery snapshots reject malformed repair budgets", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-"));
+  const filename = recoveryPaths(root, 8).snapshot;
+  const snapshot = {
+    schemaVersion: 1,
+    project: "demo",
+    repository: "owner/repo",
+    checkout: "/tmp/repo",
+    parentTicket: 8,
+    runId: "run-1",
+    phase: "running",
+    targetBranch: "main",
+    createdAt: "2026-09-11T00:00:00.000Z",
+    updatedAt: "2026-09-11T00:00:00.000Z",
+    publications: [
+      {
+        ticket: 9,
+        kind: "delivery" as const,
+        originalBase: "base",
+        targetBranch: "main",
+        stableBranch: "ticket-9",
+        intendedHeadSha: "head",
+        title: "fix",
+        body: "body",
+        phase: "pr_created" as const,
+        implementationEvidence: [],
+        reviewEvidence: [],
+        completionEvidence: {
+          ticket: 9,
+          branch: "ticket-9",
+          base: "base",
+          commits: [],
+          prTitle: "fix",
+          prBody: "body",
+        },
+        repairBudgets: null,
+      },
+    ],
+  };
+  await writeRecoverySnapshot(filename, { ...snapshot, publications: [] });
+  await writeFile(
+    filename,
+    JSON.stringify({
+      ...snapshot,
+      publications: [
+        {
+          ...snapshot.publications[0],
+          repairBudgets: null,
+        },
+      ],
+    }),
+    "utf8",
+  );
+  await assert.rejects(readRecoverySnapshot(filename), InvalidRecoverySnapshot);
+});
+
 test("a Parent lock is nonblocking and released explicitly", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sandcastle-lock-"));
   const filename = recoveryPaths(root, 8).lock;

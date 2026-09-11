@@ -297,7 +297,7 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
   const repairState = publication.repairState as
     Record<string, unknown> | undefined;
   const repairBudgets = publication.repairBudgets as
-    Record<string, unknown> | undefined;
+    Record<string, unknown> | null | undefined;
   const validRepairState = (value: unknown): boolean => {
     if (value === undefined) return true;
     if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -335,7 +335,9 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
   };
   const validBudgets =
     repairBudgets === undefined ||
-    (validRepairState(repairBudgets.ci) &&
+    (repairBudgets !== null &&
+      !Array.isArray(repairBudgets) &&
+      validRepairState(repairBudgets.ci) &&
       validRepairState(repairBudgets.conflict));
   return (
     Number.isSafeInteger(publication.ticket) &&
