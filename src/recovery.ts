@@ -29,6 +29,15 @@ export interface PublicationIntent {
   reviewEvidence: unknown;
   completionEvidence: unknown;
   pullRequest?: { number: number; url: string; headSha: string };
+  repairState?: {
+    consumed: number;
+    generation: number;
+    attempt: number;
+    base?: string;
+    worktree?: string;
+    branch?: string;
+    pendingPush?: string;
+  };
 }
 
 export type PublicationReconciliation =
@@ -263,6 +272,21 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
     unknown
   > | null;
   const pullRequest = publication.pullRequest as Record<string, unknown> | null;
+  const repairState = publication.repairState as
+    Record<string, unknown> | undefined;
+  const validRepairState =
+    repairState === undefined ||
+    (Number.isSafeInteger(repairState.consumed) &&
+      Number.isSafeInteger(repairState.generation) &&
+      Number.isSafeInteger(repairState.attempt) &&
+      (repairState.base === undefined ||
+        typeof repairState.base === "string") &&
+      (repairState.worktree === undefined ||
+        typeof repairState.worktree === "string") &&
+      (repairState.branch === undefined ||
+        typeof repairState.branch === "string") &&
+      (repairState.pendingPush === undefined ||
+        typeof repairState.pendingPush === "string"));
   return (
     Number.isSafeInteger(publication.ticket) &&
     (publication.ticket as number) > 0 &&
@@ -284,6 +308,7 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
     Array.isArray(publication.implementationEvidence) &&
     Array.isArray(publication.reviewEvidence) &&
     completion !== null &&
+    validRepairState &&
     typeof completion === "object" &&
     completion.ticket === publication.ticket &&
     completion.branch === publication.stableBranch &&

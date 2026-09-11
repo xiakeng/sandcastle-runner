@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AgentConfig } from "../config.ts";
 import {
   runCiRepairAttempt,
@@ -77,11 +79,25 @@ export interface PublicationInput extends ReadinessInput {
     ticket: number,
     intent: PublicationIntent | null,
   ) => Promise<void>;
+  publicationIntents?: Map<number, PublicationIntent>;
 }
 
 interface RepairBudget {
   consumed: number;
+  generation: number;
   attempts: { value: number };
+}
+
+function repairIntent(
+  input: PublicationInput,
+  ticket: number,
+  repairState: NonNullable<PublicationIntent["repairState"]>,
+): Promise<void> {
+  const current = input.publicationIntents?.get(ticket);
+  if (!current || !input.persistPublication) return Promise.resolve();
+  const next = { ...current, repairState };
+  input.publicationIntents?.set(ticket, next);
+  return input.persistPublication(ticket, next);
 }
 
 export interface PublicationResult {
@@ -319,6 +335,36 @@ export async function recoverPublishedHandoffs(
       phase: "pr_created",
       pullRequest: { ...pullRequest, headSha: intent.intendedHeadSha },
     });
+    input.publicationIntents?.set(intent.ticket, {
+      ...intent,
+      phase: "pr_created",
+      pullRequest: { ...pullRequest, headSha: intent.intendedHeadSha },
+    });
+    if (intent.repairState?.pendingPush) {
+      const repairHead = await readRemoteHead();
+      if (
+        repairHead !== intent.repairState.pendingPush &&
+        repairHead !== intent.repairState.base
+      ) {
+        await pauseRecoveredPublication(
+          input,
+          intent,
+          "repair branch advanced while a repair push was pending",
+        );
+        return {
+          outcome: "incomplete",
+          reasons: ["repair push cannot be reconciled automatically"],
+          pullRequests: published.map(({ observation }) => observation),
+          published,
+          restarted,
+        };
+      }
+      const repairState = { ...intent.repairState };
+      delete repairState.pendingPush;
+      const repairedIntent = { ...intent, repairState };
+      await input.persistPublication?.(intent.ticket, repairedIntent);
+      input.publicationIntents?.set(intent.ticket, repairedIntent);
+    }
     const readiness = merged
       ? { readiness: "ready" as const, failedChecks: [] }
       : await observeRequiredChecks(input, handoff, pullRequest);
@@ -379,6 +425,65 @@ function pullRequestStateOverride(value: string): PullRequestState {
     createdAt: parsed.createdAt,
     merged: parsed.merged,
     mergeFailure: parsed.mergeFailure ?? null,
+  };
+}
+
+async function freshRepairHandoff(
+  input: PublicationInput,
+  handoff: VerifiedHandoff,
+  pullRequest: PullRequestIdentity,
+  purpose: "ci" | "conflict",
+): Promise<VerifiedHandoff> {
+  if (typeof input.codeHost.getRemoteBranchHead !== "function") return handoff;
+  const base = await externalRead({
+    action: () =>
+      input.codeHost.getRemoteBranchHead(
+        input.repository,
+        handoff.remoteBranch ?? handoff.branch,
+      ),
+    parseOverride: remoteHeadOverride,
+    audit: input.audit,
+    event: input.event(
+      `${purpose}_repair`,
+      "remote_base_head",
+      `ticket:${handoff.ticket}`,
+    ),
+    clock: input.clock,
+    operator: input.operator,
+  });
+  if (!base) return handoff;
+  const id = randomUUID();
+  const branch = `sandcastle/run-${input.runId}/ticket-${handoff.ticket}-${purpose}-repair-${id}`;
+  const worktree = path.join(
+    input.projectDirectory,
+    "worktrees",
+    input.runId,
+    `ticket-${handoff.ticket}-${purpose}-repair-${id}`,
+  );
+  await workflowWrite({
+    action: () =>
+      input.gitWorkspace.createWorktree({
+        checkout: input.checkout,
+        worktree,
+        branch,
+        base,
+      }),
+    audit: input.audit,
+    event: () =>
+      input.event(
+        `${purpose}_repair`,
+        "create_worktree",
+        `ticket:${handoff.ticket}`,
+      )(1),
+    operator: input.operator,
+  });
+  return {
+    ...handoff,
+    worktree,
+    branch,
+    base,
+    commits: [],
+    remoteBranch: handoff.remoteBranch ?? handoff.branch,
   };
 }
 
@@ -497,9 +602,37 @@ async function pushRepair(
 ): Promise<Exclude<DeliveryBoundaryResult, { outcome: "ready" }> | null> {
   const boundary = await revalidateActiveTicket(input, handoff.ticket);
   if (boundary.outcome !== "ready") return boundary;
+  const remoteBranch = handoff.remoteBranch ?? handoff.branch;
+  const remoteHead =
+    typeof input.codeHost.getRemoteBranchHead !== "function"
+      ? handoff.base
+      : await externalRead({
+          action: () =>
+            input.codeHost.getRemoteBranchHead(input.repository, remoteBranch),
+          parseOverride: remoteHeadOverride,
+          audit: input.audit,
+          event: input.event(
+            phase,
+            "remote_base_head",
+            `branch:${remoteBranch}`,
+          ),
+          clock: input.clock,
+          operator: input.operator,
+        });
+  if (typeof input.codeHost.getRemoteBranchHead !== "function") return null;
+  if (remoteHead !== null && remoteHead !== handoff.base) {
+    await pauseForOperator(
+      input.audit,
+      input.event(phase, "remote_advance", `branch:${remoteBranch}`)(attempt),
+      input.operator,
+      `Stable repair branch advanced from ${handoff.base} to ${remoteHead ?? "absent"}. Resolve the remote state, then restart the Run, or q to cancel.`,
+    );
+    return { outcome: "stopped", reason: "stable repair branch advanced" };
+  }
   try {
     await workflowWrite({
-      action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
+      action: () =>
+        input.gitWorkspace.push(handoff.worktree, handoff.branch, remoteBranch),
       beforeRetry: async () => {
         const changed = await revalidateActiveTicket(input, handoff.ticket);
         if (changed.outcome !== "ready") {
@@ -599,7 +732,7 @@ export async function integratePullRequest(
   | { outcome: "completed"; ticket: Ticket }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
-  const conflictBudget = { consumed: 0, attempts: { value: 0 } };
+  const conflictBudget = { consumed: 0, generation: 0, attempts: { value: 0 } };
   let current = observed;
   for (;;) {
     const boundary = await revalidateActiveTicket(input, handoff.ticket);
@@ -774,8 +907,15 @@ async function repairRequiredChecks(
   let failedChecks = initialFailedChecks;
   const budget = input.ciRepairBudgets.get(handoff.ticket) ?? {
     consumed: 0,
+    generation: 0,
     attempts: { value: 0 },
   };
+  const persisted = input.publicationIntents?.get(handoff.ticket)?.repairState;
+  if (persisted) {
+    budget.consumed = persisted.consumed;
+    budget.generation = persisted.generation;
+    budget.attempts.value = persisted.attempt;
+  }
   input.ciRepairBudgets.set(handoff.ticket, budget);
   for (;;) {
     while (budget.consumed < 2) {
@@ -786,10 +926,28 @@ async function repairRequiredChecks(
       );
       if (pullRequestState.merged)
         return { readiness: "ready", failedChecks: [] };
+      const preparedRepair = await freshRepairHandoff(
+        input,
+        handoff,
+        pullRequest,
+        "ci",
+      );
+      const repairHandoff =
+        preparedRepair === handoff
+          ? { ...handoff, base: pullRequestState.headSha }
+          : preparedRepair;
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+        base: repairHandoff.base,
+        worktree: repairHandoff.worktree,
+        branch: repairHandoff.branch,
+      });
       const repair = await runCiRepairAttempt({
         ...input,
-        handoff,
-        base: pullRequestState.headSha,
+        handoff: repairHandoff,
+        base: repairHandoff.base,
         pullRequest,
         failedChecks,
         promptFile: input.ciRepairPrompt,
@@ -800,6 +958,14 @@ async function repairRequiredChecks(
       });
       if (repair.outcome === "boundary") return repair.boundary;
       budget.consumed += 1;
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+        base: repairHandoff.base,
+        worktree: repairHandoff.worktree,
+        branch: repairHandoff.branch,
+      });
       if (repair.outcome === "consumed") continue;
 
       const currentPullRequestState = await observePullRequestForIntegration(
@@ -809,14 +975,32 @@ async function repairRequiredChecks(
       );
       if (currentPullRequestState.merged)
         return { readiness: "ready", failedChecks: [] };
+      if (repair.outcome === "handoff") {
+        await repairIntent(input, handoff.ticket, {
+          consumed: budget.consumed,
+          generation: budget.generation,
+          attempt: budget.attempts.value,
+          base: repair.handoff.base,
+          worktree: repair.handoff.worktree,
+          branch: repair.handoff.branch,
+          ...(repair.handoff.commits.at(-1)?.sha === undefined
+            ? {}
+            : { pendingPush: repair.handoff.commits.at(-1)!.sha }),
+        });
+      }
       const boundary = await pushRepair(
         input,
-        handoff,
+        repair.handoff,
         pullRequest,
         "ci_repair",
         budget.consumed,
       );
       if (boundary) return boundary;
+      await repairIntent(input, handoff.ticket, {
+        consumed: budget.consumed,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+      });
       const readiness = await observeRequiredChecks(
         input,
         repair.handoff,
@@ -841,6 +1025,12 @@ async function repairRequiredChecks(
     );
     if (response === "") {
       budget.consumed = 0;
+      budget.generation += 1;
+      await repairIntent(input, handoff.ticket, {
+        consumed: 0,
+        generation: budget.generation,
+        attempt: budget.attempts.value,
+      });
       continue;
     }
     const boundary = await revalidateActiveTicket(input, handoff.ticket);
@@ -896,10 +1086,20 @@ async function repairMergeConflict(
         clock: input.clock,
         operator: input.operator,
       });
+      const preparedRepair = await freshRepairHandoff(
+        input,
+        handoff,
+        pullRequest,
+        "conflict",
+      );
+      const repairHandoff =
+        preparedRepair === handoff
+          ? { ...handoff, base: state.headSha }
+          : preparedRepair;
       const repair = await runConflictRepairAttempt({
         ...input,
-        handoff,
-        base: state.headSha,
+        handoff: repairHandoff,
+        base: repairHandoff.base,
         targetBase,
         pullRequest,
         conflict,
@@ -921,7 +1121,7 @@ async function repairMergeConflict(
       if (current.merged) return { state: current };
       const boundary = await pushRepair(
         input,
-        handoff,
+        repair.handoff,
         pullRequest,
         "conflict_repair",
         budget.consumed,
@@ -1032,6 +1232,7 @@ export async function publishVerifiedHandoffs(
         reviewEvidence: handoff.reviewCommits ?? [],
         completionEvidence: handoff,
       };
+      input.publicationIntents?.set(handoff.ticket, intent);
       await input.persistPublication?.(handoff.ticket, intent);
       await workflowWrite({
         action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
@@ -1044,10 +1245,18 @@ export async function publishVerifiedHandoffs(
         ...intent,
         phase: "pushed",
       });
+      input.publicationIntents?.set(handoff.ticket, {
+        ...intent,
+        phase: "pushed",
+      });
 
       boundary = await revalidateActiveTicket(concurrentInput, handoff.ticket);
       if (boundary.outcome !== "ready") return { boundary };
       await input.persistPublication?.(handoff.ticket, {
+        ...intent,
+        phase: "pending_pr",
+      });
+      input.publicationIntents?.set(handoff.ticket, {
         ...intent,
         phase: "pending_pr",
       });

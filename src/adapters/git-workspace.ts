@@ -156,8 +156,16 @@ export class LocalGitWorkspace implements GitWorkspace {
     };
   }
 
-  async push(worktree: string, branch: string): Promise<void> {
-    await this.remote(worktree, ["push", "origin", branch]);
+  async push(
+    worktree: string,
+    branch: string,
+    remoteBranch?: string,
+  ): Promise<void> {
+    await this.remote(worktree, [
+      "push",
+      "origin",
+      remoteBranch === undefined ? branch : `HEAD:refs/heads/${remoteBranch}`,
+    ]);
   }
 
   async readReviewStandards(worktree: string, base: string) {

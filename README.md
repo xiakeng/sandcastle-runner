@@ -160,8 +160,10 @@ Passing Verified Handoffs are pushed with the configured code-host credential an
 non-draft Pull Requests using their AI-authored title and body unchanged. The Runner waits 30 seconds, then polls
 each Pull Request's required checks through GitHub CLI semantics. Empty, passing, or skipped
 required-check sets are CI-ready; pending checks are polled every 10 seconds; failed or cancelled
-checks start a fresh CI-repair Agent Attempt on that Worktree and branch. A Verified repair is pushed
-by the Runner and repeats the full 30-second discovery and readiness path on the same Pull Request.
+checks start a CI-repair Agent Attempt in a new Worktree based on the recorded stable remote branch
+head. A Verified repair uses a distinct local branch; before the explicit non-force push, the Runner
+rereads and records the stable head, pausing on any unexpected advance, then repeats the full
+30-second discovery and readiness path on the same Pull Request.
 Read failures use the common retry policy, and the configured required-check timeout enters Operator
 Pause.
 
@@ -172,7 +174,7 @@ two-attempt budget, nonempty input acknowledges trusted readiness, and `q` or EO
 
 Only an explicit merge conflict starts conflict repair; an advanced Target Branch or ordinary merge
 rejection does not. The Runner freshly fetches the Target Branch, starts a conflict-repair Agent
-Attempt on the existing Worktree and branch, independently verifies and pushes its commit, and
+Attempt in a new Worktree, independently verifies and guarded-pushes its commit, and
 confirms the fetched Target Branch commit is an ancestor before pushing. It then repeats
 required-check discovery on the original Pull Request before retrying its ordered merge.
 Conflict repair has its own two-consumed-attempt budget with the same reset, override, and

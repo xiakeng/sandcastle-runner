@@ -123,6 +123,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   const pullRequests: PullRequestObservation[] = [];
   const completedTickets: number[] = [];
   const reasons: string[] = [];
+  const publicationIntents = new Map<number, PublicationIntent>();
+  for (const intent of input.recoveredPublications ?? [])
+    publicationIntents.set(intent.ticket, intent);
   let hasBatchState = false;
   let maintenanceCredit = 0;
   const summary = (
@@ -218,6 +221,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     adminMerge: input.adminMerge,
     ticketClosure: input.ticketClosure,
     ciRepairBudgets: new Map(),
+    publicationIntents,
     handoffs: batchHandoffs,
     gitWorkspace: input.gitWorkspace,
     codeHost: input.codeHost,

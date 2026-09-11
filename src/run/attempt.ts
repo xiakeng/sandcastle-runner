@@ -43,6 +43,7 @@ export interface VerifiedHandoff {
   reviewCommits?: CommitEvidence[];
   reviewChecks?: AgentAttemptResult["checks"];
   reviewVerification?: "verified" | "operator_override";
+  remoteBranch?: string;
 }
 
 interface AgentOperationInput extends DiscoveryInput {

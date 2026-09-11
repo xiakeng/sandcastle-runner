@@ -207,7 +207,7 @@ export interface GitWorkspace {
     base: string;
     implementationHead: string;
   }): Promise<ReviewWorkspaceEvidence>;
-  push(worktree: string, branch: string): Promise<void>;
+  push(worktree: string, branch: string, remoteBranch?: string): Promise<void>;
 }
 
 export interface AgentAttemptResult {
