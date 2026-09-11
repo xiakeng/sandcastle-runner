@@ -265,6 +265,22 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     tag: string,
     schema: StandardSchema<T>,
   ): Promise<T> {
+    if (
+      input.resumePrompt !== undefined &&
+      this.sessions.get(input.logFile) === undefined
+    ) {
+      throw new AgentOutputError(
+        "Provider session unavailable for continuation",
+        {
+          errorCategory: "agent_attempt",
+          retryable: false,
+          provider: "codex",
+          model: input.model,
+          workingDirectory: input.worktree,
+          diagnosticLogPath: input.logFile,
+        },
+      );
+    }
     const controller = new AbortController();
     const relayAbort = () => controller.abort(input.signal.reason);
     if (input.signal.aborted) relayAbort();

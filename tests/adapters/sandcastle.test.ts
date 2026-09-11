@@ -337,3 +337,14 @@ test("SandcastleAgentExecutor resumes the captured session for continuation", as
     JSON.stringify(prompts[0]?.logging),
   );
 });
+
+test("SandcastleAgentExecutor reports an unavailable continuation session", async () => {
+  const executor = new SandcastleAgentExecutor(async () => {
+    throw new Error("provider must not be called");
+  });
+
+  await assert.rejects(
+    executor.execute({ ...input(), resumePrompt: "continue" }),
+    /Provider session unavailable for continuation/u,
+  );
+});
