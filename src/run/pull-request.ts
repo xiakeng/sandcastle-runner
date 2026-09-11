@@ -1025,7 +1025,7 @@ async function repairRequiredChecks(
       await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value,
+        attempt: budget.attempts.value + 1,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
@@ -1049,7 +1049,7 @@ async function repairRequiredChecks(
       await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value + 1,
+        attempt: budget.attempts.value,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,

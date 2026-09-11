@@ -336,9 +336,18 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
   const validBudgets =
     repairBudgets === undefined ||
     (repairBudgets !== null &&
+      typeof repairBudgets === "object" &&
       !Array.isArray(repairBudgets) &&
       validRepairState(repairBudgets.ci) &&
-      validRepairState(repairBudgets.conflict));
+      validRepairState(repairBudgets.conflict) &&
+      (repairBudgets.ci === undefined ||
+        (repairBudgets.ci as Record<string, unknown>).purpose === undefined ||
+        (repairBudgets.ci as Record<string, unknown>).purpose === "ci") &&
+      (repairBudgets.conflict === undefined ||
+        (repairBudgets.conflict as Record<string, unknown>).purpose ===
+          undefined ||
+        (repairBudgets.conflict as Record<string, unknown>).purpose ===
+          "conflict"));
   return (
     Number.isSafeInteger(publication.ticket) &&
     (publication.ticket as number) > 0 &&
