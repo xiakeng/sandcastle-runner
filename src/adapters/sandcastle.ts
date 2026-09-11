@@ -33,10 +33,7 @@ interface StandardSchema<T> {
 class AgentOutputError extends Error {
   readonly diagnostics: AgentDiagnostics;
 
-  constructor(
-    message: string,
-    diagnostics: AgentDiagnostics,
-  ) {
+  constructor(message: string, diagnostics: AgentDiagnostics) {
     super(message);
     this.diagnostics = diagnostics;
   }
