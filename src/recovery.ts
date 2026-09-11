@@ -361,6 +361,8 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
       (maintenance.ticket !== undefined &&
         maintenancePublications.length > 0 &&
         maintenance.ticket !== maintenancePublicationTicket) ||
+      (maintenance.phase === "scheduled" && maintenance.ticket !== undefined) ||
+      (maintenance.phase === "completed" && maintenance.barrier) ||
       (!maintenance.barrier && maintenance.phase !== "completed") ||
       (maintenance.phase === "completed" && maintenancePublications.length > 0)
     ) {

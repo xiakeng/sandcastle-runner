@@ -160,6 +160,20 @@ test("recovery snapshots reject malformed repair budgets", async () => {
     "utf8",
   );
   await assert.rejects(readRecoverySnapshot(filename), InvalidRecoverySnapshot);
+  for (const maintenance of [
+    { phase: "completed" as const, credit: 0, barrier: true, ticket: 10 },
+    { phase: "scheduled" as const, credit: 1, barrier: true, ticket: 10 },
+  ]) {
+    await writeFile(
+      filename,
+      JSON.stringify({ ...snapshot, maintenance }),
+      "utf8",
+    );
+    await assert.rejects(
+      readRecoverySnapshot(filename),
+      InvalidRecoverySnapshot,
+    );
+  }
 });
 
 test("recovery snapshots reject inconsistent unfinished maintenance state", async () => {
