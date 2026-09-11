@@ -346,7 +346,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   ) {
     hasBatchState = true;
     const completed = new Set(input.recoveredCompletedDeliveries ?? []);
-    const recovered = input.recoveredPublications!.filter(
+    const recovered = (input.recoveredPublications ?? []).filter(
       (intent) => !completed.has(intent.ticket),
     );
     batches.push(
