@@ -9,6 +9,7 @@ import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 
 import type {
   AgentAttemptResult,
+  AgentDiagnostics,
   AgentExecutor,
   CheckEvidence,
   CommitEvidence,
@@ -27,6 +28,15 @@ interface StandardSchema<T> {
     vendor: string;
     validate(value: unknown): { value: T } | { issues: { message: string }[] };
   };
+}
+
+class AgentOutputError extends Error {
+  readonly diagnostics: AgentDiagnostics;
+
+  constructor(message: string, diagnostics: AgentDiagnostics) {
+    super(message);
+    this.diagnostics = diagnostics;
+  }
 }
 
 function object(value: unknown, name: string): Record<string, unknown> {
@@ -244,6 +254,7 @@ function reviewResultSchema(): StandardSchema<ReviewAttemptResult> {
 export class SandcastleAgentExecutor implements AgentExecutor {
   private readonly run: SandcastleRun;
   private readonly sessions = new Map<string, string>();
+  private readonly replies = new Map<string, string>();
 
   constructor(run: SandcastleRun = runSandcastle as SandcastleRun) {
     this.run = run;
@@ -299,13 +310,45 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     const closingTags = result.stdout.split(`</${tag}>`).length - 1;
     const sessionId = result.iterations.at(-1)?.sessionId;
     if (sessionId) this.sessions.set(input.logFile, sessionId);
+    const assistantReply = result.stdout.trim() || undefined;
+    const previousAssistantReply = this.replies.get(input.logFile);
+    if (assistantReply) this.replies.set(input.logFile, assistantReply);
+    const diagnostics: AgentDiagnostics = {
+      ...(input.promptArgs.OPERATION === undefined
+        ? {}
+        : { operation: input.promptArgs.OPERATION.toString() }),
+      errorCategory: "agent_attempt",
+      attemptOrdinal: 1,
+      retryable: true,
+      ...(input.promptArgs.RUN_ID === undefined
+        ? {}
+        : { runId: input.promptArgs.RUN_ID.toString() }),
+      provider: "codex",
+      model: input.model,
+      workingDirectory: input.worktree,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(assistantReply === undefined ? {} : { assistantReply }),
+      ...(previousAssistantReply === undefined
+        ? {}
+        : { previousAssistantReply }),
+      diagnosticLogPath: input.logFile,
+      raw: result.stdout,
+    };
     if (
       (openingTags !== 1 || closingTags !== 1) &&
       result.iterations.length === 1
     )
-      throw new Error(
+      throw new AgentOutputError(
         "Agent Attempt output must contain exactly one result tag",
+        diagnostics,
       );
+    if (typeof result.output === "object" && result.output !== null) {
+      Object.defineProperty(result.output, "diagnostics", {
+        value: diagnostics,
+        enumerable: false,
+        configurable: true,
+      });
+    }
     return result.output as T;
   }
 

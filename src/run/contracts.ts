@@ -227,6 +227,25 @@ export interface AgentAttemptResult {
   blocker: string | null;
   pr_title?: string;
   pr_body?: string;
+  diagnostics?: AgentDiagnostics;
+}
+
+export interface AgentDiagnostics {
+  operation?: string;
+  errorCategory?: string;
+  error?: string;
+  attemptOrdinal?: number;
+  retryable?: boolean;
+  runId?: string;
+  agentAttemptId?: string;
+  provider?: string;
+  model?: string;
+  workingDirectory?: string;
+  sessionId?: string;
+  assistantReply?: string;
+  previousAssistantReply?: string;
+  diagnosticLogPath?: string;
+  raw?: string;
 }
 
 export interface AgentAttemptInput {
@@ -259,6 +278,7 @@ export interface ReviewAttemptResult {
   spec: ReviewVerdict;
   checks: CheckEvidence[];
   blocker: string | null;
+  diagnostics?: AgentDiagnostics;
 }
 
 export type ReviewAttemptInput = Omit<AgentAttemptInput, "pullRequestMetadata">;
