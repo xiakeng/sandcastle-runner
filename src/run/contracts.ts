@@ -174,6 +174,12 @@ export interface WorkspaceEvidence {
   clean: boolean;
 }
 
+export interface RegisteredWorktree {
+  worktree: string;
+  branch: string;
+  repository: string;
+}
+
 export interface SourceSnapshot {
   source: string;
   content: string;
@@ -208,6 +214,9 @@ export interface GitWorkspace {
     implementationHead: string;
   }): Promise<ReviewWorkspaceEvidence>;
   push(worktree: string, branch: string, remoteBranch?: string): Promise<void>;
+  listWorktrees?(checkout: string): Promise<RegisteredWorktree[]>;
+  removeWorktree?(checkout: string, worktree: string): Promise<void>;
+  deleteBranch?(checkout: string, branch: string): Promise<void>;
 }
 
 export interface AgentAttemptResult {

@@ -30,6 +30,7 @@ import type {
 } from "./run/contracts.ts";
 import { OperatorCancelled, supervisedAuditWrite } from "./run/operations.ts";
 import { runProject, type RunSummary } from "./run/run.ts";
+import type { CleanupRecord } from "./run/cleanup.ts";
 
 export interface CliDependencies {
   root: string;
@@ -219,6 +220,18 @@ export async function executeCli(
     await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
     currentSnapshot = nextSnapshot;
   };
+  const persistCleanup = async (ticket: number, record: CleanupRecord) => {
+    const nextSnapshot = {
+      ...currentSnapshot,
+      terminalCleanup: {
+        ...(currentSnapshot.terminalCleanup ?? {}),
+        [ticket]: record,
+      },
+      updatedAt: dependencies.clock.now().toISOString(),
+    };
+    await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
+    currentSnapshot = nextSnapshot;
+  };
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -277,6 +290,7 @@ export async function executeCli(
       agentExecutor,
       persistPublication,
       persistBatch,
+      persistCleanup,
       recoveredPublications: previous?.publications ?? [],
       ...(previous?.batch === undefined
         ? {}
@@ -284,6 +298,9 @@ export async function executeCli(
       ...(previous?.completedDeliveries === undefined
         ? {}
         : { recoveredCompletedDeliveries: previous.completedDeliveries }),
+      ...(previous?.terminalCleanup === undefined
+        ? {}
+        : { recoveredCleanup: previous.terminalCleanup }),
     });
   } catch (error) {
     summary = {

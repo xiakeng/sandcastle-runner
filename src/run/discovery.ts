@@ -26,6 +26,7 @@ export interface DiscoveryInput {
   hadChildren?: boolean;
   ticketBoundary?: TicketBoundary;
   ticketKind?: "Delivery Ticket" | "Maintenance Ticket";
+  cleanupTerminal?: (ticket: number) => Promise<void>;
 }
 
 export type DiscoveryResult =
@@ -432,6 +433,7 @@ export async function revalidateReservedDeliveryTicket(
   const result = await revalidateReserved(input, ticketNumber);
   if (result.outcome === "terminal") {
     await releaseTerminalReservation(input, result.ticket);
+    await input.cleanupTerminal?.(result.ticket.number);
     return {
       outcome: "stopped",
       reason: `Delivery Ticket ${ticketNumber} became terminal`,
@@ -520,7 +522,10 @@ export async function revalidateStandaloneMaintenanceTicket(
     clock: input.clock,
     operator: input.operator,
   });
-  if (ticket.state === "closed") return { outcome: "terminal", ticket };
+  if (ticket.state === "closed") {
+    await input.cleanupTerminal?.(ticket.number);
+    return { outcome: "terminal", ticket };
+  }
   const blockers = await readBlockers(input, ticketNumber, "maintenance");
   if (blockers.some(({ state }) => state === "open")) {
     return {

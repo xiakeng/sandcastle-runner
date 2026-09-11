@@ -217,6 +217,12 @@ records `operator_override` but never the raw override input.
 Each invocation creates a fresh UUID and diagnostic JSONL file under the Project's `logs/` directory.
 Logs are never read as recovery state, and a new invocation does not adopt or remove earlier artifacts.
 
+After a Delivery Ticket is confirmed `closed/completed`, the Run cleans only registered Git Worktrees
+under the configured `worktrees/` root that belong to the configured repository and use the exact
+`ticket-<number>` delimiter prefix. It force-removes those Worktrees and unique local branches while
+retaining adjacent Tickets, out-of-root paths, and remote delivery branches. Cleanup intent, success,
+or accepted residual artifacts remain in the Parent snapshot; failures pause and retry cleanup only.
+
 ## Verify
 
 ```sh

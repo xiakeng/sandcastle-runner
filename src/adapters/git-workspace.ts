@@ -2,7 +2,11 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { CommitEvidence, GitWorkspace } from "../run/contracts.ts";
+import type {
+  CommitEvidence,
+  GitWorkspace,
+  RegisteredWorktree,
+} from "../run/contracts.ts";
 
 export type GitCommand = (
   cwd: string,
@@ -58,6 +62,18 @@ function commits(value: string): CommitEvidence[] {
         message: line.slice(separator + 1),
       };
     });
+}
+
+function worktrees(value: string, repository: string): RegisteredWorktree[] {
+  const records = value.trim().split("\n\n").filter(Boolean);
+  return records.flatMap((record) => {
+    const worktree = /^worktree (.+)$/mu.exec(record)?.[1];
+    if (!worktree) return [];
+    const ref = /^branch refs\/heads\/(.+)$/mu.exec(record)?.[1];
+    return ref
+      ? [{ worktree: path.resolve(worktree), branch: ref, repository }]
+      : [];
+  });
 }
 
 export class LocalGitWorkspace implements GitWorkspace {
@@ -166,6 +182,34 @@ export class LocalGitWorkspace implements GitWorkspace {
       "origin",
       remoteBranch === undefined ? branch : `HEAD:refs/heads/${remoteBranch}`,
     ]);
+  }
+
+  async listWorktrees(checkout: string): Promise<RegisteredWorktree[]> {
+    const repository = path.resolve(
+      (
+        await this.command(checkout, ["rev-parse", "--show-toplevel"], {
+          timeout: 60_000,
+        })
+      ).trim(),
+    );
+    return worktrees(
+      await this.command(checkout, ["worktree", "list", "--porcelain"], {
+        timeout: 60_000,
+      }),
+      repository,
+    );
+  }
+
+  async removeWorktree(checkout: string, worktree: string): Promise<void> {
+    await this.command(checkout, ["worktree", "remove", "--force", worktree], {
+      timeout: 60_000,
+    });
+  }
+
+  async deleteBranch(checkout: string, branch: string): Promise<void> {
+    await this.command(checkout, ["branch", "-D", branch], {
+      timeout: 60_000,
+    });
   }
 
   async readReviewStandards(worktree: string, base: string) {
