@@ -238,29 +238,31 @@ export async function recoverPublishedHandoffs(
         restarted,
       };
     }
-    await input.persistPublication?.(intent.ticket, {
-      ...intent,
-      phase: "pushed",
-    });
-    const candidates = await externalRead({
-      action: () => input.codeHost.listPullRequests(input.repository),
-      parseOverride: pullRequestsOverride,
-      audit: input.audit,
-      event: input.event(
-        "publication_recovery",
-        "list_pull_requests",
-        `ticket:${intent.ticket}`,
-      ),
-      clock: input.clock,
-      operator: input.operator,
-    });
-    const reconciliation = reconcilePullRequest(intent, candidates);
     let pullRequest: PullRequestIdentity;
     let merged = false;
-    if (reconciliation.outcome === "restart") {
-      if (intent.phase === "pr_created") {
-        pullRequest = intent.pullRequest!;
-      } else {
+    if (intent.phase === "pr_created") {
+      pullRequest = intent.pullRequest!;
+    } else {
+      if (intent.phase === "pending_push") {
+        await input.persistPublication?.(intent.ticket, {
+          ...intent,
+          phase: "pushed",
+        });
+      }
+      const candidates = await externalRead({
+        action: () => input.codeHost.listPullRequests(input.repository),
+        parseOverride: pullRequestsOverride,
+        audit: input.audit,
+        event: input.event(
+          "publication_recovery",
+          "list_pull_requests",
+          `ticket:${intent.ticket}`,
+        ),
+        clock: input.clock,
+        operator: input.operator,
+      });
+      const reconciliation = reconcilePullRequest(intent, candidates);
+      if (reconciliation.outcome === "restart") {
         if ((await readRemoteHead()) !== intent.intendedHeadSha) {
           await pauseRecoveredPublication(
             input,
@@ -298,39 +300,19 @@ export async function recoverPublishedHandoffs(
             )(1),
           operator: input.operator,
         });
-      }
-    } else if (reconciliation.outcome === "adopt") {
-      if (
-        intent.pullRequest &&
-        (intent.pullRequest.number !== reconciliation.pullRequest.number ||
-          intent.pullRequest.url !== reconciliation.pullRequest.url)
-      ) {
-        await pauseRecoveredPublication(
-          input,
-          intent,
-          "persisted Pull Request identity does not match remote evidence",
-        );
+      } else if (reconciliation.outcome === "adopt") {
+        pullRequest = reconciliation.pullRequest;
+        merged = reconciliation.pullRequest.state === "merged";
+      } else {
+        await pauseRecoveredPublication(input, intent, reconciliation.reason);
         return {
           outcome: "incomplete",
-          reasons: [
-            "persisted Pull Request identity does not match remote evidence",
-          ],
+          reasons: [reconciliation.reason],
           pullRequests: published.map(({ observation }) => observation),
           published,
           restarted,
         };
       }
-      pullRequest = reconciliation.pullRequest;
-      merged = reconciliation.pullRequest.state === "merged";
-    } else {
-      await pauseRecoveredPublication(input, intent, reconciliation.reason);
-      return {
-        outcome: "incomplete",
-        reasons: [reconciliation.reason],
-        pullRequests: published.map(({ observation }) => observation),
-        published,
-        restarted,
-      };
     }
     await input.persistPublication?.(intent.ticket, {
       ...intent,

@@ -536,6 +536,15 @@ function publicationIntent(
       prBody: `Completes ticket ${ticket}.`,
       verification: "verified",
     },
+    ...(phase === "pr_created"
+      ? {
+          pullRequest: {
+            number: 4,
+            url: "https://example.test/pull/4",
+            headSha: head,
+          },
+        }
+      : {}),
   };
 }
 
@@ -812,6 +821,49 @@ test("publication recovery exhausts remote reads before Operator Pause", async (
   assert.equal(result.summary.outcome, "cancelled");
   assert.equal(remoteReads, 5);
   assert.equal(agentCalls, 0);
+});
+
+test("a recorded Pull Request resumes through ordinary reads without rediscovery", async () => {
+  const root = await createProject();
+  const intent = publicationIntent("pr_created");
+  await writePublicationState(root, [intent]);
+  const { tracker, tickets } = createAttemptTracker(9);
+  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.assignees = ["runner"];
+  let checkReads = 0;
+  let forbiddenCalls = 0;
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker,
+      codeHost: {
+        async getRemoteBranchHead() {
+          return intent.intendedHeadSha;
+        },
+        async listPullRequests() {
+          forbiddenCalls += 1;
+          throw new Error("must not rediscover a recorded Pull Request");
+        },
+        async createPullRequest() {
+          forbiddenCalls += 1;
+          throw new Error("must not replace a recorded Pull Request");
+        },
+        async getRequiredChecks() {
+          checkReads += 1;
+          throw new Error("recorded Pull Request unavailable");
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(checkReads, 5);
+  assert.equal(forbiddenCalls, 0);
 });
 
 test("an interrupted Batch retains every pending publication", async () => {
