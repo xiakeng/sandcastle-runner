@@ -1845,7 +1845,7 @@ test("blocked, dirty, or invalid review pauses before publication", async () => 
   }
 });
 
-test("review retry uses a fresh attempt and a trusted result still verifies the Worktree", async () => {
+test("review retry uses a fresh attempt and verifies the Worktree", async () => {
   const root = await createProject();
   const config = structuredClone(validConfig);
   config.workflow.review = true;
@@ -1886,6 +1886,16 @@ test("review retry uses a fresh attempt and a trusted result still verifies the 
         async executeReview(input) {
           gitConfigs.push(input.gitConfigGlobal);
           reviews += 1;
+          if (reviews === 2) {
+            return {
+              outcome: "passed",
+              summary: "review passed",
+              standards: { verdict: "passed", unresolved_findings: [] },
+              spec: { verdict: "passed", unresolved_findings: [] },
+              checks: [],
+              blocker: null,
+            };
+          }
           throw new Error("review failed after committing a fix");
         },
       },
@@ -1905,10 +1915,7 @@ test("review retry uses a fresh attempt and a trusted result still verifies the 
     fix,
   ]);
   assert.deepEqual(result.summary.handoffs?.[0]?.reviewCommits, [fix]);
-  assert.equal(
-    result.summary.handoffs?.[0]?.reviewVerification,
-    "operator_override",
-  );
+  assert.equal(result.summary.handoffs?.[0]?.reviewVerification, "verified");
 });
 
 test("a trusted review result cannot bypass the clean Worktree gate", async () => {
@@ -1959,7 +1966,7 @@ test("a trusted review result cannot bypass the clean Worktree gate", async () =
   assert.equal(result.summary.outcome, "cancelled");
   assert.equal(pauses, 2);
   assert.equal(pushes, 0);
-  assert.match(await readFile(result.logPath!, "utf8"), /invalid_override/u);
+  assert.match(await readFile(result.logPath!, "utf8"), /operator_pause/u);
 });
 
 test("disabled Documentation Maintenance allows delivery and Parent closeout without maintenance effects", async () => {
@@ -3835,7 +3842,7 @@ test("cancelling an exhausted conflict budget stops before republishing or remer
   );
 
   assert.equal(result.summary.outcome, "cancelled");
-  assert.equal(agentCalls, 3);
+  assert.equal(agentCalls, 2);
   assert.equal(pushes, 1);
   assert.equal(mergeRequests, 1);
 });
@@ -3991,15 +3998,13 @@ test("a trusted conflict-repair override repeats required-check discovery", asyn
   );
 
   assert.equal(result.summary.outcome, "succeeded");
-  assert.equal(agentCalls, 3);
+  assert.equal(agentCalls, 4);
   assert.equal(checkReads, 2);
   assert.equal(mergeRequests, 2);
-  assert.deepEqual(pauses, [
-    "Conflict repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge a trusted repair.",
-  ]);
+  assert.match(pauses[0]!, /Agent Attempt blocked/u);
 });
 
-test("blocked and no_change conflict repairs consume two attempts before an empty-input reset", async () => {
+test("blocked conflict repairs pause without consuming the repair budget", async () => {
   const root = await createProject();
   const { tracker } = createAttemptTracker(9);
   const implementation = {
@@ -4104,18 +4109,16 @@ test("blocked and no_change conflict repairs consume two attempts before an empt
       operator: {
         async pause(message) {
           pauses.push(message);
-          return "";
+          return "q";
         },
       },
     }),
   );
 
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.equal(agentCalls, 4);
-  assert.equal(mergeRequests, 2);
-  assert.deepEqual(pauses, [
-    "Conflict repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge a trusted repair.",
-  ]);
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(agentCalls, 2);
+  assert.equal(mergeRequests, 1);
+  assert.match(pauses[0]!, /Agent Attempt blocked/u);
   assert.ok(result.logPath);
   const attempts = (await readFile(result.logPath, "utf8"))
     .trim()
@@ -4128,7 +4131,7 @@ test("blocked and no_change conflict repairs consume two attempts before an empt
         event.result === "started",
     )
     .map((event) => event.attempt);
-  assert.deepEqual(attempts, [1, 2, 3]);
+  assert.deepEqual(attempts, [1]);
 });
 
 test("invalid conflict-repair handoffs do not consume the automatic budget", async () => {
@@ -5095,7 +5098,7 @@ test("Parent cancellation during a failed repair push prevents retry", async () 
   assert.deepEqual(ticket.assignees, ["runner"]);
 });
 
-test("blocked and no_change repairs consume the budget before an empty-input reset", async () => {
+test("blocked CI repairs pause without consuming the repair budget", async () => {
   const root = await createProject();
   const { tracker } = createAttemptTracker(9);
   const implementation = {
@@ -5209,18 +5212,16 @@ test("blocked and no_change repairs consume the budget before an empty-input res
       operator: {
         async pause(message) {
           pauses.push(message);
-          return "";
+          return "q";
         },
       },
     }),
   );
 
-  assert.equal(result.summary.outcome, "succeeded");
-  assert.equal(agentCalls, 4);
-  assert.equal(pushCalls, 2);
-  assert.deepEqual(pauses, [
-    "CI repair failed after two attempts. Enter to start a fresh repair budget, q to cancel, or acknowledge trusted readiness.",
-  ]);
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.equal(agentCalls, 2);
+  assert.equal(pushCalls, 1);
+  assert.match(pauses[0]!, /Agent Attempt blocked/u);
   assert.ok(result.logPath);
   const repairAttemptNumbers = (await readFile(result.logPath, "utf8"))
     .trim()
@@ -5233,7 +5234,7 @@ test("blocked and no_change repairs consume the budget before an empty-input res
         event.result === "started",
     )
     .map((event) => event.attempt);
-  assert.deepEqual(repairAttemptNumbers, [1, 2, 3]);
+  assert.deepEqual(repairAttemptNumbers, [1]);
 });
 
 test("repair execution and invalid handoff failures do not consume the budget", async () => {
@@ -5355,7 +5356,7 @@ test("repair execution and invalid handoff failures do not consume the budget", 
   );
 
   assert.equal(result.summary.outcome, "cancelled");
-  assert.equal(agentCalls, 5);
+  assert.equal(agentCalls, 4);
   assert.equal(pushCalls, 1);
   assert.deepEqual(
     pauses.map((message) =>
@@ -5403,15 +5404,7 @@ test("a trusted repair-budget override continues the existing Pull Request", asy
               pr_body: "Implementation body.",
             };
           }
-          return {
-            outcome: "blocked",
-            summary: "CI repair blocked",
-            commits: [],
-            checks: [],
-            blocker: "CI repair blocked",
-            pr_title: "unused",
-            pr_body: "unused",
-          };
+          throw new Error("CI repair failed");
         },
       },
       codeHost: {
@@ -5440,7 +5433,11 @@ test("a trusted repair-budget override continues the existing Pull Request", asy
       },
       operator: {
         async pause() {
-          return "trusted CI readiness";
+          return JSON.stringify({
+            outcome: "committed",
+            pr_title: "feat: trusted readiness",
+            pr_body: "Trusted readiness.",
+          });
         },
       },
     }),
@@ -5448,7 +5445,7 @@ test("a trusted repair-budget override continues the existing Pull Request", asy
 
   assert.equal(result.summary.outcome, "succeeded");
   assert.equal(agentCalls, 3);
-  assert.equal(pushes, 1);
+  assert.equal(pushes, 3);
   assert.ok(result.logPath);
   const audit = await readFile(result.logPath, "utf8");
   assert.match(audit, /operator_override/u);
@@ -5813,12 +5810,21 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
             );
           },
         },
+        operator: {
+          async pause() {
+            return "q";
+          },
+        },
       }),
     );
 
-    assert.equal(result.summary.outcome, "incomplete");
-    assert.equal(result.summary.handoffs?.length, 0);
-    assert.ok(result.summary.reasons.includes(scenario.expected));
+    assert.equal(
+      result.summary.outcome,
+      scenario.outcome === "blocked" ? "cancelled" : "incomplete",
+    );
+    assert.equal(result.summary.handoffs?.length ?? 0, 0);
+    if (scenario.outcome === "no_change")
+      assert.ok(result.summary.reasons.includes(scenario.expected));
     assert.equal(inspections, scenario.inspections);
   }
 });
@@ -6447,7 +6453,7 @@ test("final closeout credit triggers one clean no_change Maintenance Ticket with
   assert.equal(parentCloses, 1);
 });
 
-test("blocked Documentation Maintenance is preserved and retried by a later Run", async () => {
+test("blocked Documentation Maintenance pauses the live Run", async () => {
   const root = await createProject();
   const delivery = createCommittedDelivery(9);
   const maintenance: Ticket = {
@@ -6507,17 +6513,18 @@ test("blocked Documentation Maintenance is preserved and retried by a later Run"
           : delivery.agentExecutor.execute!(input);
       },
     },
+    operator: {
+      async pause() {
+        return "q";
+      },
+    },
   });
   const result = await executeCli(
     ["run", "--project", "demo", "--parent", "8"],
     dependencies,
   );
 
-  assert.equal(result.summary.outcome, "incomplete");
-  assert.match(
-    result.summary.reasons.join(" "),
-    /Maintenance Ticket 100 blocked/u,
-  );
+  assert.equal(result.summary.outcome, "cancelled");
   assert.equal(maintenance.state, "open");
   assert.equal(parentCloses, 0);
   assert.equal(maintenanceCreates, 1);
@@ -6525,17 +6532,12 @@ test("blocked Documentation Maintenance is preserved and retried by a later Run"
     recoveryPaths(path.join(root, "projects", "demo"), 8).snapshot,
   );
   assert.deepEqual(snapshot?.maintenance, {
-    phase: "blocked",
+    phase: "attempting",
     ticket: 100,
     credit: 1,
     barrier: true,
   });
 
-  const nextRun = await executeCli(
-    ["run", "--project", "demo", "--parent", "8"],
-    dependencies,
-  );
-  assert.equal(nextRun.summary.outcome, "incomplete");
   assert.equal(maintenanceCreates, 1);
   assert.equal(parentCloses, 0);
 });
