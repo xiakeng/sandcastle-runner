@@ -157,6 +157,15 @@ export interface RecoverySnapshot {
   updatedAt: string;
   batch?: number[];
   completedDeliveries?: number[];
+  terminalCleanup?: Record<
+    string,
+    {
+      status: "pending" | "cleaned" | "accepted";
+      candidates: string[];
+      residual?: string[];
+      error?: string;
+    }
+  >;
   publications?: PublicationIntent[];
   [key: string]: unknown;
 }
@@ -292,6 +301,40 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
         value.some((ticket) => !Number.isSafeInteger(ticket) || ticket <= 0))
     ) {
       throw new InvalidRecoverySnapshot(`snapshot has invalid ${field}`);
+    }
+  }
+  if (snapshot.terminalCleanup !== undefined) {
+    if (
+      typeof snapshot.terminalCleanup !== "object" ||
+      snapshot.terminalCleanup === null ||
+      Array.isArray(snapshot.terminalCleanup)
+    )
+      throw new InvalidRecoverySnapshot("snapshot has invalid terminalCleanup");
+    for (const [ticket, value] of Object.entries(snapshot.terminalCleanup)) {
+      if (!/^\d+$/u.test(ticket) || Number(ticket) <= 0)
+        throw new InvalidRecoverySnapshot(
+          "snapshot has invalid cleanup ticket",
+        );
+      const cleanup = value as Record<string, unknown>;
+      if (
+        typeof value !== "object" ||
+        value === null ||
+        Array.isArray(value) ||
+        !["pending", "cleaned", "accepted"].includes(String(cleanup.status)) ||
+        !Array.isArray(cleanup.candidates) ||
+        (cleanup.candidates as unknown[]).some(
+          (candidate) => typeof candidate !== "string",
+        ) ||
+        (cleanup.residual !== undefined &&
+          (!Array.isArray(cleanup.residual) ||
+            (cleanup.residual as unknown[]).some(
+              (residual) => typeof residual !== "string",
+            ))) ||
+        (cleanup.error !== undefined && typeof cleanup.error !== "string")
+      )
+        throw new InvalidRecoverySnapshot(
+          "snapshot has invalid cleanup record",
+        );
     }
   }
   return snapshot as RecoverySnapshot;

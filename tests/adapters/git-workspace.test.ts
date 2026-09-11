@@ -200,3 +200,40 @@ test("LocalGitWorkspace supplies scoped standards and post-review commit evidenc
     false,
   );
 });
+
+test("terminal cleanup matches only owned worktrees with a bounded ticket prefix", async () => {
+  const { matchingWorktrees } = await import("../../src/run/cleanup.ts");
+  const entries = [
+    {
+      worktree: "/project/worktrees/run/ticket-5",
+      branch: "ticket-5",
+      repository: "/repo",
+    },
+    {
+      worktree: "/project/worktrees/run/ticket-5-ci-1",
+      branch: "ticket-5-ci-1",
+      repository: "/repo",
+    },
+    {
+      worktree: "/project/worktrees/run/ticket-55",
+      branch: "ticket-55",
+      repository: "/repo",
+    },
+    {
+      worktree: "/elsewhere/ticket-5",
+      branch: "ticket-5",
+      repository: "/repo",
+    },
+    {
+      worktree: "/project/worktrees/run/ticket-5",
+      branch: "ticket-5",
+      repository: "/other",
+    },
+  ];
+  assert.deepEqual(
+    matchingWorktrees(entries, "/repo", "/project/worktrees", 5).map(
+      (entry) => entry.branch,
+    ),
+    ["ticket-5", "ticket-5-ci-1"],
+  );
+});

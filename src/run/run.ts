@@ -1,5 +1,6 @@
 import type { AuditLog } from "../audit.ts";
 import type { AgentConfig } from "../config.ts";
+import path from "node:path";
 import { implementReservedBatch, type VerifiedHandoff } from "./attempt.ts";
 import type {
   AgentExecutor,
@@ -27,6 +28,7 @@ import {
   type PullRequestObservation,
 } from "./pull-request.ts";
 import type { PublicationIntent } from "../recovery.ts";
+import { cleanupTicketWorktrees, type CleanupRecord } from "./cleanup.ts";
 
 export type RunOutcome =
   "succeeded" | "no_work" | "incomplete" | "cancelled" | "failed";
@@ -85,6 +87,8 @@ interface RunInput {
   recoveredPublications?: PublicationIntent[];
   recoveredBatch?: number[];
   recoveredCompletedDeliveries?: number[];
+  persistCleanup?: (ticket: number, record: CleanupRecord) => Promise<void>;
+  recoveredCleanup?: Record<string, CleanupRecord>;
 }
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -132,6 +136,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
   for (const intent of input.recoveredPublications ?? [])
     publicationIntents.set(intent.ticket, intent);
   let hasBatchState = false;
+  const cleanupRecords = new Map<number, CleanupRecord>();
+  for (const [ticket, record] of Object.entries(input.recoveredCleanup ?? {}))
+    cleanupRecords.set(Number(ticket), record);
   let maintenanceCredit = 0;
   const summary = (
     outcome: RunOutcome,
@@ -146,6 +153,68 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       ? {}
       : { batch: batches, handoffs, pullRequests, completedTickets }),
   });
+
+  const cleanupTerminal = async (ticket: number): Promise<void> => {
+    const previous = cleanupRecords.get(ticket);
+    if (previous?.status === "cleaned" || previous?.status === "accepted")
+      return;
+    for (;;) {
+      const pending: CleanupRecord = {
+        status: "pending",
+        candidates: previous?.candidates ?? [],
+        ...(previous?.error === undefined ? {} : { error: previous.error }),
+      };
+      await input.persistCleanup?.(ticket, pending);
+      cleanupRecords.set(ticket, pending);
+      try {
+        const result = await cleanupTicketWorktrees(
+          input.gitWorkspace,
+          input.checkout,
+          input.checkout,
+          path.join(input.projectDirectory, "worktrees"),
+          ticket,
+          async (candidates) => {
+            const discovered = { ...pending, candidates };
+            await input.persistCleanup?.(ticket, discovered);
+            cleanupRecords.set(ticket, discovered);
+          },
+          pending.candidates,
+        );
+        await input.persistCleanup?.(ticket, result);
+        cleanupRecords.set(ticket, result);
+        return;
+      } catch (error) {
+        const current = cleanupRecords.get(ticket) ?? pending;
+        const failed = {
+          ...current,
+          error: error instanceof Error ? error.message : "cleanup failed",
+        };
+        await input.persistCleanup?.(ticket, failed);
+        cleanupRecords.set(ticket, failed);
+        const response = await input.operator.pause(
+          `Terminal cleanup for Ticket ${ticket} failed. Enter to retry, q to cancel, or supply accepted residual artifacts.`,
+        );
+        if (response === null || response === "q")
+          throw new Error(`terminal cleanup pending for Ticket ${ticket}`, {
+            cause: error,
+          });
+        if (response !== "") {
+          const accepted = {
+            status: "accepted" as const,
+            candidates: failed.candidates,
+            residual: response.split("\n").filter(Boolean),
+          };
+          await input.persistCleanup?.(ticket, accepted);
+          cleanupRecords.set(ticket, accepted);
+          return;
+        }
+      }
+    }
+  };
+
+  for (const [ticket, record] of cleanupRecords) {
+    if (record.status === "pending") await cleanupTerminal(ticket);
+  }
 
   const maintain = async (): Promise<RunOutcome | null> => {
     if (!input.documentationAgent) {
@@ -182,6 +251,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       ...(input.persistPublication === undefined
         ? {}
         : { persistPublication: input.persistPublication }),
+      cleanupTerminal,
     }).catch((error: unknown) => {
       if (!(error instanceof OperatorCancelled)) throw error;
       return null;
@@ -194,6 +264,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     if (result.handoff) handoffs.push(result.handoff);
     if (result.pullRequest) pullRequests.push(result.pullRequest);
     if (result.outcome === "succeeded") {
+      if (result.ticket !== undefined) await cleanupTerminal(result.ticket);
       maintenanceCredit = 0;
       return null;
     }
@@ -231,6 +302,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     gitWorkspace: input.gitWorkspace,
     codeHost: input.codeHost,
     agentExecutor: input.agentExecutor,
+    cleanupTerminal,
     ...(input.persistPublication === undefined
       ? {}
       : { persistPublication: input.persistPublication }),
@@ -330,6 +402,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
         `Completed Delivery Ticket ${handoff.ticket} through Pull Request ${pullRequest.number}`,
       );
       try {
+        await cleanupTerminal(integration.ticket.number);
         await releaseTerminalReservation(publicationInputs, integration.ticket);
       } catch (error) {
         if (!(error instanceof OperatorCancelled)) throw error;
@@ -415,6 +488,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       runnerAccount: input.runnerAccount,
       reservationLabel: input.reservationLabel,
       hadChildren,
+      cleanupTerminal,
     });
     if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {

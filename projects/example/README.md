@@ -30,3 +30,8 @@ CI and conflict repairs use a new Worktree for every attempt. Repair budgets, la
 remote base, and pending push intent are retained in the Parent snapshot. A restart adopts only an
 exact intended head; an externally advanced stable branch pauses, and no repair uses a force-push or
 an old Worktree.
+After confirmed `closed/completed` or `closed/not_planned` closure for Delivery and standalone
+Maintenance Tickets, terminal cleanup removes only registered repository Worktrees under the
+configured root with the exact Ticket delimiter prefix, records cleanup evidence, and leaves remote
+delivery branches untouched. This intentionally risks abandoned unpublished local work; failed cleanup
+pauses for retry or a trusted residual override, and never repeats delivery or completion credit.
