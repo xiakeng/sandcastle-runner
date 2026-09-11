@@ -228,7 +228,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
           base: input.base,
         });
         commits.set(ticket, []);
-        operations.push(`worktree:create:${ticket}`);
+        operations.push(`worktree:create:${ticket}:${input.branch}`);
       },
       async inspect(input) {
         const worktree = worktrees.get(input.worktree)!;
@@ -253,7 +253,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
         branchHeads.set(publishedBranch, head);
         const pullRequest = branchPullRequests.get(publishedBranch);
         if (pullRequest) pullRequests.get(pullRequest)!.headSha = head;
-        operations.push(`push:${state.ticket}`);
+        operations.push(`push:${state.ticket}:${publishedBranch}`);
       },
     },
     agentExecutor: {
@@ -617,9 +617,17 @@ test(
     assert.equal(scenario.agentCalls.get("ci:101"), 1);
     assert.equal(scenario.agentCalls.get("conflict:101"), 1);
     assert.ok(
-      scenario.operations.filter((operation) =>
-        operation.startsWith("worktree:create:1"),
-      ).length >= 2,
+      scenario.operations.some(
+        (operation) =>
+          operation.startsWith("worktree:create:1:") &&
+          operation.includes("-ci-repair-"),
+      ),
+    );
+    assert.ok(
+      scenario.operations.some(
+        (operation) =>
+          operation.startsWith("push:1:") && operation.includes("/ticket-1"),
+      ),
     );
     assert.equal(
       scenario.operations.filter((operation) =>
