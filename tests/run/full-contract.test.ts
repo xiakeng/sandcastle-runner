@@ -128,7 +128,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
   };
   const sha = (value: string): string => value.repeat(40);
   const ticketForBranch = (branch: string): number =>
-    Number(/(?:ticket|maintenance)-(\d+)$/u.exec(branch)?.[1]);
+    Number(/(?:ticket|maintenance)-(\d+)(?:-|$)/u.exec(branch)?.[1]);
   const result = (input: AgentAttemptInput, commit: CommitEvidence) => ({
     outcome: "committed" as const,
     summary: `completed ${input.promptFile} for ${input.ticket}`,
@@ -228,7 +228,7 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
           base: input.base,
         });
         commits.set(ticket, []);
-        operations.push(`worktree:create:${ticket}`);
+        operations.push(`worktree:create:${ticket}:${input.branch}`);
       },
       async inspect(input) {
         const worktree = worktrees.get(input.worktree)!;
@@ -246,13 +246,14 @@ function createFiveTicketScenario(root: string, recovery: boolean) {
       async inspectReview() {
         return { clean: true, deliveryCommits: [], reviewCommits: [] };
       },
-      async push(worktree) {
+      async push(worktree, _branch, remoteBranch) {
         const state = worktrees.get(worktree)!;
         const head = commits.get(state.ticket)?.at(-1)?.sha ?? sha("4");
-        branchHeads.set(state.branch, head);
-        const pullRequest = branchPullRequests.get(state.branch);
+        const publishedBranch = remoteBranch ?? state.branch;
+        branchHeads.set(publishedBranch, head);
+        const pullRequest = branchPullRequests.get(publishedBranch);
         if (pullRequest) pullRequests.get(pullRequest)!.headSha = head;
-        operations.push(`push:${state.ticket}`);
+        operations.push(`push:${state.ticket}:${publishedBranch}`);
       },
     },
     agentExecutor: {
@@ -615,6 +616,19 @@ test(
     assert.equal(scenario.agentCalls.get("conflict:3"), 1);
     assert.equal(scenario.agentCalls.get("ci:101"), 1);
     assert.equal(scenario.agentCalls.get("conflict:101"), 1);
+    assert.ok(
+      scenario.operations.some(
+        (operation) =>
+          operation.startsWith("worktree:create:1:") &&
+          operation.includes("-ci-repair-"),
+      ),
+    );
+    assert.ok(
+      scenario.operations.some(
+        (operation) =>
+          operation.startsWith("push:1:") && operation.includes("/ticket-1"),
+      ),
+    );
     assert.equal(
       scenario.operations.filter((operation) =>
         operation.startsWith("checks:2:"),

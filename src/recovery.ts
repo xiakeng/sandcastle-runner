@@ -29,6 +29,17 @@ export interface PublicationIntent {
   reviewEvidence: unknown;
   completionEvidence: unknown;
   pullRequest?: { number: number; url: string; headSha: string };
+  repairState?: {
+    consumed: number;
+    generation: number;
+    attempt: number;
+    base?: string;
+    worktree?: string;
+    branch?: string;
+    attemptId?: string;
+    head?: string;
+    pendingPush?: string;
+  };
 }
 
 export type PublicationReconciliation =
@@ -263,6 +274,37 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
     unknown
   > | null;
   const pullRequest = publication.pullRequest as Record<string, unknown> | null;
+  const repairState = publication.repairState as
+    Record<string, unknown> | undefined;
+  const validRepairState =
+    repairState === undefined ||
+    (Number.isSafeInteger(repairState.consumed) &&
+      (repairState.consumed as number) >= 0 &&
+      Number.isSafeInteger(repairState.generation) &&
+      (repairState.generation as number) >= 0 &&
+      Number.isSafeInteger(repairState.attempt) &&
+      (repairState.attempt as number) >= 0 &&
+      (repairState.base === undefined ||
+        (typeof repairState.base === "string" && repairState.base !== "")) &&
+      (repairState.worktree === undefined ||
+        (typeof repairState.worktree === "string" &&
+          repairState.worktree !== "")) &&
+      (repairState.branch === undefined ||
+        (typeof repairState.branch === "string" &&
+          repairState.branch !== "")) &&
+      (repairState.attemptId === undefined ||
+        (typeof repairState.attemptId === "string" &&
+          repairState.attemptId !== "")) &&
+      (repairState.head === undefined ||
+        (typeof repairState.head === "string" && repairState.head !== "")) &&
+      (repairState.pendingPush === undefined ||
+        (typeof repairState.pendingPush === "string" &&
+          repairState.pendingPush !== "")) &&
+      (repairState.pendingPush === undefined ||
+        (repairState.base !== undefined &&
+          repairState.worktree !== undefined &&
+          repairState.branch !== undefined &&
+          repairState.attemptId !== undefined)));
   return (
     Number.isSafeInteger(publication.ticket) &&
     (publication.ticket as number) > 0 &&
@@ -284,6 +326,7 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
     Array.isArray(publication.implementationEvidence) &&
     Array.isArray(publication.reviewEvidence) &&
     completion !== null &&
+    validRepairState &&
     typeof completion === "object" &&
     completion.ticket === publication.ticket &&
     completion.branch === publication.stableBranch &&
@@ -297,7 +340,8 @@ function isPublicationIntent(value: unknown): value is PublicationIntent {
         Number.isSafeInteger(pullRequest.number) &&
         typeof pullRequest.url === "string" &&
         pullRequest.url !== "" &&
-        pullRequest.headSha === publication.intendedHeadSha))
+        pullRequest.headSha ===
+          (repairState?.head ?? publication.intendedHeadSha)))
   );
 }
 

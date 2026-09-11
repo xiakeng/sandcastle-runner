@@ -23,3 +23,7 @@ snapshot records each Ticket's stable remote branch, intended head, exact PR tit
 completion evidence. An absent pending branch restarts from a fresh base. A matching branch with no
 PR creates one only after a second head check; exact existing PR identity is adopted. Unexpected or
 ambiguous artifacts pause without force-push or metadata rewriting.
+CI and conflict repairs use a new Worktree for every attempt. Repair budgets, launch identity,
+remote base, and pending push intent are retained in the Parent snapshot. A restart adopts only an
+exact intended head; an externally advanced stable branch pauses, and no repair uses a force-push or
+an old Worktree.
