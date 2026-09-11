@@ -26,6 +26,7 @@ import {
   releaseTerminalTicket,
   revalidateActiveTicket,
   revalidateMergedTicket,
+  revalidateStandaloneMaintenanceTicket,
 } from "./discovery.ts";
 import {
   externalRead,
@@ -233,20 +234,6 @@ export async function recoverPublishedHandoffs(
   const restarted: number[] = [];
   for (const intent of intents) {
     const handoff = recoveredHandoff(intent);
-    if (intent.kind === "maintenance") {
-      await pauseRecoveredPublication(
-        input,
-        intent,
-        "unfinished Documentation Maintenance requires maintenance recovery",
-      );
-      return {
-        outcome: "incomplete",
-        reasons: ["unfinished Documentation Maintenance is still pending"],
-        pullRequests: [],
-        published: [],
-        restarted,
-      };
-    }
     if (intent.targetBranch !== input.targetBranch) {
       await pauseRecoveredPublication(
         input,
@@ -261,7 +248,30 @@ export async function recoverPublishedHandoffs(
         restarted,
       };
     }
-    const boundary = await revalidateActiveTicket(input, intent.ticket);
+    const boundary = await (intent.kind === "maintenance"
+      ? revalidateStandaloneMaintenanceTicket(input, intent.ticket)
+      : revalidateActiveTicket(input, intent.ticket));
+    if (boundary.outcome === "terminal") {
+      if (
+        intent.kind === "maintenance" &&
+        boundary.ticket.stateReason === "completed"
+      ) {
+        return {
+          outcome: "succeeded",
+          reasons: [`Maintenance Ticket ${intent.ticket} is already completed`],
+          pullRequests: [],
+          published: [],
+          restarted,
+        };
+      }
+      return {
+        outcome: "incomplete",
+        reasons: [`Maintenance Ticket ${intent.ticket} is terminal`],
+        pullRequests: [],
+        published: [],
+        restarted,
+      };
+    }
     if (boundary.outcome !== "ready")
       return { ...stopped(boundary, [], published), restarted };
     const readRemoteHead = () =>

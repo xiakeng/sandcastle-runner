@@ -200,14 +200,15 @@ final complete scan. Only an initially empty Parent returns `no_work`; if a Pare
 earlier in the Run and a later scan becomes empty, that scan proceeds through Parent closeout.
 
 When Documentation Maintenance is enabled, each confirmed Completed Delivery Ticket adds one
-Run-local documentation credit. After a successful Batch, three credits trigger a standalone
+durable documentation credit. After a successful Batch, three credits trigger a standalone
 `doc-maintain` Maintenance Ticket before the next rescan; a final closeout scan also triggers one when
-any credit remains. Maintenance uses a fresh Worktree, the documentation prompt/profile, and the
-ordinary PR, CI/repair, merge, and closure path. A clean `no_change` result closes the Maintenance
-Ticket directly. Successful maintenance resets the counter to zero; blocked or failed maintenance
-leaves its artifacts unresolved and stops the Run. When disabled, the Run creates no maintenance
-credit, label, ticket, Agent Attempt, Pull Request workflow, closeout barrier, summary reason, or audit
-event; Delivery Tickets and Parent closeout continue normally.
+any credit remains. The active occurrence, phase, barrier, and no-change closure are written to the
+Parent snapshot before their side effects. Startup retries that same Maintenance Ticket before
+Delivery discovery or Parent closeout, using the shared publication, repair, merge, and closure paths.
+A clean `no_change` result closes the Maintenance Ticket directly. Successful maintenance resets the
+counter to zero; blocked or failed maintenance remains a strict recoverable barrier. When disabled,
+the unfinished occurrence, active pointer, and pending credit are atomically forgotten without
+inspecting its artifacts; terminal records remain and re-enabling never rediscovers the forgotten work.
 
 External reads make at most five calls with five-second gaps. After exhaustion, or immediately after
 a failed write, the Run enters an Operator Pause: Enter retries, exactly `q` or EOF cancels, and any
