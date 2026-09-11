@@ -10,6 +10,8 @@ import {
   readRecoverySnapshot,
   recoveryPaths,
   writeRecoverySnapshot,
+  reconcileInitialPush,
+  reconcilePullRequest,
 } from "../src/recovery.ts";
 
 test("recovery snapshots replace atomically and reject malformed input unchanged", async () => {
@@ -45,4 +47,84 @@ test("a Parent lock is nonblocking and released explicitly", async () => {
   await first.release();
   const second = await ParentLock.acquire(filename, { runId: "three" });
   await second.release();
+});
+
+test("publication reconciliation adopts only exact remote evidence", () => {
+  const intent = {
+    ticket: 9,
+    kind: "delivery" as const,
+    originalBase: "base",
+    targetBranch: "main",
+    stableBranch: "ticket-9",
+    intendedHeadSha: "abc",
+    title: "fix",
+    body: "body",
+    phase: "pending_push" as const,
+    implementationEvidence: [],
+    reviewEvidence: [],
+    completionEvidence: {},
+  };
+  assert.equal(reconcileInitialPush(intent, null).outcome, "restart");
+  assert.equal(reconcileInitialPush(intent, "abc").outcome, "adopt");
+  assert.equal(reconcileInitialPush(intent, "def").outcome, "pause");
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "open",
+      },
+    ]).outcome,
+    "adopt",
+  );
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "def",
+        state: "open",
+      },
+    ]).outcome,
+    "pause",
+  );
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "other-branch",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "open",
+      },
+    ]).outcome,
+    "pause",
+  );
+  assert.equal(
+    reconcilePullRequest(intent, [
+      {
+        number: 4,
+        url: "https://example.test/pull/4",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "open",
+      },
+      {
+        number: 5,
+        url: "https://example.test/pull/5",
+        branch: "ticket-9",
+        targetBranch: "main",
+        headSha: "abc",
+        state: "closed",
+      },
+    ]).outcome,
+    "pause",
+  );
 });

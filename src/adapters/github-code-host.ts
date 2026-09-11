@@ -3,6 +3,7 @@ import type {
   MergeRequestResult,
   PullRequestIdentity,
   PullRequestState,
+  PullRequestRecord,
   RequiredCheck,
 } from "../run/contracts.ts";
 import { parseRequiredChecks } from "../run/contracts.ts";
@@ -56,6 +57,68 @@ export class GitHubCodeHost implements CodeHost {
         input.body,
       ]),
     );
+  }
+
+  async getRemoteBranchHead(
+    repository: string,
+    branch: string,
+  ): Promise<string | null> {
+    try {
+      const value = JSON.parse(
+        await this.client.request([
+          "api",
+          `repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`,
+        ]),
+      ) as { object?: { sha?: unknown } };
+      if (typeof value.object?.sha !== "string")
+        throw new Error("GitHub returned invalid remote branch head");
+      return value.object.sha;
+    } catch (error) {
+      if (error instanceof Error && /404|not found/iu.test(error.message))
+        return null;
+      throw error;
+    }
+  }
+
+  async listPullRequests(repository: string): Promise<PullRequestRecord[]> {
+    const value = JSON.parse(
+      await this.client.request([
+        "pr",
+        "list",
+        "--repo",
+        repository,
+        "--state",
+        "all",
+        "--json",
+        "number,url,headRefName,baseRefName,headRefOid,state",
+        "--limit",
+        "1000",
+      ]),
+    ) as unknown;
+    if (!Array.isArray(value))
+      throw new Error("GitHub returned invalid Pull Requests");
+    return value.map((item) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item))
+        throw new Error("GitHub returned invalid Pull Request");
+      const row = item as Record<string, unknown>;
+      if (
+        !Number.isSafeInteger(row.number) ||
+        typeof row.url !== "string" ||
+        typeof row.headRefName !== "string" ||
+        typeof row.baseRefName !== "string" ||
+        typeof row.headRefOid !== "string" ||
+        !["OPEN", "CLOSED", "MERGED"].includes(String(row.state))
+      )
+        throw new Error("GitHub returned invalid Pull Request");
+      return {
+        number: row.number as number,
+        url: row.url,
+        branch: row.headRefName,
+        targetBranch: row.baseRefName,
+        headSha: row.headRefOid,
+        state: String(row.state).toLowerCase() as PullRequestRecord["state"],
+      };
+    });
   }
 
   async getRequiredChecks(

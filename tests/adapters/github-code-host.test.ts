@@ -96,6 +96,53 @@ test("GitHubCodeHost creates a non-draft Pull Request and reads authoritative re
   ]);
 });
 
+test("GitHubCodeHost distinguishes an absent branch and maps all Pull Request states", async () => {
+  const responses = [
+    '{"object":{"sha":"abc123"}}',
+    JSON.stringify([
+      {
+        number: 4,
+        url: "https://github.com/owner/repo/pull/4",
+        headRefName: "ticket-9",
+        baseRefName: "main",
+        headRefOid: "abc123",
+        state: "MERGED",
+      },
+    ]),
+  ];
+  const codeHost = new GitHubCodeHost("configured-token", async () =>
+    responses.shift()!,
+  );
+
+  assert.equal(
+    await codeHost.getRemoteBranchHead("owner/repo", "ticket-9"),
+    "abc123",
+  );
+  assert.deepEqual(await codeHost.listPullRequests("owner/repo"), [
+    {
+      number: 4,
+      url: "https://github.com/owner/repo/pull/4",
+      branch: "ticket-9",
+      targetBranch: "main",
+      headSha: "abc123",
+      state: "merged",
+    },
+  ]);
+
+  const absent = new GitHubCodeHost("configured-token", async () => {
+    throw new Error("HTTP 404: Not Found");
+  });
+  assert.equal(await absent.getRemoteBranchHead("owner/repo", "missing"), null);
+  const malformed = new GitHubCodeHost(
+    "configured-token",
+    async () => '{"object":{}}',
+  );
+  await assert.rejects(
+    malformed.getRemoteBranchHead("owner/repo", "ticket-9"),
+    /invalid remote branch head/u,
+  );
+});
+
 test("GitHubCodeHost observes merge state and requests a head-matched admin squash merge", async () => {
   const calls: string[][] = [];
   const responses = [

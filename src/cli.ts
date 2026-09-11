@@ -18,6 +18,7 @@ import {
   recoveryPaths,
   writeRecoverySnapshot,
   type RecoverySnapshot,
+  type PublicationIntent,
 } from "./recovery.ts";
 import type {
   AgentExecutor,
@@ -151,7 +152,7 @@ export async function executeCli(
     dependencies.operator.write(JSON.stringify(summary));
     return { exitCode: 1, summary, logPath: null };
   }
-  const startedSnapshot: RecoverySnapshot = {
+  let currentSnapshot: RecoverySnapshot = {
     ...(previous ?? {}),
     schemaVersion: recoverySchemaVersion,
     project,
@@ -165,7 +166,7 @@ export async function executeCli(
     updatedAt: timestamp,
   };
   try {
-    await writeRecoverySnapshot(paths.snapshot, startedSnapshot);
+    await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
   } catch (error) {
     await lock.release();
     throw error;
@@ -179,6 +180,35 @@ export async function executeCli(
     dependencies.gitWorkspace ?? new LocalGitWorkspace(loaded.codeHostToken);
   const agentExecutor =
     dependencies.agentExecutor ?? new SandcastleAgentExecutor();
+  let publicationWrite = Promise.resolve();
+  const persistPublication = async (
+    ticket: number,
+    intent: PublicationIntent | null,
+  ) => {
+    const previousWrite = publicationWrite;
+    let releaseWrite!: () => void;
+    publicationWrite = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+    try {
+      const publications = (currentSnapshot.publications ?? []).filter(
+        (publication) => publication.ticket !== ticket,
+      );
+      if (intent !== null) publications.push(intent);
+      const next = { ...currentSnapshot };
+      if (publications.length === 0) delete next.publications;
+      else next.publications = publications;
+      const nextSnapshot = {
+        ...next,
+        updatedAt: dependencies.clock.now().toISOString(),
+      };
+      await writeRecoverySnapshot(paths.snapshot, nextSnapshot);
+      currentSnapshot = nextSnapshot;
+    } finally {
+      releaseWrite();
+    }
+  };
   let summary: RunSummary;
   try {
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
@@ -235,6 +265,8 @@ export async function executeCli(
       ticketClosure: loaded.config.ticketClosure,
       gitWorkspace,
       agentExecutor,
+      persistPublication,
+      recoveredPublications: previous?.publications ?? [],
     });
   } catch (error) {
     summary = {
@@ -253,7 +285,7 @@ export async function executeCli(
   }
   try {
     await writeRecoverySnapshot(paths.snapshot, {
-      ...startedSnapshot,
+      ...currentSnapshot,
       phase: summary.outcome,
       targetBranch: summary.targetBranch,
       updatedAt: dependencies.clock.now().toISOString(),

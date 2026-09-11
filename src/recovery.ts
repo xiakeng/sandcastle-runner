@@ -12,6 +12,107 @@ import path from "node:path";
 
 export const recoverySchemaVersion = 1;
 
+export type PublicationPhase =
+  "pending_push" | "pushed" | "pending_pr" | "pr_created";
+
+export interface PublicationIntent {
+  ticket: number;
+  kind: "delivery" | "maintenance";
+  originalBase: string;
+  targetBranch: string;
+  stableBranch: string;
+  intendedHeadSha: string;
+  title: string;
+  body: string;
+  phase: PublicationPhase;
+  implementationEvidence: unknown;
+  reviewEvidence: unknown;
+  completionEvidence: unknown;
+  pullRequest?: { number: number; url: string; headSha: string };
+}
+
+export type PublicationReconciliation =
+  | { outcome: "restart"; reason: string }
+  | { outcome: "adopt"; reason: string }
+  | { outcome: "pause"; reason: string };
+
+export type PullRequestReconciliation =
+  | { outcome: "restart"; reason: string }
+  | {
+      outcome: "adopt";
+      reason: string;
+      pullRequest: {
+        number: number;
+        url: string;
+        branch: string;
+        targetBranch: string;
+        headSha: string;
+        state: "open" | "closed" | "merged";
+      };
+    }
+  | { outcome: "pause"; reason: string };
+
+export function reconcileInitialPush(
+  intent: PublicationIntent,
+  remoteHead: string | null,
+): PublicationReconciliation {
+  if (remoteHead === null)
+    return { outcome: "restart", reason: "stable remote branch is absent" };
+  if (remoteHead === intent.intendedHeadSha)
+    return { outcome: "adopt", reason: "remote branch matches intended head" };
+  return {
+    outcome: "pause",
+    reason: `stable remote branch head ${remoteHead} does not match intended head ${intent.intendedHeadSha}`,
+  };
+}
+
+export function reconcilePullRequest(
+  intent: PublicationIntent,
+  candidates: {
+    number: number;
+    url: string;
+    branch: string;
+    targetBranch: string;
+    headSha: string;
+    state: "open" | "closed" | "merged";
+  }[],
+): PullRequestReconciliation {
+  const matches = candidates.filter(
+    (candidate) =>
+      candidate.branch === intent.stableBranch &&
+      candidate.targetBranch === intent.targetBranch &&
+      candidate.headSha === intent.intendedHeadSha,
+  );
+  const identityCandidates = candidates.filter(
+    (candidate) =>
+      candidate.branch === intent.stableBranch ||
+      (candidate.targetBranch === intent.targetBranch &&
+        candidate.headSha === intent.intendedHeadSha),
+  );
+  if (identityCandidates.length > matches.length)
+    return {
+      outcome: "pause",
+      reason: "Pull Request identity or head mismatch",
+    };
+  if (matches.length === 1)
+    return {
+      outcome: "adopt",
+      reason: `adopted Pull Request ${matches[0]!.number}`,
+      pullRequest: matches[0]!,
+    };
+  if (matches.length > 1)
+    return {
+      outcome: "pause",
+      reason: "multiple matching Pull Requests found",
+    };
+  if (identityCandidates.length > 0)
+    return {
+      outcome: "pause",
+      reason: "Pull Request identity or head mismatch",
+    };
+  return { outcome: "restart", reason: "no matching Pull Request exists" };
+}
+
 export interface RecoverySnapshot {
   schemaVersion: number;
   project: string;
@@ -23,6 +124,7 @@ export interface RecoverySnapshot {
   targetBranch: string | null;
   createdAt: string;
   updatedAt: string;
+  publications?: PublicationIntent[];
   [key: string]: unknown;
 }
 
@@ -133,7 +235,70 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
   ) {
     throw new InvalidRecoverySnapshot("snapshot has an invalid Target Branch");
   }
+  if (snapshot.publications !== undefined) {
+    if (!Array.isArray(snapshot.publications))
+      throw new InvalidRecoverySnapshot("snapshot has invalid publications");
+    const tickets = new Set<number>();
+    for (const publication of snapshot.publications) {
+      if (!isPublicationIntent(publication))
+        throw new InvalidRecoverySnapshot(
+          "snapshot has an incomplete publication",
+        );
+      if (tickets.has(publication.ticket))
+        throw new InvalidRecoverySnapshot(
+          "snapshot has duplicate publication tickets",
+        );
+      tickets.add(publication.ticket);
+    }
+  }
   return snapshot as RecoverySnapshot;
+}
+
+function isPublicationIntent(value: unknown): value is PublicationIntent {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const publication = value as Record<string, unknown>;
+  const completion = publication.completionEvidence as Record<
+    string,
+    unknown
+  > | null;
+  const pullRequest = publication.pullRequest as Record<string, unknown> | null;
+  return (
+    Number.isSafeInteger(publication.ticket) &&
+    (publication.ticket as number) > 0 &&
+    ["delivery", "maintenance"].includes(String(publication.kind)) &&
+    [
+      "originalBase",
+      "targetBranch",
+      "stableBranch",
+      "intendedHeadSha",
+      "title",
+      "body",
+    ].every(
+      (field) =>
+        typeof publication[field] === "string" && publication[field] !== "",
+    ) &&
+    ["pending_push", "pushed", "pending_pr", "pr_created"].includes(
+      String(publication.phase),
+    ) &&
+    Array.isArray(publication.implementationEvidence) &&
+    Array.isArray(publication.reviewEvidence) &&
+    completion !== null &&
+    typeof completion === "object" &&
+    completion.ticket === publication.ticket &&
+    completion.branch === publication.stableBranch &&
+    completion.base === publication.originalBase &&
+    completion.prTitle === publication.title &&
+    completion.prBody === publication.body &&
+    Array.isArray(completion.commits) &&
+    (publication.phase !== "pr_created" ||
+      (pullRequest !== null &&
+        typeof pullRequest === "object" &&
+        Number.isSafeInteger(pullRequest.number) &&
+        typeof pullRequest.url === "string" &&
+        pullRequest.url !== "" &&
+        pullRequest.headSha === publication.intendedHeadSha))
+  );
 }
 
 export async function readRecoverySnapshot(

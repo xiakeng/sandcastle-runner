@@ -267,17 +267,19 @@ export async function runDocumentationMaintenance(
     published.pullRequest,
     state,
   );
-  return integration.outcome === "completed"
-    ? {
-        outcome: "succeeded",
-        reasons: [`Completed Maintenance Ticket ${ticket.number}`],
-        ticket: ticket.number,
-        handoff: attempt.handoff,
-        pullRequest: published.observation,
-      }
-    : {
-        ...stopped(integration, ticket.number),
-        handoff: attempt.handoff,
-        pullRequest: published.observation,
-      };
+  if (integration.outcome === "completed") {
+    await input.persistPublication?.(ticket.number, null);
+    return {
+      outcome: "succeeded",
+      reasons: [`Completed Maintenance Ticket ${ticket.number}`],
+      ticket: ticket.number,
+      handoff: attempt.handoff,
+      pullRequest: published.observation,
+    };
+  }
+  return {
+    ...stopped(integration, ticket.number),
+    handoff: attempt.handoff,
+    pullRequest: published.observation,
+  };
 }

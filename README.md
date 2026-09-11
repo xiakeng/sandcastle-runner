@@ -29,8 +29,12 @@ lock is scoped to one Project/Parent pair, so different Parents may run concurre
 fails before workflow mutations. Snapshots are durable and atomically replaced, while diagnostic
 JSONL under `logs/` is never recovery input. A missing snapshot is a fresh Run; malformed or
 unsupported state pauses for operator repair. Unpublished local Worktrees are disposable on a
-restart, while later publication and cleanup phases retain their recorded identity for follow-up
-recovery.
+restart. Per-Ticket publication records retain the original Target Branch, stable remote delivery
+branch, intended head SHA, exact PR metadata, and review evidence. A pending push is adopted only when the
+remote branch head matches exactly; absence restarts from a newly fetched base, while an unexpected
+head pauses. When the branch exists, interrupted PR creation adopts one exact
+repository/branch/base/head match, creates only after authoritative PR absence and a second branch
+head check, and never rewrites existing PR metadata.
 
 `logs/` is created when the Run starts. The implementation and repair prompts must exist and be
 nonempty. The review and documentation prompts are required only when their workflow nodes are
