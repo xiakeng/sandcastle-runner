@@ -37,6 +37,7 @@ import {
 import {
   reconcileInitialPush,
   reconcilePullRequest,
+  type RepairState,
   type PublicationIntent,
 } from "../recovery.ts";
 
@@ -88,9 +89,12 @@ interface RepairBudget {
   attempts: { value: number };
 }
 
+type RepairPurpose = "ci" | "conflict";
+
 function repairIntent(
   input: PublicationInput,
   ticket: number,
+  purpose: RepairPurpose,
   repairState: Omit<
     NonNullable<PublicationIntent["repairState"]>,
     "pendingPush"
@@ -98,7 +102,11 @@ function repairIntent(
 ): Promise<void> {
   const current = input.publicationIntents?.get(ticket);
   if (!current || !input.persistPublication) return Promise.resolve();
-  repairState = { ...current.repairState, ...repairState };
+  repairState = {
+    ...(current.repairState?.purpose === purpose ? current.repairState : {}),
+    ...repairState,
+  };
+  repairState.purpose = purpose;
   if (repairState.pendingPush === null) delete repairState.pendingPush;
   const persistedRepairState = repairState as NonNullable<
     PublicationIntent["repairState"]
@@ -106,6 +114,10 @@ function repairIntent(
   const next = {
     ...current,
     repairState: persistedRepairState,
+    repairBudgets: {
+      ...current.repairBudgets,
+      [purpose]: persistedRepairState,
+    },
     ...(persistedRepairState.head === undefined ||
     current.pullRequest === undefined
       ? {}
@@ -118,6 +130,18 @@ function repairIntent(
   };
   input.publicationIntents?.set(ticket, next);
   return input.persistPublication(ticket, next);
+}
+
+function persistedBudget(
+  input: PublicationInput,
+  ticket: number,
+  purpose: RepairPurpose,
+): RepairState | undefined {
+  const intent = input.publicationIntents?.get(ticket);
+  return (
+    intent?.repairBudgets?.[purpose] ??
+    (intent?.repairState?.purpose === purpose ? intent.repairState : undefined)
+  );
 }
 
 export interface PublicationResult {
@@ -793,7 +817,12 @@ export async function integratePullRequest(
   | { outcome: "completed"; ticket: Ticket }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>
 > {
-  const conflictBudget = { consumed: 0, generation: 0, attempts: { value: 0 } };
+  const persistedConflict = persistedBudget(input, handoff.ticket, "conflict");
+  const conflictBudget = {
+    consumed: persistedConflict?.consumed ?? 0,
+    generation: persistedConflict?.generation ?? 0,
+    attempts: { value: persistedConflict?.attempt ?? 0 },
+  };
   let current = observed;
   for (;;) {
     const boundary = await revalidateActiveTicket(input, handoff.ticket);
@@ -971,7 +1000,7 @@ async function repairRequiredChecks(
     generation: 0,
     attempts: { value: 0 },
   };
-  const persisted = input.publicationIntents?.get(handoff.ticket)?.repairState;
+  const persisted = persistedBudget(input, handoff.ticket, "ci");
   if (persisted) {
     budget.consumed = persisted.consumed;
     budget.generation = persisted.generation;
@@ -993,14 +1022,15 @@ async function repairRequiredChecks(
           ? { ...handoff, base: pullRequestState.headSha }
           : preparedRepair;
       const attemptId = randomUUID();
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value,
+        attempt: budget.attempts.value + 1,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
         attemptId,
+        pendingPush: null,
       });
       const repair = await runCiRepairAttempt({
         ...input,
@@ -1016,7 +1046,7 @@ async function repairRequiredChecks(
       });
       if (repair.outcome === "boundary") return repair.boundary;
       budget.consumed += 1;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
@@ -1024,6 +1054,7 @@ async function repairRequiredChecks(
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
         attemptId,
+        pendingPush: null,
       });
       if (repair.outcome === "consumed") continue;
 
@@ -1035,7 +1066,7 @@ async function repairRequiredChecks(
       if (currentPullRequestState.merged)
         return { readiness: "ready", failedChecks: [] };
       if (repair.outcome === "handoff") {
-        await repairIntent(input, handoff.ticket, {
+        await repairIntent(input, handoff.ticket, "ci", {
           consumed: budget.consumed,
           generation: budget.generation,
           attempt: budget.attempts.value,
@@ -1056,7 +1087,7 @@ async function repairRequiredChecks(
         budget.consumed,
       );
       if (boundary) return boundary;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "ci", {
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
@@ -1090,7 +1121,7 @@ async function repairRequiredChecks(
     if (response === "") {
       budget.consumed = 0;
       budget.generation += 1;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "ci", {
         consumed: 0,
         generation: budget.generation,
         attempt: budget.attempts.value,
@@ -1160,14 +1191,16 @@ async function repairMergeConflict(
           ? { ...handoff, base: state.headSha }
           : preparedRepair;
       const attemptId = randomUUID();
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "conflict", {
         consumed: budget.consumed,
         generation: budget.generation,
-        attempt: budget.attempts.value,
+        attempt: budget.attempts.value + 1,
         base: repairHandoff.base,
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
         attemptId,
+        targetBase,
+        pendingPush: null,
       });
       const repair = await runConflictRepairAttempt({
         ...input,
@@ -1184,7 +1217,7 @@ async function repairMergeConflict(
       });
       if (repair.outcome === "boundary") return repair.boundary;
       budget.consumed += 1;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "conflict", {
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
@@ -1192,6 +1225,8 @@ async function repairMergeConflict(
         worktree: repairHandoff.worktree,
         branch: repairHandoff.branch,
         attemptId,
+        targetBase,
+        pendingPush: null,
       });
       if (repair.outcome === "consumed") continue;
 
@@ -1201,6 +1236,21 @@ async function repairMergeConflict(
         "conflict_repair",
       );
       if (current.merged) return { state: current };
+      if (repair.outcome === "handoff") {
+        await repairIntent(input, handoff.ticket, "conflict", {
+          consumed: budget.consumed,
+          generation: budget.generation,
+          attempt: budget.attempts.value,
+          base: repair.handoff.base,
+          worktree: repair.handoff.worktree,
+          branch: repair.handoff.branch,
+          attemptId,
+          targetBase,
+          ...(repair.handoff.commits.at(-1)?.sha === undefined
+            ? {}
+            : { pendingPush: repair.handoff.commits.at(-1)!.sha }),
+        });
+      }
       const boundary = await pushRepair(
         input,
         repair.handoff,
@@ -1209,13 +1259,14 @@ async function repairMergeConflict(
         budget.consumed,
       );
       if (boundary) return boundary;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "conflict", {
         consumed: budget.consumed,
         generation: budget.generation,
         attempt: budget.attempts.value,
         ...(repair.handoff.commits.at(-1)?.sha === undefined
           ? {}
           : { head: repair.handoff.commits.at(-1)!.sha }),
+        targetBase,
         pendingPush: null,
       });
       let readiness = await observeRequiredChecks(
@@ -1258,7 +1309,7 @@ async function repairMergeConflict(
     if (response === "") {
       budget.consumed = 0;
       budget.generation += 1;
-      await repairIntent(input, handoff.ticket, {
+      await repairIntent(input, handoff.ticket, "conflict", {
         consumed: 0,
         generation: budget.generation,
         attempt: budget.attempts.value,
