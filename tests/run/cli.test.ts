@@ -639,7 +639,10 @@ test("restart adopts an exact published Pull Request without rerunning implement
   assert.equal(forbiddenCalls, 0);
   const recovered = await readRecoverySnapshot(snapshot);
   assert.deepEqual(recovered?.completedDeliveries, [9]);
-  assert.deepEqual(recovered?.publications?.map(({ ticket }) => ticket), [9]);
+  assert.deepEqual(
+    recovered?.publications?.map(({ ticket }) => ticket),
+    [9],
+  );
 });
 
 test("restart abandons an absent pending push and creates fresh work", async () => {
