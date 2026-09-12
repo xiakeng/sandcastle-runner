@@ -102,11 +102,38 @@ function nonempty(value: unknown, name: string): string {
 function formatStructuredCause(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   if (typeof cause === "string") return cause;
+  if (Array.isArray(cause)) return cause.map(formatStructuredCause).join("; ");
+  if (
+    typeof cause === "object" &&
+    cause !== null &&
+    "message" in cause &&
+    typeof cause.message === "string"
+  )
+    return cause.message;
   try {
-    return JSON.stringify(cause);
+    return JSON.stringify(cause) ?? String(cause);
   } catch {
     return String(cause);
   }
+}
+
+function assertExactFields(
+  input: Record<string, unknown>,
+  expected: string[],
+  name: string,
+): void {
+  const missing = expected.filter((field) => !(field in input));
+  const unexpected = Object.keys(input).filter(
+    (field) => !expected.includes(field),
+  );
+  if (missing.length === 0 && unexpected.length === 0) return;
+  const details = [
+    ...(missing.length === 0 ? [] : [`missing fields: ${missing.join(", ")}`]),
+    ...(unexpected.length === 0
+      ? []
+      : [`unexpected fields: ${unexpected.join(", ")}`]),
+  ];
+  throw new Error(`${name} has invalid fields; ${details.join("; ")}`);
 }
 
 function parseCommit(value: unknown): CommitEvidence {
@@ -152,12 +179,7 @@ function parseAttemptResult(
     "summary",
     ...(requiresPullRequestMetadata ? ["pr_body", "pr_title"] : []),
   ];
-  if (
-    Object.keys(input).length !== expected.length ||
-    expected.some((field) => !(field in input))
-  ) {
-    throw new Error("Agent Attempt Result has unexpected fields");
-  }
+  assertExactFields(input, expected, "Agent Attempt Result");
   if (
     input.outcome !== "committed" &&
     input.outcome !== "no_change" &&
@@ -248,12 +270,7 @@ function parseReviewResult(value: unknown): ReviewAttemptResult {
     "standards",
     "summary",
   ];
-  if (
-    Object.keys(input).length !== expected.length ||
-    expected.some((field) => !(field in input))
-  ) {
-    throw new Error("Review Attempt Result has unexpected fields");
-  }
+  assertExactFields(input, expected, "Review Attempt Result");
   if (input.outcome !== "passed" && input.outcome !== "blocked")
     throw new Error("review outcome is unsupported");
   if (!Array.isArray(input.checks)) throw new Error("checks must be an array");
@@ -384,12 +401,27 @@ export class SandcastleAgentExecutor implements AgentExecutor {
   ): Promise<T> {
     let resumeSession = this.sessions.get(input.logFile);
     let prompt = input.resumePrompt;
+    const pullRequestMetadata =
+      "pullRequestMetadata" in input
+        ? (input as AgentAttemptInput).pullRequestMetadata
+        : "ignored";
+    const outputPrompt = replacePromptPlaceholders(
+      await readFile(
+        join(
+          runnerPromptDirectory,
+          tag === "review_attempt_result"
+            ? "review-attempt-output.md"
+            : "agent-attempt-output.md",
+        ),
+        "utf8",
+      ),
+      {
+        PULL_REQUEST_METADATA_RULE:
+          pullRequestMetadataRule(pullRequestMetadata),
+      },
+    ).trim();
     if (prompt === undefined) {
       resumeSession ??= await this.prepareSession(input);
-      const pullRequestMetadata =
-        "pullRequestMetadata" in input
-          ? (input as AgentAttemptInput).pullRequestMetadata
-          : "ignored";
       const template = replacePromptPlaceholders(
         await readFile(input.promptFile, "utf8"),
         {
@@ -398,22 +430,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
           TARGET_BRANCH: String(input.targetBranch),
         },
       );
-      const outputPrompt = await readFile(
-        join(
-          runnerPromptDirectory,
-          tag === "review_attempt_result"
-            ? "review-attempt-output.md"
-            : "agent-attempt-output.md",
-        ),
-        "utf8",
-      );
-      prompt = `${template.trimEnd()}\n\n${replacePromptPlaceholders(
-        outputPrompt,
-        {
-          PULL_REQUEST_METADATA_RULE:
-            pullRequestMetadataRule(pullRequestMetadata),
-        },
-      ).trim()}`;
+      prompt = `${template.trimEnd()}\n\n${outputPrompt}`;
     }
     if (prompt !== undefined && resumeSession === undefined) {
       throw new AgentOutputError(
@@ -471,7 +488,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
             );
             if (structuredRetryRemaining > 0 && error.sessionId !== undefined) {
               structuredRetryRemaining -= 1;
-              prompt = `The previous structured output failed validation. Re-emit exactly one corrected result using the required tag. Validation details: ${formatStructuredCause(error.cause)}`;
+              prompt = [
+                `The previous structured output failed validation. Specific validation errors: ${formatStructuredCause(error.cause)}`,
+                "Re-emit exactly one corrected result using the complete output protocol below.",
+                outputPrompt,
+              ].join("\n\n");
               resumeSession = error.sessionId;
               await this.logStatus(
                 input.logFile,

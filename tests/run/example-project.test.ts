@@ -103,4 +103,13 @@ test("Runner-owned output protocols use the configured tags and fields", async (
         `${filename} ${field}`,
       );
   }
+  const agentPrompt = await readFile(
+    path.join(root, "src", "prompts", "agent-attempt-output.md"),
+    "utf8",
+  );
+  assert.doesNotMatch(agentPrompt, /When Pull Request metadata is required/u);
+  assert.match(
+    agentPrompt,
+    /If present, `pr_title` and `pr_body` must each be non-empty JSON strings\./u,
+  );
 });

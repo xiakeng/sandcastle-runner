@@ -24,10 +24,7 @@ Field requirements:
   `passed`, `failed`, or `not_run`, and non-empty `details`.
 - `blocker` must be `null` unless `outcome` is `blocked`; a blocked result must
   provide a non-empty blocker string.
-- When Pull Request metadata is required, include exactly two additional
-  top-level string fields: `pr_title` and `pr_body`. When it is not required,
-  omit both. Do not add any other fields, nesting, Markdown, comments, or prose
-  outside the single result tag. The tag content must be valid JSON.
+- If present, `pr_title` and `pr_body` must each be non-empty JSON strings.
 
 Field definitions:
 

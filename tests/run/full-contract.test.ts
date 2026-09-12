@@ -369,7 +369,7 @@ function createFiveTicketScenario(
               }
               correctionSessions += 1;
               const definition = object(options.output);
-              assert.equal(definition.maxRetries, 1);
+              assert.equal(definition.maxRetries, 0);
               const standard = object(object(definition.schema)["~standard"]);
               const validate = standard.validate;
               if (typeof validate !== "function")
