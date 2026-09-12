@@ -68,7 +68,10 @@ const logStatus: StatusLogger = (logFile, message) =>
   appendFile(logFile, `${message}\n`, "utf8");
 
 function isAgentProcessFailure(error: unknown): boolean {
-  return error instanceof Error && / exited with code \d+/u.test(error.message);
+  return (
+    error instanceof Error &&
+    /^codex exited with code \d+(?::|$)/u.test(error.message)
+  );
 }
 
 function pullRequestMetadataRule(
@@ -353,14 +356,54 @@ export class SandcastleAgentExecutor implements AgentExecutor {
   private async waitForContinuation(
     input: ReviewAttemptInput,
     recoveryAttempt: number,
-  ): Promise<number> {
+    timeoutSignal: AbortSignal,
+  ): Promise<number | undefined> {
     const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
     await this.logStatus(
       input.logFile,
       `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
     );
-    await this.wait(backoff, input.signal);
-    return recoveryAttempt + 1;
+    let resolveTimeout!: () => void;
+    const timeout = new Promise<void>((resolve) => {
+      resolveTimeout = () => resolve();
+      if (timeoutSignal.aborted) resolve();
+      else
+        timeoutSignal.addEventListener("abort", resolveTimeout, {
+          once: true,
+        });
+    });
+    try {
+      await Promise.race([this.wait(backoff, input.signal), timeout]);
+    } finally {
+      timeoutSignal.removeEventListener("abort", resolveTimeout);
+    }
+    return timeoutSignal.aborted ? undefined : recoveryAttempt + 1;
+  }
+
+  private agentFailure(
+    input: ReviewAttemptInput,
+    resumeSession: string | undefined,
+    error: unknown,
+  ): AgentOutputError {
+    const diagnostics: AgentDiagnostics = {
+      errorCategory: "agent_attempt",
+      attemptOrdinal: 1,
+      retryable: input.resumePrompt !== undefined ? false : true,
+      provider: "codex",
+      model: input.model,
+      workingDirectory: input.worktree,
+      ...(resumeSession === undefined ? {} : { sessionId: resumeSession }),
+      diagnosticLogPath: input.logFile,
+      raw: error instanceof Error ? error.message : String(error),
+    };
+    return new AgentOutputError(
+      input.resumePrompt !== undefined
+        ? "Provider session unavailable or unrecoverable for continuation"
+        : error instanceof Error
+          ? error.message
+          : String(error),
+      diagnostics,
+    );
   }
 
   private async prepareSession(input: ReviewAttemptInput): Promise<string> {
@@ -545,35 +588,23 @@ export class SandcastleAgentExecutor implements AgentExecutor {
             resumeSession !== undefined &&
             recoveryAttempt < 4
           ) {
-            recoveryAttempt = await this.waitForContinuation(
+            const nextRecoveryAttempt = await this.waitForContinuation(
               input,
               recoveryAttempt,
+              controller.signal,
             );
+            if (nextRecoveryAttempt === undefined)
+              throw this.agentFailure(
+                input,
+                resumeSession,
+                controller.signal.reason ?? error,
+              );
+            recoveryAttempt = nextRecoveryAttempt;
             prompt = "continue";
             resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
             continue;
           }
-          const diagnostics: AgentDiagnostics = {
-            errorCategory: "agent_attempt",
-            attemptOrdinal: 1,
-            retryable: input.resumePrompt !== undefined ? false : true,
-            provider: "codex",
-            model: input.model,
-            workingDirectory: input.worktree,
-            ...(resumeSession === undefined
-              ? {}
-              : { sessionId: resumeSession }),
-            diagnosticLogPath: input.logFile,
-            raw: error instanceof Error ? error.message : String(error),
-          };
-          throw new AgentOutputError(
-            input.resumePrompt !== undefined
-              ? "Provider session unavailable or unrecoverable for continuation"
-              : error instanceof Error
-                ? error.message
-                : String(error),
-            diagnostics,
-          );
+          throw this.agentFailure(input, resumeSession, error);
         }
         const sessionId = result.iterations.at(-1)?.sessionId;
         if (sessionId) this.sessions.set(input.logFile, sessionId);
@@ -581,10 +612,18 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         const closingTags = result.stdout.split(`</${tag}>`).length - 1;
         if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
           break;
-        recoveryAttempt = await this.waitForContinuation(
+        const nextRecoveryAttempt = await this.waitForContinuation(
           input,
           recoveryAttempt,
+          controller.signal,
         );
+        if (nextRecoveryAttempt === undefined)
+          throw this.agentFailure(
+            input,
+            resumeSession,
+            controller.signal.reason,
+          );
+        recoveryAttempt = nextRecoveryAttempt;
         prompt = "continue";
         resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
       }
