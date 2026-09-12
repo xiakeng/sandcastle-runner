@@ -72,6 +72,7 @@ interface RunInput {
   documentationMaintenance: boolean;
   documentationPrompt: string;
   documentationAgent?: AgentConfig;
+  maintenanceTicket: { title: string; body: string; label: string };
   agentTimeoutMs: number;
   requiredChecksTimeoutMs: number;
   mergeQueueTimeoutMs: number;
@@ -262,6 +263,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       projectDirectory: input.projectDirectory,
       documentationPrompt: input.documentationPrompt,
       documentationAgent: input.documentationAgent,
+      maintenanceTicket: input.maintenanceTicket,
       recovery,
       ...(input.persistMaintenance === undefined
         ? {}

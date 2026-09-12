@@ -507,7 +507,6 @@ async function runAgentOperation(
   for (;;) {
     await boundary(input, operation.ticket);
     const resumePrompt = continuationPrompt;
-    // eslint-disable-next-line no-useless-assignment -- consume the one-shot continuation
     continuationPrompt = undefined;
     if (resumePrompt === undefined) {
       operation.attemptCounter.value += 1;
@@ -772,7 +771,6 @@ async function implementTicket(
       promptArgs: {
         TICKET_NUMBER: ticket,
         TICKET_REFERENCE: `${input.repository}#${ticket}`,
-        IMPLEMENT_SKILL: "$implement",
         WORKTREE_PATH: worktree,
         BASE_SHA: base,
         PROJECT_TARGET_BRANCH: input.targetBranch,
@@ -823,7 +821,6 @@ export async function runCiRepairAttempt(
       promptArgs: {
         TICKET_NUMBER: input.handoff.ticket,
         TICKET_REFERENCE: `${input.repository}#${input.handoff.ticket}`,
-        IMPLEMENT_SKILL: "$implement",
         WORKTREE_PATH: input.handoff.worktree,
         BASE_SHA: input.base,
         PROJECT_TARGET_BRANCH: input.targetBranch,
@@ -894,7 +891,6 @@ export async function runConflictRepairAttempt(
       promptArgs: {
         TICKET_NUMBER: input.handoff.ticket,
         TICKET_REFERENCE: `${input.repository}#${input.handoff.ticket}`,
-        IMPLEMENT_SKILL: "$implement",
         WORKTREE_PATH: input.handoff.worktree,
         BASE_SHA: input.base,
         PROJECT_TARGET_BRANCH: input.targetBranch,

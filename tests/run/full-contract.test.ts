@@ -60,6 +60,11 @@ async function createProject(recovery: boolean): Promise<string> {
       mergeQueueMinutes: 60,
     },
     ticketClosure: "runner",
+    maintenanceTicket: {
+      title: "Maintain project documentation",
+      body: "Run the configured documentation-maintenance prompt for the current Target Branch.",
+      label: "doc-maintain",
+    },
   };
   await writeFile(path.join(project, "config.json"), JSON.stringify(config));
   await Promise.all(

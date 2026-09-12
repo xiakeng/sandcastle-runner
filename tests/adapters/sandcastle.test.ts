@@ -36,7 +36,6 @@ function input() {
     promptFile: "/runner/projects/demo/prompts/implement.md",
     promptArgs: {
       TICKET_NUMBER: 9,
-      IMPLEMENT_SKILL: "$implement",
       WORKTREE_PATH: "/repo/worktree",
       BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       PROJECT_TARGET_BRANCH: "main",

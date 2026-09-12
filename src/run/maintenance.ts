@@ -23,15 +23,11 @@ import {
 } from "./pull-request.ts";
 import type { MaintenanceState, PublicationIntent } from "../recovery.ts";
 
-const LABEL = "doc-maintain";
-const TITLE = "Maintain project documentation";
-const BODY =
-  "Run the configured documentation-maintenance prompt for the current Target Branch.";
-
 interface MaintenanceInput extends Omit<
   PublicationInput,
   "ciRepairBudgets" | "handoffs" | "ticketBoundary" | "ticketKind"
 > {
+  maintenanceTicket: { title: string; body: string; label: string };
   documentationPrompt: string;
   documentationAgent: AgentConfig;
   recovery?: MaintenanceState;
@@ -59,7 +55,7 @@ function labelPage(value: string): LabelPage {
   return { labels: parsed.labels, nextPage: parsed.nextPage ?? null };
 }
 
-function createdTicket(value: string): Ticket {
+function createdTicket(value: string, label: string): Ticket {
   const parsed = JSON.parse(value) as { number?: unknown };
   if (!Number.isSafeInteger(parsed.number) || Number(parsed.number) <= 0) {
     throw new Error("override has no Maintenance Ticket number");
@@ -69,7 +65,7 @@ function createdTicket(value: string): Ticket {
     state: "open",
     stateReason: null,
     assignees: [],
-    labels: [LABEL],
+    labels: [label],
   };
 }
 
@@ -101,13 +97,22 @@ async function ensureLabel(input: MaintenanceInput): Promise<void> {
       clock: input.clock,
       operator: input.operator,
     });
-    if (labels.labels.includes(LABEL)) return;
+    if (labels.labels.includes(input.maintenanceTicket.label)) return;
     page = labels.nextPage;
   }
   await workflowWrite({
-    action: () => input.tracker.createLabel(input.repository, LABEL),
+    action: () =>
+      input.tracker.createLabel(
+        input.repository,
+        input.maintenanceTicket.label,
+      ),
     audit: input.audit,
-    event: () => input.event("maintenance", "create_label", LABEL)(1),
+    event: () =>
+      input.event(
+        "maintenance",
+        "create_label",
+        input.maintenanceTicket.label,
+      )(1),
     operator: input.operator,
   });
 }
@@ -206,7 +211,7 @@ export async function runDocumentationMaintenance(
       state: "open",
       stateReason: null,
       assignees: [],
-      labels: [LABEL],
+      labels: [input.maintenanceTicket.label],
     };
   } else {
     await ensureLabel(input);
@@ -221,19 +226,25 @@ export async function runDocumentationMaintenance(
       action: () =>
         input.tracker.createMaintenanceTicket(
           input.repository,
-          TITLE,
-          BODY,
-          LABEL,
+          input.maintenanceTicket.title,
+          input.maintenanceTicket.body,
+          input.maintenanceTicket.label,
         ),
-      parseOverride: createdTicket,
+      parseOverride: (value) =>
+        createdTicket(value, input.maintenanceTicket.label),
       audit: input.audit,
-      event: () => input.event("maintenance", "create_ticket", LABEL)(1),
+      event: () =>
+        input.event(
+          "maintenance",
+          "create_ticket",
+          input.maintenanceTicket.label,
+        )(1),
       operator: input.operator,
     });
     if (
       ticket.state !== "open" ||
       (ticket.assignees ?? []).length !== 0 ||
-      !(ticket.labels ?? []).includes(LABEL) ||
+      !(ticket.labels ?? []).includes(input.maintenanceTicket.label) ||
       (ticket.labels ?? []).includes(input.reservationLabel)
     ) {
       throw new Error(
