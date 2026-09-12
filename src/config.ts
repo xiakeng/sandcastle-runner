@@ -47,6 +47,7 @@ export interface ProjectConfig {
     mergeQueueMinutes: number;
   };
   ticketClosure: TicketClosurePolicy;
+  maintenanceTicket: { title: string; body: string; label: string };
 }
 
 export interface LoadedProject {
@@ -141,6 +142,15 @@ function parseConfig(value: unknown): ProjectConfig {
   if (documentationMaintenance && documentation === undefined) {
     throw new Error(documentationConfigurationError);
   }
+  const maintenanceTicket =
+    input.maintenanceTicket === undefined
+      ? {}
+      : record(input.maintenanceTicket, "maintenanceTicket");
+  if (documentationMaintenance) {
+    text(maintenanceTicket.title, "maintenanceTicket.title");
+    text(maintenanceTicket.body, "maintenanceTicket.body");
+    text(maintenanceTicket.label, "maintenanceTicket.label");
+  }
 
   return {
     repository,
@@ -185,6 +195,17 @@ function parseConfig(value: unknown): ProjectConfig {
       ),
     },
     ticketClosure: input.ticketClosure,
+    maintenanceTicket: {
+      title: documentationMaintenance
+        ? text(maintenanceTicket.title, "maintenanceTicket.title")
+        : "",
+      body: documentationMaintenance
+        ? text(maintenanceTicket.body, "maintenanceTicket.body")
+        : "",
+      label: documentationMaintenance
+        ? text(maintenanceTicket.label, "maintenanceTicket.label")
+        : "",
+    },
   };
 }
 

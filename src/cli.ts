@@ -298,6 +298,7 @@ export async function executeCli(
       ),
       conflictRepairAgent: loaded.config.agents.conflictRepair,
       documentationMaintenance: loaded.config.workflow.documentationMaintenance,
+      maintenanceTicket: loaded.config.maintenanceTicket,
       documentationPrompt: path.join(
         loaded.directory,
         "prompts",

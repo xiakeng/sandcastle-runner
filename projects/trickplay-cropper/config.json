@@ -1,20 +1,20 @@
 {
   "$comment": "Replace repository, checkout, runnerAccount, and targetBranch for your Project. checkout must be absolute. ticketClosure is runner or code_host.",
-  "repository": "owner/repo",
-  "checkout": "/absolute/path/to/repo",
-  "targetBranch": "main",
+  "repository": "xiakeng/trickplay-cropper",
+  "checkout": "/home/xiakeng/Desktop/workspace/trickplay-cropper/",
+  "targetBranch": "sand-test",
   "tracker": {
     "$comment": "GitHub tracker settings. tokenEnv names an environment variable; reservationLabel marks Runner-owned Delivery Tickets.",
     "type": "github",
     "tokenEnv": "GH_TOKEN",
-    "runnerAccount": "user-or-bot",
+    "runnerAccount": "user",
     "reservationLabel": "sandcastle:reserved"
   },
   "codeHost": {
     "$comment": "GitHub Pull Request settings. adminMerge allows or forbids administrative squash merge requests.",
     "type": "github",
     "tokenEnv": "GH_TOKEN",
-    "adminMerge": false
+    "adminMerge": true
   },
   "workflow": {
     "$comment": "Both nodes default to true when omitted and can be disabled independently.",
@@ -25,27 +25,27 @@
     "$comment": "Each Agent Attempt selects a supported model and low, medium, high, or xhigh reasoning. Review and documentation profiles are required only while their workflow nodes are enabled.",
     "implement": {
       "$comment": "Initial Delivery Ticket implementation.",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-astra",
       "reasoningEffort": "high"
     },
     "review": {
       "$comment": "Fresh-context Standards and Spec review.",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-astra",
       "reasoningEffort": "high"
     },
     "ciRepair": {
       "$comment": "Repair of failed required CI checks.",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-astra",
       "reasoningEffort": "high"
     },
     "conflictRepair": {
       "$comment": "Repair of an explicit merge conflict.",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-astra",
       "reasoningEffort": "high"
     },
     "documentation": {
       "$comment": "Documentation Maintenance.",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-astra",
       "reasoningEffort": "high"
     }
   },
@@ -55,5 +55,10 @@
     "requiredChecksMinutes": 60,
     "mergeQueueMinutes": 60
   },
-  "ticketClosure": "runner"
+  "ticketClosure": "code_host",
+  "maintenanceTicket": {
+    "title": "Maintain project documentation",
+    "body": "Sync project documents up to the latest code changes.",
+    "label": "doc-maintain"
+  }
 }

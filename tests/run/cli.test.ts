@@ -474,6 +474,11 @@ const validConfig = {
   },
   workflow: { review: false, documentationMaintenance: true },
   ticketClosure: "runner",
+  maintenanceTicket: {
+    title: "Maintain project documentation",
+    body: "Run the configured documentation-maintenance prompt for the current Target Branch.",
+    label: "doc-maintain",
+  },
 };
 
 async function createProject(): Promise<string> {
@@ -2116,6 +2121,27 @@ test("Review and Documentation Maintenance switches operate independently and de
   }
 });
 
+test("enabled Documentation Maintenance requires maintenance ticket title, body, and label", async () => {
+  for (const field of ["title", "body", "label"] as const) {
+    const root = await createProject();
+    const config = structuredClone(validConfig);
+    delete config.maintenanceTicket[field];
+    await writeFile(
+      path.join(root, "projects/demo/config.json"),
+      JSON.stringify(config),
+    );
+    const result = await executeCli(
+      ["run", "--project", "demo", "--parent", "8"],
+      createCliDependencies(root),
+    );
+    assert.equal(result.summary.outcome, "failed");
+    assert.match(
+      result.summary.reasons.join(" "),
+      new RegExp(`maintenanceTicket\\.${field} must be set`),
+    );
+  }
+});
+
 test("workflow configuration rejects malformed switches, unknown fields, and invalid supplied disabled profiles", async () => {
   const cases = [
     {
@@ -3192,7 +3218,6 @@ test("a Verified Handoff is published unchanged and becomes CI-ready after check
   assert.deepEqual(agentInput.promptArgs, {
     TICKET_NUMBER: 9,
     TICKET_REFERENCE: "owner/repo#9",
-    IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: prepared.worktree,
     BASE_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     PROJECT_TARGET_BRANCH: "main",
@@ -3622,7 +3647,6 @@ test("an explicit merge conflict is repaired on the original branch and Pull Req
   assert.deepEqual(agentInputs[1]?.promptArgs, {
     TICKET_NUMBER: 9,
     TICKET_REFERENCE: "owner/repo#9",
-    IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: agentInputs[0]?.worktree,
     BASE_SHA: implementation.sha,
     PROJECT_TARGET_BRANCH: "main",
@@ -4841,7 +4865,6 @@ test("failed required checks are repaired on the existing branch and Pull Reques
   assert.deepEqual(agentInputs[1]?.promptArgs, {
     TICKET_NUMBER: 9,
     TICKET_REFERENCE: "owner/repo#9",
-    IMPLEMENT_SKILL: "$implement",
     WORKTREE_PATH: agentInputs[1]?.worktree,
     BASE_SHA: implementation.sha,
     PROJECT_TARGET_BRANCH: "main",
