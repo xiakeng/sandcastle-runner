@@ -210,6 +210,41 @@ test("SandcastleAgentExecutor recovers a missing output tag with continue", asyn
   assert.equal(prompts[2]?.resumeSession, "session-id");
 });
 
+test("SandcastleAgentExecutor recovers a process failure with continue", async () => {
+  const prompts: RunOptions[] = [];
+  const waits: number[] = [];
+  let calls = 0;
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      prompts.push(options);
+      if (options.prompt === "Reply with exactly: SESSION_READY")
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      calls += 1;
+      if (calls === 1) throw new Error("codex exited with code 1");
+      return result(
+        `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
+        committed,
+      );
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+    async () => {},
+    async () => {},
+  );
+
+  await executor.execute(input());
+  assert.deepEqual(waits, [10_000]);
+  assert.equal(prompts[2]?.prompt, "continue");
+  assert.equal(prompts[2]?.resumeSession, "probe-session");
+});
+
 test("missing output tag recovery exhausts after four continues", async () => {
   const prompts: string[] = [];
   const waits: number[] = [];

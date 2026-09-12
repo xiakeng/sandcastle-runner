@@ -519,21 +519,44 @@ export class SandcastleAgentExecutor implements AgentExecutor {
               formatStructuredCause(error.cause) || error.message;
             throw new AgentOutputError(error.message, diagnostics);
           }
-          if (input.resumePrompt !== undefined) {
-            throw new AgentOutputError(
-              "Provider session unavailable or unrecoverable for continuation",
-              {
-                errorCategory: "agent_attempt",
-                retryable: false,
-                provider: "codex",
-                model: input.model,
-                workingDirectory: input.worktree,
-                diagnosticLogPath: input.logFile,
-                raw: error instanceof Error ? error.message : String(error),
-              },
+          if (
+            !controller.signal.aborted &&
+            !input.signal.aborted &&
+            resumeSession !== undefined &&
+            recoveryAttempt < 4
+          ) {
+            const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
+            await this.logStatus(
+              input.logFile,
+              `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
             );
+            await this.wait(backoff, input.signal);
+            recoveryAttempt += 1;
+            prompt = "continue";
+            resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
+            continue;
           }
-          throw error;
+          const diagnostics: AgentDiagnostics = {
+            errorCategory: "agent_attempt",
+            attemptOrdinal: 1,
+            retryable: input.resumePrompt !== undefined ? false : true,
+            provider: "codex",
+            model: input.model,
+            workingDirectory: input.worktree,
+            ...(resumeSession === undefined
+              ? {}
+              : { sessionId: resumeSession }),
+            diagnosticLogPath: input.logFile,
+            raw: error instanceof Error ? error.message : String(error),
+          };
+          throw new AgentOutputError(
+            input.resumePrompt !== undefined
+              ? "Provider session unavailable or unrecoverable for continuation"
+              : error instanceof Error
+                ? error.message
+                : String(error),
+            diagnostics,
+          );
         }
         const sessionId = result.iterations.at(-1)?.sessionId;
         if (sessionId) this.sessions.set(input.logFile, sessionId);
