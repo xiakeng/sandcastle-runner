@@ -91,6 +91,7 @@ function createExecutor(run: FakeRun): SandcastleAgentExecutor {
     },
     async () => {},
     async () => {},
+    async () => {},
   );
 }
 
@@ -294,13 +295,20 @@ test("prompt logs separate probe and real prompts", async () => {
     );
     const logFile = path.join(directory, "prompts.log");
     await executor.execute({ ...input(), logFile });
+    await executor.execute({
+      ...input(),
+      logFile,
+      resumePrompt: "operator instruction",
+    });
     const log = await readFile(logFile, "utf8");
     assert.equal(
       (log.match(/===================================/gu) ?? []).length,
-      3,
+      4,
     );
     assert.match(log, /Reply with exactly: SESSION_READY/u);
     assert.match(log, /<agent_attempt_result>/u);
+    assert.match(log, /\ncontinue\n/u);
+    assert.match(log, /\noperator instruction\n/u);
     assert.match(
       log,
       /Waiting 10 seconds before automatic prompt continuation \(retry 1\/4\)\./u,
@@ -335,6 +343,13 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
     const validateSchema = validate as (value: unknown) => unknown;
     assert.ok(
       object(await validateSchema({ ...committed, pr_body: "" })).issues,
+    );
+    const missingPrBody = Object.fromEntries(
+      Object.entries(committed).filter(([field]) => field !== "pr_body"),
+    );
+    assert.match(
+      JSON.stringify(await validateSchema(missingPrBody)),
+      /missing fields: pr_body/u,
     );
     assert.deepEqual(await validateSchema(committed), {
       value: committed,
@@ -436,6 +451,129 @@ test("SandcastleAgentExecutor accepts a valid final retry payload from an output
     statuses[3],
     "Recovered the final structured output from the retry result.",
   );
+});
+
+test("structured output retry explains validation and repeats the complete protocol", async () => {
+  const prompts: RunOptions[] = [];
+  let attempts = 0;
+  const directory = await mkdtemp(path.join(tmpdir(), "sandcastle-retry-log-"));
+  try {
+    const executor = new SandcastleAgentExecutor(
+      async (options) => {
+        prompts.push(options);
+        if (options.prompt === "Reply with exactly: SESSION_READY")
+          return {
+            iterations: [{ sessionId: "probe-session" }],
+            stdout: "SESSION_READY",
+            commits: [],
+            branch: input().branch,
+            output: undefined,
+          };
+        attempts += 1;
+        if (attempts === 1) {
+          throw new StructuredOutputError(
+            "Structured output tag <agent_attempt_result> failed schema validation",
+            {
+              tag: "agent_attempt_result",
+              rawMatched: JSON.stringify({ ...committed, pr_body: undefined }),
+              cause: [{ message: "missing fields: pr_body" }],
+              commits: committed.commits,
+              branch: input().branch,
+              sessionId: "session-id",
+            },
+          );
+        }
+        return result(
+          `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
+          committed,
+        );
+      },
+      async () => {},
+      undefined,
+      async () => {},
+    );
+    const logFile = path.join(directory, "agent.log");
+    await executor.execute({ ...input(), logFile });
+    const retryPrompt = prompts.at(-1)?.prompt;
+    assert.match(String(retryPrompt), /missing fields: pr_body/u);
+    assert.match(String(retryPrompt), /<agent_attempt_result>/u);
+    assert.doesNotMatch(
+      String(retryPrompt),
+      /When Pull Request metadata is required/u,
+    );
+    assert.match(String(retryPrompt), /"pr_title"/u);
+    assert.match(String(retryPrompt), /"pr_body"/u);
+    const protocol = replacePromptPlaceholders(
+      await readFile(
+        path.resolve("src/prompts/agent-attempt-output.md"),
+        "utf8",
+      ),
+      {
+        PULL_REQUEST_METADATA_RULE:
+          "required non-empty strings; both fields must be present",
+      },
+    ).trim();
+    assert.ok(String(retryPrompt).endsWith(protocol));
+    assert.equal(prompts.at(-1)?.resumeSession, "session-id");
+    const log = await readFile(logFile, "utf8");
+    assert.equal(
+      (log.match(/===================================/gu) ?? []).length,
+      3,
+    );
+    assert.match(log, /missing fields: pr_body/u);
+    assert.match(log, /<agent_attempt_result>/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("review structured output retry repeats the review protocol", async () => {
+  const review = {
+    outcome: "passed",
+    summary: "Both axes pass.",
+    standards: { verdict: "passed", unresolved_findings: [] },
+    spec: { verdict: "passed", unresolved_findings: [] },
+    checks: [{ command: "npm test", status: "passed", details: "ok" }],
+    blocker: null,
+  };
+  const prompts: RunOptions[] = [];
+  let attempts = 0;
+  const executor = createExecutor(async (options) => {
+    prompts.push(options);
+    attempts += 1;
+    if (attempts === 1) {
+      throw new StructuredOutputError(
+        "Structured output tag <review_attempt_result> failed schema validation",
+        {
+          tag: "review_attempt_result",
+          rawMatched: JSON.stringify({ ...review, extra: true }),
+          cause: [{ message: "unexpected fields: extra" }],
+          commits: [],
+          branch: input().branch,
+          sessionId: "session-id",
+        },
+      );
+    }
+    return {
+      iterations: [{ sessionId: "session-id" }],
+      stdout: `<review_attempt_result>${JSON.stringify(review)}</review_attempt_result>`,
+      commits: [],
+      branch: input().branch,
+      output: review,
+    };
+  });
+
+  await executor.executeReview(reviewInput());
+  const retryPrompt = prompts.at(-1)?.prompt;
+  assert.match(String(retryPrompt), /unexpected fields: extra/u);
+  assert.match(String(retryPrompt), /<review_attempt_result>/u);
+  assert.match(String(retryPrompt), /"standards"/u);
+  assert.match(String(retryPrompt), /"spec"/u);
+  const protocol = (
+    await readFile(path.resolve("src/prompts/review-attempt-output.md"), "utf8")
+  ).trim();
+  assert.ok(String(retryPrompt).endsWith(protocol));
+  assert.equal(prompts.at(-1)?.resumeSession, "session-id");
 });
 
 test("SandcastleAgentExecutor runs a fresh strict review result with one correction opportunity", async () => {
