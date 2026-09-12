@@ -1,6 +1,7 @@
 import {
   codex,
   Output,
+  StructuredOutputError,
   run as runSandcastle,
   type RunOptions,
   type RunResult,
@@ -96,6 +97,16 @@ function nonempty(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${name} must be nonempty`);
   return value;
+}
+
+function formatStructuredCause(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === "string") return cause;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
 }
 
 function parseCommit(value: unknown): CommitEvidence {
@@ -427,6 +438,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     );
     let result: Awaited<ReturnType<SandcastleRun>>;
     let recoveryAttempt = 0;
+    let structuredRetryRemaining = 1;
     try {
       for (;;) {
         await this.logPrompt(input.logFile, prompt);
@@ -446,12 +458,46 @@ export class SandcastleAgentExecutor implements AgentExecutor {
             output: Output.object({
               tag,
               schema,
-              maxRetries: 1,
+              maxRetries: 0,
             }),
             ...(resumeSession === undefined ? {} : { resumeSession }),
             signal: controller.signal,
           });
         } catch (error) {
+          if (error instanceof StructuredOutputError) {
+            await this.logStatus(
+              input.logFile,
+              `Structured output validation failed; retryRemaining=${structuredRetryRemaining}; raw=${error.rawMatched ?? "<none>"}; issues=${formatStructuredCause(error.cause)}`,
+            );
+            if (structuredRetryRemaining > 0 && error.sessionId !== undefined) {
+              structuredRetryRemaining -= 1;
+              prompt = `The previous structured output failed validation. Re-emit exactly one corrected result using the required tag. Validation details: ${formatStructuredCause(error.cause)}`;
+              resumeSession = error.sessionId;
+              await this.logStatus(
+                input.logFile,
+                `Starting structured output retry; retryRemaining=${structuredRetryRemaining}; resumeSession=${error.sessionId}`,
+              );
+              continue;
+            }
+            const recovered = this.recoverStructuredOutput(error, schema);
+            if (recovered !== undefined) {
+              await this.logStatus(
+                input.logFile,
+                "Recovered the final structured output from the retry result.",
+              );
+              const diagnostics = this.structuredDiagnostics(input, error);
+              Object.defineProperty(recovered, "diagnostics", {
+                value: diagnostics,
+                enumerable: false,
+                configurable: true,
+              });
+              return recovered;
+            }
+            const diagnostics = this.structuredDiagnostics(input, error);
+            diagnostics.error =
+              formatStructuredCause(error.cause) || error.message;
+            throw new AgentOutputError(error.message, diagnostics);
+          }
           if (input.resumePrompt !== undefined) {
             throw new AgentOutputError(
               "Provider session unavailable or unrecoverable for continuation",
@@ -532,6 +578,40 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       });
     }
     return result.output as T;
+  }
+
+  private recoverStructuredOutput<T>(
+    error: StructuredOutputError,
+    schema: StandardSchema<T>,
+  ): T | undefined {
+    if (error.rawMatched === undefined) return undefined;
+    try {
+      const parsed = JSON.parse(error.rawMatched.trim()) as unknown;
+      const validation = schema["~standard"].validate(parsed);
+      return "value" in validation ? validation.value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private structuredDiagnostics(
+    input: ReviewAttemptInput,
+    error: StructuredOutputError,
+  ): AgentDiagnostics {
+    return {
+      ...(input.promptArgs.OPERATION === undefined
+        ? {}
+        : { operation: input.promptArgs.OPERATION.toString() }),
+      errorCategory: "agent_attempt",
+      attemptOrdinal: 1,
+      retryable: true,
+      provider: "codex",
+      model: input.model,
+      workingDirectory: input.worktree,
+      ...(error.sessionId === undefined ? {} : { sessionId: error.sessionId }),
+      diagnosticLogPath: input.logFile,
+      ...(error.rawMatched === undefined ? {} : { raw: error.rawMatched }),
+    };
   }
 
   execute(input: Parameters<AgentExecutor["execute"]>[0]) {
