@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { registerTempRoot } from "../support/temp-cleanup.ts";
+
 import { LocalGitWorkspace } from "../../src/adapters/git-workspace.ts";
 
 test("LocalGitWorkspace fetches an exact base and creates and inspects only the requested Worktree", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "git-workspace-test-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "git-workspace-test-")),
+  );
   const worktree = path.join(root, "worktrees", "ticket-9");
   const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -148,7 +152,9 @@ test("LocalGitWorkspace surfaces a Worktree name collision without adopting it",
 });
 
 test("LocalGitWorkspace supplies scoped standards and post-review commit evidence without frozen-state checks", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "git-review-test-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "git-review-test-")),
+  );
   const nested = path.join(root, "src", "feature");
   await mkdir(nested, { recursive: true });
   await writeFile(path.join(root, "AGENTS.md"), "root rules");

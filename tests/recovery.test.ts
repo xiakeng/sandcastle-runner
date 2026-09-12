@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { cleanupTempRoots, registerTempRoot } from "./support/temp-cleanup.ts";
+
 import {
   InvalidRecoverySnapshot,
   ParentLock,
@@ -14,8 +16,12 @@ import {
   reconcilePullRequest,
 } from "../src/recovery.ts";
 
+test.afterEach(cleanupTempRoots);
+
 test("recovery snapshots replace atomically and reject malformed input unchanged", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-recovery-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-recovery-")),
+  );
   const filename = recoveryPaths(root, 8).snapshot;
   const snapshot = {
     schemaVersion: 1,
@@ -37,7 +43,9 @@ test("recovery snapshots replace atomically and reject malformed input unchanged
 });
 
 test("recovery snapshots retain independent CI and conflict repair budgets", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-")),
+  );
   const filename = recoveryPaths(root, 8).snapshot;
   const handoff = {
     ticket: 9,
@@ -107,7 +115,9 @@ test("recovery snapshots retain independent CI and conflict repair budgets", asy
 });
 
 test("recovery snapshots reject malformed repair budgets", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-repair-state-")),
+  );
   const filename = recoveryPaths(root, 8).snapshot;
   const snapshot = {
     schemaVersion: 1,
@@ -177,8 +187,8 @@ test("recovery snapshots reject malformed repair budgets", async () => {
 });
 
 test("recovery snapshots reject inconsistent unfinished maintenance state", async () => {
-  const root = await mkdtemp(
-    path.join(tmpdir(), "sandcastle-maintenance-state-"),
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-maintenance-state-")),
   );
   const filename = recoveryPaths(root, 8).snapshot;
   const snapshot = {
@@ -240,7 +250,9 @@ test("recovery snapshots reject inconsistent unfinished maintenance state", asyn
 });
 
 test("a Parent lock is nonblocking and released explicitly", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-lock-"));
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-lock-")),
+  );
   const filename = recoveryPaths(root, 8).lock;
   const first = await ParentLock.acquire(filename, { runId: "one" });
   await assert.rejects(
