@@ -245,6 +245,40 @@ test("SandcastleAgentExecutor recovers a process failure with continue", async (
   assert.equal(prompts[2]?.resumeSession, "probe-session");
 });
 
+test("SandcastleAgentExecutor stops process recovery when total timeout expires", async () => {
+  const prompts: RunOptions[] = [];
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      prompts.push(options);
+      if (options.prompt === "Reply with exactly: SESSION_READY")
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      throw new Error("codex exited with code 1");
+    },
+    async () => new Promise((resolve) => setTimeout(resolve, 5)),
+    async () => {},
+    async () => {},
+  );
+
+  await assert.rejects(
+    executor.execute({ ...input(), timeoutMs: 1 }),
+    (error) => {
+      const failure = error as Error & {
+        diagnostics?: { sessionId?: string };
+      };
+      assert.match(failure.message, /Agent Attempt timed out/u);
+      assert.equal(failure.diagnostics?.sessionId, "probe-session");
+      return true;
+    },
+  );
+  assert.equal(prompts.length, 2);
+});
+
 test("missing output tag recovery exhausts after four continues", async () => {
   const prompts: string[] = [];
   const waits: number[] = [];
