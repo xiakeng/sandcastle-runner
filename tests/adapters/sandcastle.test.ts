@@ -787,7 +787,14 @@ test("SandcastleAgentExecutor aborts a continuously active run at the configured
 
   await assert.rejects(
     executor.execute({ ...input(), timeoutMs: 5 }),
-    /Agent Attempt timed out/u,
+    (error) => {
+      const failure = error as Error & {
+        diagnostics?: { sessionId?: string };
+      };
+      assert.match(failure.message, /Agent Attempt timed out/u);
+      assert.equal(failure.diagnostics?.sessionId, "probe-session");
+      return true;
+    },
   );
 });
 
@@ -821,7 +828,14 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
   });
   controller.abort();
 
-  await assert.rejects(execution, /caller aborted/u);
+  await assert.rejects(execution, (error) => {
+    const failure = error as Error & {
+      diagnostics?: { sessionId?: string };
+    };
+    assert.match(failure.message, /caller aborted/u);
+    assert.equal(failure.diagnostics?.sessionId, "probe-session");
+    return true;
+  });
   assert.equal(receivedSignal?.aborted, true);
 });
 

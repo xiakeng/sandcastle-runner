@@ -67,6 +67,10 @@ const logPrompt: PromptLogger = (logFile, prompt) =>
 const logStatus: StatusLogger = (logFile, message) =>
   appendFile(logFile, `${message}\n`, "utf8");
 
+function isAgentProcessFailure(error: unknown): boolean {
+  return error instanceof Error && / exited with code \d+/u.test(error.message);
+}
+
 function pullRequestMetadataRule(
   metadata: AgentAttemptInput["pullRequestMetadata"],
 ): string {
@@ -346,6 +350,19 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     this.logStatus = statusLogger;
   }
 
+  private async waitForContinuation(
+    input: ReviewAttemptInput,
+    recoveryAttempt: number,
+  ): Promise<number> {
+    const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
+    await this.logStatus(
+      input.logFile,
+      `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+    );
+    await this.wait(backoff, input.signal);
+    return recoveryAttempt + 1;
+  }
+
   private async prepareSession(input: ReviewAttemptInput): Promise<string> {
     const existing = this.sessions.get(input.logFile);
     if (existing !== undefined) return existing;
@@ -519,19 +536,19 @@ export class SandcastleAgentExecutor implements AgentExecutor {
               formatStructuredCause(error.cause) || error.message;
             throw new AgentOutputError(error.message, diagnostics);
           }
+          if (input.signal.aborted && error === input.signal.reason)
+            throw error;
           if (
             !controller.signal.aborted &&
             !input.signal.aborted &&
+            isAgentProcessFailure(error) &&
             resumeSession !== undefined &&
             recoveryAttempt < 4
           ) {
-            const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
-            await this.logStatus(
-              input.logFile,
-              `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+            recoveryAttempt = await this.waitForContinuation(
+              input,
+              recoveryAttempt,
             );
-            await this.wait(backoff, input.signal);
-            recoveryAttempt += 1;
             prompt = "continue";
             resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
             continue;
@@ -564,13 +581,10 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         const closingTags = result.stdout.split(`</${tag}>`).length - 1;
         if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
           break;
-        const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
-        await this.logStatus(
-          input.logFile,
-          `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+        recoveryAttempt = await this.waitForContinuation(
+          input,
+          recoveryAttempt,
         );
-        await this.wait(backoff, input.signal);
-        recoveryAttempt += 1;
         prompt = "continue";
         resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
       }
