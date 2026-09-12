@@ -6,9 +6,12 @@ import {
   type RunResult,
 } from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
+import { appendFile, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type {
   AgentAttemptResult,
+  AgentAttemptInput,
   AgentDiagnostics,
   AgentExecutor,
   CheckEvidence,
@@ -37,6 +40,50 @@ class AgentOutputError extends Error {
     super(message);
     this.diagnostics = diagnostics;
   }
+}
+
+type Delay = (milliseconds: number, signal: AbortSignal) => Promise<void>;
+type PromptLogger = (logFile: string, prompt: string) => Promise<void>;
+type StatusLogger = (logFile: string, message: string) => Promise<void>;
+
+const delay: Delay = (milliseconds, signal) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(
+        signal.reason instanceof Error ? signal.reason : new Error("aborted"),
+      );
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+
+const runnerPromptDirectory = join(import.meta.dirname, "../prompts");
+const promptSeparator = "===================================";
+const logPrompt: PromptLogger = (logFile, prompt) =>
+  appendFile(logFile, `${promptSeparator}\n${prompt}\n`, "utf8");
+const logStatus: StatusLogger = (logFile, message) =>
+  appendFile(logFile, `${message}\n`, "utf8");
+
+function pullRequestMetadataRule(
+  metadata: AgentAttemptInput["pullRequestMetadata"],
+): string {
+  if (metadata === "required")
+    return "required non-empty strings; both fields must be present";
+  if (metadata === "required_for_committed")
+    return "include both as non-empty strings only when outcome is committed; omit both otherwise";
+  return "omit both fields";
+}
+
+export function replacePromptPlaceholders(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return template.replace(/\{\{([A-Za-z0-9_]+)\}\}/gu, (placeholder, key) => {
+    const name = String(key);
+    return name in values ? String(values[name]) : placeholder;
+  });
 }
 
 function object(value: unknown, name: string): Record<string, unknown> {
@@ -253,11 +300,70 @@ function reviewResultSchema(): StandardSchema<ReviewAttemptResult> {
 
 export class SandcastleAgentExecutor implements AgentExecutor {
   private readonly run: SandcastleRun;
+  private readonly wait: Delay;
+  private readonly logPrompt: PromptLogger;
+  private readonly logStatus: StatusLogger;
   private readonly sessions = new Map<string, string>();
   private readonly replies = new Map<string, string>();
 
-  constructor(run: SandcastleRun = runSandcastle as SandcastleRun) {
+  constructor(
+    run: SandcastleRun = runSandcastle as SandcastleRun,
+    wait: Delay = delay,
+    promptLogger: PromptLogger = logPrompt,
+    statusLogger: StatusLogger = logStatus,
+  ) {
     this.run = run;
+    this.wait = wait;
+    this.logPrompt = promptLogger;
+    this.logStatus = statusLogger;
+  }
+
+  private async prepareSession(input: ReviewAttemptInput): Promise<string> {
+    const existing = this.sessions.get(input.logFile);
+    if (existing !== undefined) return existing;
+
+    let lastError: unknown;
+    const backoffs = [10_000, 20_000, 40_000, 80_000];
+    for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+      try {
+        await this.logPrompt(
+          input.logFile,
+          "Reply with exactly: SESSION_READY",
+        );
+        const result = await this.run({
+          agent: codex(input.model, { effort: input.effort }),
+          sandbox: noSandbox({
+            env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
+          }),
+          cwd: input.worktree,
+          prompt: "Reply with exactly: SESSION_READY",
+          maxIterations: 1,
+          completionSignal: ["SESSION_READY"],
+          idleTimeoutSeconds: input.timeoutMs / 1000,
+          branchStrategy: { type: "head" },
+          logging: { type: "file", path: input.logFile },
+          signal: input.signal,
+        });
+        const sessionId = result.iterations.at(-1)?.sessionId;
+        if (sessionId === undefined)
+          throw new Error("session probe returned no session ID");
+        this.sessions.set(input.logFile, sessionId);
+        return sessionId;
+      } catch (error) {
+        lastError = error;
+        if (attempt === backoffs.length) break;
+        await this.wait(backoffs[attempt]!, input.signal);
+      }
+    }
+    throw new AgentOutputError("Agent session probe failed after 4 retries", {
+      errorCategory: "operator_pause",
+      retryable: false,
+      provider: "codex",
+      model: input.model,
+      workingDirectory: input.worktree,
+      diagnosticLogPath: input.logFile,
+      raw: lastError instanceof Error ? lastError.message : String(lastError),
+    });
   }
 
   private async runOutput<T>(
@@ -265,10 +371,40 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     tag: string,
     schema: StandardSchema<T>,
   ): Promise<T> {
-    if (
-      input.resumePrompt !== undefined &&
-      this.sessions.get(input.logFile) === undefined
-    ) {
+    let resumeSession = this.sessions.get(input.logFile);
+    let prompt = input.resumePrompt;
+    if (prompt === undefined) {
+      resumeSession ??= await this.prepareSession(input);
+      const pullRequestMetadata =
+        "pullRequestMetadata" in input
+          ? (input as AgentAttemptInput).pullRequestMetadata
+          : "ignored";
+      const template = replacePromptPlaceholders(
+        await readFile(input.promptFile, "utf8"),
+        {
+          ...input.promptArgs,
+          SOURCE_BRANCH: input.branch,
+          TARGET_BRANCH: String(input.targetBranch),
+        },
+      );
+      const outputPrompt = await readFile(
+        join(
+          runnerPromptDirectory,
+          tag === "review_attempt_result"
+            ? "review-attempt-output.md"
+            : "agent-attempt-output.md",
+        ),
+        "utf8",
+      );
+      prompt = `${template.trimEnd()}\n\n${replacePromptPlaceholders(
+        outputPrompt,
+        {
+          PULL_REQUEST_METADATA_RULE:
+            pullRequestMetadataRule(pullRequestMetadata),
+        },
+      ).trim()}`;
+    }
+    if (prompt !== undefined && resumeSession === undefined) {
       throw new AgentOutputError(
         "Provider session unavailable for continuation",
         {
@@ -289,51 +425,65 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       () => controller.abort(new Error("Agent Attempt timed out")),
       input.timeoutMs,
     );
-    timeout.unref();
     let result: Awaited<ReturnType<SandcastleRun>>;
+    let recoveryAttempt = 0;
     try {
-      result = await this.run({
-        agent: codex(input.model, { effort: input.effort }),
-        sandbox: noSandbox({
-          env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
-        }),
-        cwd: input.worktree,
-        ...(input.resumePrompt === undefined
-          ? { promptFile: input.promptFile }
-          : { prompt: input.resumePrompt }),
-        promptArgs: input.promptArgs,
-        maxIterations: 1,
-        completionSignal: [],
-        idleTimeoutSeconds: input.timeoutMs / 1000,
-        branchStrategy: { type: "head" },
-        logging: { type: "file", path: input.logFile },
-        output: Output.object({
-          tag,
-          schema,
-          maxRetries: 1,
-        }),
-        ...(input.resumePrompt === undefined ||
-        this.sessions.get(input.logFile) === undefined
-          ? {}
-          : { resumeSession: this.sessions.get(input.logFile)! }),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      if (input.resumePrompt !== undefined) {
-        throw new AgentOutputError(
-          "Provider session unavailable or unrecoverable for continuation",
-          {
-            errorCategory: "agent_attempt",
-            retryable: false,
-            provider: "codex",
-            model: input.model,
-            workingDirectory: input.worktree,
-            diagnosticLogPath: input.logFile,
-            raw: error instanceof Error ? error.message : String(error),
-          },
+      for (;;) {
+        await this.logPrompt(input.logFile, prompt);
+        try {
+          result = await this.run({
+            agent: codex(input.model, { effort: input.effort }),
+            sandbox: noSandbox({
+              env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
+            }),
+            cwd: input.worktree,
+            prompt,
+            maxIterations: 1,
+            completionSignal: [],
+            idleTimeoutSeconds: input.timeoutMs / 1000,
+            branchStrategy: { type: "head" },
+            logging: { type: "file", path: input.logFile },
+            output: Output.object({
+              tag,
+              schema,
+              maxRetries: 1,
+            }),
+            ...(resumeSession === undefined ? {} : { resumeSession }),
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (input.resumePrompt !== undefined) {
+            throw new AgentOutputError(
+              "Provider session unavailable or unrecoverable for continuation",
+              {
+                errorCategory: "agent_attempt",
+                retryable: false,
+                provider: "codex",
+                model: input.model,
+                workingDirectory: input.worktree,
+                diagnosticLogPath: input.logFile,
+                raw: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+          throw error;
+        }
+        const sessionId = result.iterations.at(-1)?.sessionId;
+        if (sessionId) this.sessions.set(input.logFile, sessionId);
+        const openingTags = result.stdout.split(`<${tag}>`).length - 1;
+        const closingTags = result.stdout.split(`</${tag}>`).length - 1;
+        if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
+          break;
+        const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
+        await this.logStatus(
+          input.logFile,
+          `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
         );
+        await this.wait(backoff, input.signal);
+        recoveryAttempt += 1;
+        prompt = "continue";
+        resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
       }
-      throw error;
     } finally {
       clearTimeout(timeout);
       input.signal.removeEventListener("abort", relayAbort);

@@ -358,6 +358,15 @@ function createFiveTicketScenario(
           const attemptResult = result(input, commit);
           if (recovery && purpose === "implement" && input.ticket === 2) {
             const executor = new SandcastleAgentExecutor(async (options) => {
+              if (options.prompt === "Reply with exactly: SESSION_READY") {
+                return {
+                  iterations: [{ sessionId: "ticket-2-probe-session" }],
+                  stdout: "SESSION_READY",
+                  commits: [],
+                  branch: input.branch,
+                  output: undefined,
+                };
+              }
               correctionSessions += 1;
               const definition = object(options.output);
               assert.equal(definition.maxRetries, 1);

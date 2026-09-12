@@ -67,6 +67,40 @@ test("checked-in projects are loadable and have exact prompt placeholders", asyn
         ),
       ].sort();
       assert.deepEqual(actual, expected, filename);
+      assert.doesNotMatch(
+        prompt,
+        /<([A-Za-z0-9_]+)>/u,
+        `${filename} output tag`,
+      );
     }
+  }
+});
+
+test("Runner-owned output protocols use the configured tags and fields", async () => {
+  const protocols = {
+    "agent-attempt-output.md": {
+      tag: "agent_attempt_result",
+      fields: ["outcome", "summary", "commits", "checks", "blocker"],
+    },
+    "review-attempt-output.md": {
+      tag: "review_attempt_result",
+      fields: ["outcome", "summary", "standards", "spec", "checks", "blocker"],
+    },
+  } as const;
+  for (const [filename, expected] of Object.entries(protocols)) {
+    const prompt = await readFile(
+      path.join(root, "src", "prompts", filename),
+      "utf8",
+    );
+    const tags = [...prompt.matchAll(/<([A-Za-z0-9_]+)>/gu)].map(
+      (match) => match[1],
+    );
+    assert.deepEqual(tags, [expected.tag], `${filename} output tag`);
+    for (const field of expected.fields)
+      assert.match(
+        prompt,
+        new RegExp(`"${field}"`, "u"),
+        `${filename} ${field}`,
+      );
   }
 });

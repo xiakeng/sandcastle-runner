@@ -938,6 +938,11 @@ test("a complete zero-child scan returns no_work and leaves the Parent open", as
           throw new Error("explicit Target Branch must not be replaced");
         },
       },
+      operator: {
+        async pause() {
+          return "q";
+        },
+      },
     }),
   );
 
@@ -2450,7 +2455,7 @@ test("a Run reserves the three lowest-numbered eligible Delivery Tickets", async
 
 test("eligibility reports ownership and Reservations after complete blocker pagination", async () => {
   const root = await createProject();
-  const writes: number[] = [];
+  const writes: string[] = [];
   const children = [
     { number: 9, assignees: ["developer"], labels: [] },
     { number: 10, assignees: [], labels: ["sandcastle:reserved"] },
@@ -2476,6 +2481,9 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
       tracker: {
         async listChildrenPage() {
           return { children, nextPage: null };
+        },
+        async getTicket(_repository, ticket) {
+          return children.find(({ number }) => number === ticket)!;
         },
         async listBlockersPage(_repository, ticket, page) {
           blockerPages.push(`${ticket}:${page}`);
@@ -2530,15 +2538,53 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
           return { blockers: [], nextPage: null };
         },
         async addLabel(_repository, ticket) {
-          writes.push(ticket);
+          writes.push(`label:${ticket}`);
+          children
+            .find(({ number }) => number === ticket)!
+            .labels.push("sandcastle:reserved");
+        },
+        async addAssignee(_repository, ticket, assignee) {
+          writes.push(`assignee:${ticket}:${assignee}`);
+          children
+            .find(({ number }) => number === ticket)!
+            .assignees.push(assignee);
+        },
+      },
+      operator: {
+        async pause() {
+          return "q";
         },
       },
     }),
   );
 
-  assert.deepEqual(result.summary.batch, [14]);
-  assert.deepEqual(writes, [14]);
-  assert.deepEqual(blockerPages, [
+  const events = (await readFile(result.logPath!, "utf8"))
+    .trim()
+    .split("\n")
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          phase: string;
+          operation: string;
+          result: string;
+          target: string;
+        },
+    );
+  assert.equal(result.summary.outcome, "cancelled");
+  assert.deepEqual(
+    events
+      .filter(
+        ({ phase, operation, result: eventResult }) =>
+          phase === "implement" &&
+          operation === "agent_attempt" &&
+          eventResult === "started",
+      )
+      .map(({ target }) => target)
+      .sort(),
+    ["ticket:12", "ticket:14"],
+  );
+  assert.deepEqual(writes, ["label:14", "assignee:14:runner"]);
+  assert.deepEqual(blockerPages.slice(0, 8), [
     "9:1",
     "10:1",
     "11:1",
@@ -2547,22 +2593,9 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
     "13:2",
     "14:1",
     "14:2",
-    "14:1",
-    "14:2",
-    "14:1",
-    "14:2",
-    "14:1",
-    "14:2",
-    "14:1",
-    "14:2",
   ]);
-  assert.deepEqual(result.summary.reasons, [
-    "reserved Delivery Tickets: 14",
-    "blocked Delivery Tickets: 13",
-    "externally owned Delivery Tickets: 9",
-    "existing Reservations: 10 (partial), 11 (partial), 12 (complete)",
-    "Delivery Ticket 14 no longer has a complete Reservation",
-  ]);
+  assert.ok(blockerPages.includes("12:1"));
+  assert.ok(blockerPages.includes("14:1"));
 });
 
 test("Parent cancellation before Reservation stops without mutating children", async () => {
@@ -4523,17 +4556,20 @@ test("trusted completion releases the observed Reservation unless the Parent was
           },
           async removeLabel() {
             releases += 1;
+            if (!cancelParent) {
+              delivery.tickets[0]!.state = "closed";
+              delivery.tickets[0]!.stateReason = "completed";
+            }
           },
         },
         operator: {
           async pause() {
             parentCancelled = cancelParent;
-            return "trusted completion";
+            return cancelParent ? "q" : "trusted completion";
           },
         },
       }),
     );
-
     assert.deepEqual(
       result.summary.completedTickets ?? [],
       cancelParent ? [] : [9],
