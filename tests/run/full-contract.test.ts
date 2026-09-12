@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+import { cleanupTempRoots, registerTempRoot } from "../support/temp-cleanup.ts";
 
 import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
 import { executeCli, type CliDependencies } from "../../src/cli.ts";
@@ -13,24 +15,18 @@ import type {
   Ticket,
 } from "../../src/run/contracts.ts";
 
-const projectRoots = new Set<string>();
-
 function object(value: unknown): Record<string, unknown> {
   assert.equal(typeof value, "object");
   assert.notEqual(value, null);
   return value as Record<string, unknown>;
 }
 
-test.afterEach(async () => {
-  await Promise.all(
-    [...projectRoots].map((root) => rm(root, { recursive: true, force: true })),
-  );
-  projectRoots.clear();
-});
+test.afterEach(cleanupTempRoots);
 
 async function createProject(recovery: boolean): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-runner-full-"));
-  projectRoots.add(root);
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-runner-full-")),
+  );
   const project = path.join(root, "projects", "demo");
   await mkdir(path.join(project, "prompts"), { recursive: true });
   const config = {
@@ -123,6 +119,7 @@ function createFiveTicketScenario(
   let nextPullRequest = 1_001;
   let resolveTargetBranchCalls = 0;
   let correctionSessions = 0;
+  let ticket2Executor: SandcastleAgentExecutor | undefined;
   let trustedOverrideTicket: number | undefined;
   let interrupted = false;
   let activeAgents = 0;
@@ -357,7 +354,7 @@ function createFiveTicketScenario(
           }
           const attemptResult = result(input, commit);
           if (recovery && purpose === "implement" && input.ticket === 2) {
-            const executor = new SandcastleAgentExecutor(async (options) => {
+            ticket2Executor ??= new SandcastleAgentExecutor(async (options) => {
               if (options.prompt === "Reply with exactly: SESSION_READY") {
                 return {
                   iterations: [{ sessionId: "ticket-2-probe-session" }],
@@ -392,7 +389,7 @@ function createFiveTicketScenario(
                 output: attemptResult,
               };
             });
-            return executor.execute(input);
+            return ticket2Executor.execute(input);
           }
           return attemptResult;
         } finally {

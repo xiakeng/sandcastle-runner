@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { cleanupTempRoots, registerTempRoot } from "../support/temp-cleanup.ts";
+
 import { executeCli, type CliDependencies } from "../../src/cli.ts";
 import {
   readRecoverySnapshot,
@@ -482,8 +484,9 @@ const validConfig = {
 };
 
 async function createProject(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "sandcastle-runner-"));
-  projectRoots.add(root);
+  const root = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-runner-")),
+  );
   const project = path.join(root, "projects", "demo");
   await mkdir(path.join(project, "prompts"), { recursive: true });
   await writeFile(
@@ -504,14 +507,7 @@ async function createProject(): Promise<string> {
   return root;
 }
 
-const projectRoots = new Set<string>();
-
-test.afterEach(async () => {
-  await Promise.all(
-    [...projectRoots].map((root) => rm(root, { recursive: true, force: true })),
-  );
-  projectRoots.clear();
-});
+test.afterEach(cleanupTempRoots);
 
 function publicationIntent(
   phase: PublicationIntent["phase"],

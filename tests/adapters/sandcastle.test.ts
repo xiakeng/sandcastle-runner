@@ -10,6 +10,8 @@ import {
   type RunResult,
 } from "@ai-hero/sandcastle";
 
+import { registerTempRoot } from "../support/temp-cleanup.ts";
+
 import {
   replacePromptPlaceholders,
   SandcastleAgentExecutor,
@@ -268,8 +270,8 @@ test("SandcastleAgentExecutor logs every prompt it sends", async () => {
 });
 
 test("prompt logs separate probe and real prompts", async () => {
-  const directory = await mkdtemp(
-    path.join(tmpdir(), "sandcastle-prompt-log-"),
+  const directory = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-prompt-log-")),
   );
   try {
     let calls = 0;
@@ -456,7 +458,9 @@ test("SandcastleAgentExecutor accepts a valid final retry payload from an output
 test("structured output retry explains validation and repeats the complete protocol", async () => {
   const prompts: RunOptions[] = [];
   let attempts = 0;
-  const directory = await mkdtemp(path.join(tmpdir(), "sandcastle-retry-log-"));
+  const directory = registerTempRoot(
+    await mkdtemp(path.join(tmpdir(), "sandcastle-retry-log-")),
+  );
   try {
     const executor = new SandcastleAgentExecutor(
       async (options) => {
