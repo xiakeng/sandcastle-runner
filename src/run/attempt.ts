@@ -247,6 +247,7 @@ async function reviewHandoff(
           worktree: handoff.worktree,
           branch: handoff.branch,
           base: handoff.base,
+          targetBranch: input.targetBranch,
           promptFile: input.reviewPrompt,
           promptArgs: {
             REVIEW_HANDOFF: JSON.stringify({
@@ -539,6 +540,7 @@ async function runAgentOperation(
           worktree: operation.worktree,
           branch: operation.branch,
           base: operation.base,
+          targetBranch: input.targetBranch,
           promptFile: operation.promptFile,
           promptArgs: operation.promptArgs,
           pullRequestMetadata: operation.pullRequestMetadata,

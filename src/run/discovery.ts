@@ -263,9 +263,8 @@ async function inspect(
     if (
       !excluded.has(child.number) &&
       !hasExternalOwner &&
-      !hasRunner &&
-      !hasLabel &&
-      !hasOpenBlocker
+      !hasOpenBlocker &&
+      hasRunner === hasLabel
     ) {
       eligible.push(child);
     }
@@ -588,65 +587,80 @@ async function reserve(
     const beforeLabelParent = boundaryResult(await readParent(input));
     if (beforeLabelParent) return beforeLabelParent;
     const beforeLabel = await revalidateTicket(input, candidate.number);
+    if (!beforeLabel.inScope) continue;
+    const hasRunner = (beforeLabel.ticket.assignees ?? []).includes(
+      input.runnerAccount,
+    );
+    const hasLabel = (beforeLabel.ticket.labels ?? []).includes(
+      input.reservationLabel,
+    );
     if (
-      !beforeLabel.inScope ||
       beforeLabel.ticket.state !== "open" ||
       beforeLabel.blocked ||
-      (beforeLabel.ticket.assignees ?? []).length > 0 ||
-      (beforeLabel.ticket.labels ?? []).includes(input.reservationLabel)
+      (beforeLabel.ticket.assignees ?? []).some(
+        (assignee) => assignee !== input.runnerAccount,
+      ) ||
+      hasRunner !== hasLabel
     ) {
       continue;
     }
-    await workflowWrite({
-      action: () =>
-        input.tracker.addLabel(
-          input.repository,
-          candidate.number,
-          input.reservationLabel,
-        ),
-      audit: input.audit,
-      event: () =>
-        input.event(
-          "reserve",
-          "add_reservation_label",
-          `ticket:${candidate.number}`,
-        )(1),
-      operator: input.operator,
-    });
+    const addedLabel = !hasLabel;
+    if (addedLabel) {
+      await workflowWrite({
+        action: () =>
+          input.tracker.addLabel(
+            input.repository,
+            candidate.number,
+            input.reservationLabel,
+          ),
+        audit: input.audit,
+        event: () =>
+          input.event(
+            "reserve",
+            "add_reservation_label",
+            `ticket:${candidate.number}`,
+          )(1),
+        operator: input.operator,
+      });
+    }
 
     const beforeAssigneeParent = boundaryResult(await readParent(input));
     if (beforeAssigneeParent) return beforeAssigneeParent;
     const beforeAssignee = await revalidateTicket(input, candidate.number);
     if (!beforeAssignee.inScope) continue;
     if (beforeAssignee.ticket.state === "closed") {
-      await releaseReservation(input, candidate.number, false, true);
+      await releaseReservation(
+        input,
+        candidate.number,
+        hasRunner,
+        hasLabel ? hasLabel : addedLabel,
+      );
       continue;
     }
-    if (
-      beforeAssignee.blocked ||
-      (beforeAssignee.ticket.assignees ?? []).some(
-        (assignee) => assignee !== input.runnerAccount,
-      ) ||
-      (beforeAssignee.ticket.assignees ?? []).includes(input.runnerAccount)
-    ) {
+    if (beforeAssignee.blocked) {
       continue;
     }
-    await workflowWrite({
-      action: () =>
-        input.tracker.addAssignee(
-          input.repository,
-          candidate.number,
-          input.runnerAccount,
-        ),
-      audit: input.audit,
-      event: () =>
-        input.event(
-          "reserve",
-          "add_runner_assignee",
-          `ticket:${candidate.number}`,
-        )(1),
-      operator: input.operator,
-    });
+    const hasRunnerAfterLabel = (
+      beforeAssignee.ticket.assignees ?? []
+    ).includes(input.runnerAccount);
+    if (!hasRunnerAfterLabel) {
+      await workflowWrite({
+        action: () =>
+          input.tracker.addAssignee(
+            input.repository,
+            candidate.number,
+            input.runnerAccount,
+          ),
+        audit: input.audit,
+        event: () =>
+          input.event(
+            "reserve",
+            "add_runner_assignee",
+            `ticket:${candidate.number}`,
+          )(1),
+        operator: input.operator,
+      });
+    }
 
     const checkpointParent = boundaryResult(await readParent(input));
     if (checkpointParent) return checkpointParent;

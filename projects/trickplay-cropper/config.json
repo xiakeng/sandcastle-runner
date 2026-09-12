@@ -7,7 +7,7 @@
     "$comment": "GitHub tracker settings. tokenEnv names an environment variable; reservationLabel marks Runner-owned Delivery Tickets.",
     "type": "github",
     "tokenEnv": "GH_TOKEN",
-    "runnerAccount": "user",
+    "runnerAccount": "xiakeng",
     "reservationLabel": "sandcastle:reserved"
   },
   "codeHost": {
