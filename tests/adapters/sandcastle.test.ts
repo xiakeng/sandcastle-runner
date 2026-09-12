@@ -497,6 +497,10 @@ test("structured output retry explains validation and repeats the complete proto
     const retryPrompt = prompts.at(-1)?.prompt;
     assert.match(String(retryPrompt), /missing fields: pr_body/u);
     assert.match(String(retryPrompt), /<agent_attempt_result>/u);
+    assert.doesNotMatch(
+      String(retryPrompt),
+      /When Pull Request metadata is required/u,
+    );
     assert.match(String(retryPrompt), /"pr_title"/u);
     assert.match(String(retryPrompt), /"pr_body"/u);
     const protocol = replacePromptPlaceholders(
