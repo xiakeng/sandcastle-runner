@@ -376,6 +376,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     try {
       await Promise.race([this.wait(backoff, input.signal), timeout]);
     } catch (error) {
+      if (error instanceof OperatorCancelled) throw error;
       if (input.signal.aborted) return undefined;
       throw error;
     } finally {
