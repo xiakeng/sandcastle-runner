@@ -21,6 +21,7 @@ import type {
   ReviewAttemptResult,
   ReviewVerdict,
 } from "../run/contracts.ts";
+import { OperatorCancelled } from "../run/operations.ts";
 
 type SandcastleRun = (
   options: RunOptions,
@@ -579,7 +580,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
               formatStructuredCause(error.cause) || error.message;
             throw new AgentOutputError(error.message, diagnostics);
           }
-          if (input.signal.aborted && error === input.signal.reason)
+          if (
+            input.signal.aborted &&
+            error === input.signal.reason &&
+            error instanceof OperatorCancelled
+          )
             throw error;
           if (
             !controller.signal.aborted &&

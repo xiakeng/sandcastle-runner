@@ -849,7 +849,9 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
           "abort",
           () => {
             clearTimeout(keepAlive);
-            reject(new Error("caller aborted"));
+            reject(
+              (options.signal?.reason ?? new Error("caller aborted")) as Error,
+            );
           },
           { once: true },
         );
@@ -866,7 +868,7 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
     const failure = error as Error & {
       diagnostics?: { sessionId?: string };
     };
-    assert.match(failure.message, /caller aborted/u);
+    assert.match(failure.message, /aborted/u);
     assert.equal(failure.diagnostics?.sessionId, "probe-session");
     return true;
   });
