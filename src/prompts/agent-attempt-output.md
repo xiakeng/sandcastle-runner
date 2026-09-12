@@ -3,7 +3,7 @@ Return exactly one result enclosed in these tags:
 {JSON object}
 </agent_attempt_result>
 
-The JSON object must contain exactly these required fields:
+The JSON object must contain exactly these fields, plus the conditional Pull Request fields described below:
 
 {
   "outcome": "...",
@@ -12,6 +12,22 @@ The JSON object must contain exactly these required fields:
   "checks": [...],
   "blocker": null
 }
+
+Field requirements:
+
+- `outcome` is exactly `committed`, `no_change`, or `blocked`.
+- `summary` is a concise non-empty English string describing the result.
+- `commits` is an array of every commit created in the supplied Worktree. Each
+  `sha` must be a full lowercase hexadecimal Git SHA (40 to 64 characters);
+  never use `git log --oneline` abbreviations. Each `message` must be non-empty.
+- `checks` is an array. Every check has a non-empty `command`, a `status` of
+  `passed`, `failed`, or `not_run`, and non-empty `details`.
+- `blocker` must be `null` unless `outcome` is `blocked`; a blocked result must
+  provide a non-empty blocker string.
+- When Pull Request metadata is required, include exactly two additional
+  top-level string fields: `pr_title` and `pr_body`. When it is not required,
+  omit both. Do not add any other fields, nesting, Markdown, comments, or prose
+  outside the single result tag. The tag content must be valid JSON.
 
 Field definitions:
 

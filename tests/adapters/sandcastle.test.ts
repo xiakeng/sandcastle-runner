@@ -4,7 +4,11 @@ import test from "node:test";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-import type { RunOptions, RunResult } from "@ai-hero/sandcastle";
+import {
+  StructuredOutputError,
+  type RunOptions,
+  type RunResult,
+} from "@ai-hero/sandcastle";
 
 import {
   replacePromptPlaceholders,
@@ -374,7 +378,7 @@ test("SandcastleAgentExecutor supplies the complete controlled Codex invocation"
     type: "file",
     path: "/runner/projects/demo/logs/agent.log",
   });
-  assert.equal(object(options.output).maxRetries, 1);
+  assert.equal(object(options.output).maxRetries, 0);
 });
 
 test("SandcastleAgentExecutor rejects multiple result tags", async () => {
@@ -384,6 +388,54 @@ test("SandcastleAgentExecutor rejects multiple result tags", async () => {
   );
 
   await assert.rejects(executor.execute(input()), /exactly one result tag/u);
+});
+
+test("SandcastleAgentExecutor accepts a valid final retry payload from an output error", async () => {
+  const statuses: string[] = [];
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      if (options.prompt === "Reply with exactly: SESSION_READY")
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      throw new StructuredOutputError(
+        "Structured output tag <agent_attempt_result> failed schema validation",
+        {
+          tag: "agent_attempt_result",
+          rawMatched: JSON.stringify(committed),
+          cause: [{ message: "stale first attempt" }],
+          commits: committed.commits,
+          branch: input().branch,
+          sessionId: "session-id",
+        },
+      );
+    },
+    async () => {},
+    async () => {},
+    async (_logFile, message) => {
+      statuses.push(message);
+    },
+  );
+
+  const result = await executor.execute(input());
+  assert.equal(result.outcome, "committed");
+  assert.deepEqual(result.commits, committed.commits);
+  assert.equal(statuses.length, 4);
+  assert.match(statuses[0]!, /Structured output validation failed;/u);
+  assert.match(statuses[0]!, /stale first attempt/u);
+  assert.equal(
+    statuses[1],
+    "Starting structured output retry; retryRemaining=0; resumeSession=session-id",
+  );
+  assert.match(statuses[2]!, /Structured output validation failed;/u);
+  assert.equal(
+    statuses[3],
+    "Recovered the final structured output from the retry result.",
+  );
 });
 
 test("SandcastleAgentExecutor runs a fresh strict review result with one correction opportunity", async () => {
@@ -422,7 +474,7 @@ test("SandcastleAgentExecutor runs a fresh strict review result with one correct
     };
   });
   assert.deepEqual(await executor.executeReview(reviewInput()), review);
-  assert.equal(object(options?.output).maxRetries, 1);
+  assert.equal(object(options?.output).maxRetries, 0);
   assert.equal(options?.promptFile, undefined);
   assert.equal(options?.promptArgs, undefined);
   assert.match(String(options?.prompt), /Review/u);
