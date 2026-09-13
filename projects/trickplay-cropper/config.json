@@ -25,27 +25,27 @@
     "$comment": "Each Agent Attempt selects a supported model and low, medium, high, or xhigh reasoning. Review and documentation profiles are required only while their workflow nodes are enabled.",
     "implement": {
       "$comment": "Initial Delivery Ticket implementation.",
-      "model": "gpt-6-astra",
+      "model": "gpt-5.6-sol",
       "reasoningEffort": "high"
     },
     "review": {
       "$comment": "Fresh-context Standards and Spec review.",
-      "model": "gpt-6-astra",
+      "model": "gpt-5.6-sol",
       "reasoningEffort": "high"
     },
     "ciRepair": {
       "$comment": "Repair of failed required CI checks.",
-      "model": "gpt-6-astra",
+      "model": "gpt-5.6-sol",
       "reasoningEffort": "high"
     },
     "conflictRepair": {
       "$comment": "Repair of an explicit merge conflict.",
-      "model": "gpt-6-astra",
+      "model": "gpt-5.6-sol",
       "reasoningEffort": "high"
     },
     "documentation": {
       "$comment": "Documentation Maintenance.",
-      "model": "gpt-6-astra",
+      "model": "gpt-5.6-sol",
       "reasoningEffort": "high"
     }
   },

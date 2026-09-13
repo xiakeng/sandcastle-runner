@@ -7,5 +7,3 @@ Reported merge conflict:
 {{MERGE_CONFLICT}}
 
 Diagnose the failures and resolve the conflict while preserving both accepted intents.  
-
-Once done, commit only inside the supplied Worktree. Do not push, create or modify a Pull Request, operate CI, merge, or mutate the tracker; those operations belong to the Runner.

@@ -9,5 +9,3 @@ Failed required checks:
 **DO NOT** try to pull latest code from `main` or `{{PROJECT_TARGET_BRANCH}}`.  
 
 Diagnose the failures and make the smallest accepted repair.  
-
-Once done, commit only inside the supplied Worktree. Do not push, create or modify a Pull Request, operate CI, merge, or mutate the tracker; those operations belong to the Runner.

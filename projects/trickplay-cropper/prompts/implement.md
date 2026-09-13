@@ -8,4 +8,3 @@ Implement the work described above.
 Use `/tdd` skill where possible, at pre-agreed seams.  
 Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-Once done, commit only inside the supplied Worktree. Do not push, create or modify a Pull Request, operate CI, merge, or mutate the tracker; those operations belong to the Runner.
