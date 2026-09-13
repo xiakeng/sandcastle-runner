@@ -19,9 +19,9 @@ export function pullRequestMetadataRule(
   metadata: AgentAttemptInput["pullRequestMetadata"],
 ): string {
   if (metadata === "required")
-    return "required non-empty strings; both fields must be present";
+    return "pr_title and pr_body are required complete non-empty strings; the Runner will use them later to create the Pull Request, even if this attempt does not create one";
   if (metadata === "required_for_committed")
-    return "include both as non-empty strings only when outcome is committed; omit both otherwise";
+    return "when outcome is committed, include pr_title and pr_body as complete non-empty strings because the Runner will use them later to create the Pull Request, even if this attempt does not create one; omit both otherwise";
   return "omit both fields";
 }
 
