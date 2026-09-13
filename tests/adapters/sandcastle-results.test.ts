@@ -8,7 +8,10 @@ import { registerTempRoot } from "../support/temp-cleanup.ts";
 import { StructuredOutputError, type RunOptions } from "@ai-hero/sandcastle";
 import type { AgentAttemptResult } from "../../src/run/contracts.ts";
 import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
-import { replacePromptPlaceholders } from "../../src/adapters/sandcastle-output.ts";
+import {
+  pullRequestMetadataRule,
+  replacePromptPlaceholders,
+} from "../../src/adapters/sandcastle-output.ts";
 import {
   committed,
   createExecutor,
@@ -17,6 +20,18 @@ import {
   reviewInput,
   result as makeResult,
 } from "../support/sandcastle.ts";
+
+test("Pull Request metadata rules preserve downstream handoff context", () => {
+  assert.match(
+    pullRequestMetadataRule("required"),
+    /pr_title and pr_body.*Runner will use them later to create the Pull Request/u,
+  );
+  assert.match(
+    pullRequestMetadataRule("required_for_committed"),
+    /even if this attempt does not create one/u,
+  );
+  assert.equal(pullRequestMetadataRule("ignored"), "omit both fields");
+});
 
 test("structured output retry explains validation and repeats the complete protocol", async () => {
   const prompts: RunOptions[] = [];
@@ -62,6 +77,10 @@ test("structured output retry explains validation and repeats the complete proto
     const logFile = path.join(directory, "agent.log");
     await executor.execute({ ...input(), logFile });
     const retryPrompt = prompts.at(-1)?.prompt;
+    assert.match(
+      String(retryPrompt),
+      /\n\nOnce done, commit only inside the supplied Worktree\./u,
+    );
     assert.match(String(retryPrompt), /missing fields: pr_body/u);
     assert.match(String(retryPrompt), /<agent_attempt_result>/u);
     assert.doesNotMatch(
@@ -77,7 +96,7 @@ test("structured output retry explains validation and repeats the complete proto
       ),
       {
         PULL_REQUEST_METADATA_RULE:
-          "required non-empty strings; both fields must be present",
+          "pr_title and pr_body are required complete non-empty strings; the Runner will use them later to create the Pull Request, even if this attempt does not create one",
       },
     ).trim();
     assert.ok(String(retryPrompt).endsWith(protocol));

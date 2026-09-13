@@ -1,3 +1,5 @@
+Once done, commit only inside the supplied Worktree. Do not push, create or modify a Pull Request, operate CI, merge, or mutate the tracker; those operations belong to the Runner.
+
 Return exactly one result enclosed in these tags:
 <review_attempt_result>
 {JSON object}
