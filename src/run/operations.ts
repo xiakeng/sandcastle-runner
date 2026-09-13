@@ -60,21 +60,35 @@ interface ReadOperation<T> {
   operator: OperatorIO;
 }
 
-interface WriteOperation {
+export type WriteReconciliation<T> =
+  { outcome: "pending" } | { outcome: "completed"; result?: T };
+
+interface WriteOperation<T> {
   audit: AuditLog;
-  event: () => Omit<AuditEvent, "result" | "error">;
+  clock: Clock;
+  event: (attempt: number) => Omit<AuditEvent, "result" | "error">;
   operator: OperatorIO;
   beforeRetry?: () => Promise<void>;
+  automaticRetry?: {
+    reconcile?: () => Promise<WriteReconciliation<T>>;
+  };
 }
 
-interface VoidWriteOperation extends WriteOperation {
+interface VoidWriteOperation extends WriteOperation<void> {
   action: () => Promise<void>;
   parseOverride?: never;
 }
 
-interface ResultWriteOperation<T> extends WriteOperation {
+interface ResultWriteOperation<T> extends WriteOperation<T> {
   action: () => Promise<T>;
   parseOverride: (value: string) => T;
+}
+
+function transientWriteFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:\b5\d{2}\b|bad gateway|gateway timeout|timed? out|econn(?:reset|refused)|socket hang up|network)/iu.test(
+    message,
+  );
 }
 
 async function appendPauseEvent(
@@ -240,13 +254,31 @@ export function workflowWrite<T>(
 export async function workflowWrite<T>(
   operation: VoidWriteOperation | ResultWriteOperation<T>,
 ): Promise<T | void> {
+  const retryDelays = [10_000, 20_000, 40_000, 80_000];
+  let attempt = 1;
   for (;;) {
-    const event = operation.event();
+    const event = operation.event(attempt);
     await supervisedAuditWrite(
       () =>
         operation.audit.append({ ...event, result: "started", error: null }),
       operation.operator,
     );
+    const reconciliation = operation.automaticRetry?.reconcile;
+    if (reconciliation) {
+      const state = await reconciliation();
+      if (state.outcome === "completed") {
+        await supervisedAuditWrite(
+          () =>
+            operation.audit.append({
+              ...event,
+              result: "succeeded",
+              error: null,
+            }),
+          operation.operator,
+        );
+        return state.result;
+      }
+    }
     let result: T | void;
     try {
       result = await operation.action();
@@ -261,6 +293,30 @@ export async function workflowWrite<T>(
           }),
         operation.operator,
       );
+      if (reconciliation) {
+        const state = await reconciliation();
+        if (state.outcome === "completed") {
+          await supervisedAuditWrite(
+            () =>
+              operation.audit.append({
+                ...event,
+                result: "succeeded",
+                error: null,
+              }),
+            operation.operator,
+          );
+          return state.result;
+        }
+      }
+      const delay =
+        operation.automaticRetry && transientWriteFailure(error)
+          ? retryDelays[attempt - 1]
+          : undefined;
+      if (delay !== undefined) {
+        await operation.clock.sleep(delay);
+        attempt += 1;
+        continue;
+      }
       for (;;) {
         const response = await pauseForOperator(
           operation.audit,
@@ -270,6 +326,7 @@ export async function workflowWrite<T>(
         );
         if (response === "") {
           await operation.beforeRetry?.();
+          attempt = 1;
           break;
         }
         let result: T | void;

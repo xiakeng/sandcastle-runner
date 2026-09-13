@@ -13,12 +13,12 @@ import {
 import { observeRequiredChecks } from "./pull-request-repair.ts";
 import {
   pullRequestOverride,
-  remoteHeadOverride,
   stopped,
   type PublicationInput,
   type PublishedHandoff,
   type RecoveredPublicationResult,
 } from "./pull-request-core.ts";
+import { remoteHeadOverride } from "./write-reconciliation.ts";
 
 function pullRequestsOverride(value: string): PullRequestRecord[] {
   const parsed = JSON.parse(value) as unknown;
@@ -233,6 +233,7 @@ export async function recoverPublishedHandoffs(
             }),
           parseOverride: pullRequestOverride,
           audit: input.audit,
+          clock: input.clock,
           event: () =>
             input.event(
               "publication_recovery",

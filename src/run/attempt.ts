@@ -56,6 +56,7 @@ async function implementTicket(
           base,
         }),
       audit: input.audit,
+      clock: input.clock,
       event: () =>
         input.event(
           "prepare_worktrees",
@@ -272,6 +273,7 @@ export async function runMaintenanceAttempt(
           base,
         }),
       audit: input.audit,
+      clock: input.clock,
       event: () =>
         input.event(
           "maintenance",

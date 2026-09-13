@@ -10,6 +10,7 @@ import {
   revalidateActiveTicket,
 } from "./discovery.ts";
 import { serializeOperator, workflowWrite } from "./operations.ts";
+import { remoteBranchReconciliation } from "./write-reconciliation.ts";
 import { type PublicationIntent } from "../recovery.ts";
 import { recoverPublishedHandoffs } from "./pull-request-recovery.ts";
 import {
@@ -86,12 +87,28 @@ export async function integratePullRequest(
           }
         },
         audit: input.audit,
-        event: () =>
+        clock: input.clock,
+        automaticRetry: {
+          async reconcile() {
+            const state = await observePullRequestForIntegration(
+              input,
+              pullRequest.number,
+              "merge",
+            );
+            return state.merged
+              ? {
+                  outcome: "completed" as const,
+                  result: { outcome: "accepted" as const },
+                }
+              : { outcome: "pending" as const };
+          },
+        },
+        event: (attempt) =>
           input.event(
             "merge",
             "request_squash_merge",
             `pull_request:${pullRequest.number}`,
-          )(1),
+          )(attempt),
         operator: input.operator,
       });
     } catch (error) {
@@ -166,8 +183,22 @@ export async function publishVerifiedHandoffs(
       await workflowWrite({
         action: () => input.gitWorkspace.push(handoff.worktree, handoff.branch),
         audit: input.audit,
-        event: () =>
-          input.event("publish", "push_branch", `ticket:${handoff.ticket}`)(1),
+        clock: input.clock,
+        automaticRetry: {
+          reconcile: remoteBranchReconciliation(
+            concurrentInput,
+            "publish",
+            handoff.branch,
+            intent.intendedHeadSha,
+            `ticket:${handoff.ticket}`,
+          ),
+        },
+        event: (attempt) =>
+          input.event(
+            "publish",
+            "push_branch",
+            `ticket:${handoff.ticket}`,
+          )(attempt),
         operator: concurrentInput.operator,
       });
       await input.persistPublication?.(handoff.ticket, {
@@ -200,6 +231,7 @@ export async function publishVerifiedHandoffs(
           }),
         parseOverride: pullRequestOverride,
         audit: input.audit,
+        clock: input.clock,
         event: () =>
           input.event(
             "publish",

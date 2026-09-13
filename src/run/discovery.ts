@@ -52,8 +52,14 @@ async function releaseReservation(
           input.runnerAccount,
         ),
       audit: input.audit,
-      event: () =>
-        input.event("release", "remove_runner_assignee", `ticket:${ticket}`)(1),
+      clock: input.clock,
+      automaticRetry: {},
+      event: (attempt) =>
+        input.event(
+          "release",
+          "remove_runner_assignee",
+          `ticket:${ticket}`,
+        )(attempt),
       operator: input.operator,
     });
   }
@@ -66,12 +72,14 @@ async function releaseReservation(
           input.reservationLabel,
         ),
       audit: input.audit,
-      event: () =>
+      clock: input.clock,
+      automaticRetry: {},
+      event: (attempt) =>
         input.event(
           "release",
           "remove_reservation_label",
           `ticket:${ticket}`,
-        )(1),
+        )(attempt),
       operator: input.operator,
     });
   }
@@ -313,12 +321,14 @@ async function reserve(
             input.reservationLabel,
           ),
         audit: input.audit,
-        event: () =>
+        clock: input.clock,
+        automaticRetry: {},
+        event: (attempt) =>
           input.event(
             "reserve",
             "add_reservation_label",
             `ticket:${candidate.number}`,
-          )(1),
+          )(attempt),
         operator: input.operator,
       });
     }
@@ -351,12 +361,14 @@ async function reserve(
             input.runnerAccount,
           ),
         audit: input.audit,
-        event: () =>
+        clock: input.clock,
+        automaticRetry: {},
+        event: (attempt) =>
           input.event(
             "reserve",
             "add_runner_assignee",
             `ticket:${candidate.number}`,
-          )(1),
+          )(attempt),
         operator: input.operator,
       });
     }

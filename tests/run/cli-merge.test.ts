@@ -164,6 +164,45 @@ test("a non-conflict merge rejection enters Operator Pause without conflict repa
   assert.match(await readFile(result.logPath, "utf8"), new RegExp(rejection));
 });
 
+test("a transient merge failure retries after reconciling Pull Request state", async () => {
+  const root = await createProject();
+  const delivery = createCommittedDelivery();
+  let mergeRequests = 0;
+  let merged = false;
+  const sleeps: number[] = [];
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      ...delivery,
+      codeHost: {
+        async getPullRequest() {
+          return {
+            headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            createdAt: "2026-09-09T00:00:00Z",
+            merged,
+            mergeFailure: null,
+          };
+        },
+        async requestSquashMerge() {
+          mergeRequests += 1;
+          if (mergeRequests === 1) throw new Error("502 Bad Gateway");
+          merged = true;
+          return { outcome: "accepted" };
+        },
+      },
+      clock: {
+        async sleep(milliseconds) {
+          sleeps.push(milliseconds);
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(result.summary.completedTickets, [9]);
+  assert.equal(mergeRequests, 2);
+  assert.deepEqual(sleeps, [30_000, 10_000]);
+});
+
 test("an explicit merge conflict is repaired on the original branch and Pull Request", async () => {
   const root = await createProject();
   await writeFile(

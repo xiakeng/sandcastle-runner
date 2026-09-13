@@ -194,7 +194,7 @@ test(
     const args = ["run", "--project", "demo", "--parent", "8"];
 
     const first = await executeCli(args, scenario.dependencies);
-    assert.equal(first.summary.outcome, "cancelled");
+    assert.equal(first.summary.outcome, "succeeded");
     assert.ok(
       scenario.operations.some(
         (operation) =>
@@ -205,7 +205,7 @@ test(
     scenario.resetInterruption();
     restartPoint.current = "integration";
     const second = await executeCli(args, scenario.dependencies);
-    assert.notEqual(second.summary.outcome, "succeeded");
+    assert.equal(second.summary.outcome, "succeeded");
 
     restartPoint.current = null;
     scenario.resetInterruption();

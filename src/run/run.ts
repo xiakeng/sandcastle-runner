@@ -25,6 +25,7 @@ import {
   type RunSummary,
 } from "./run-input.ts";
 import { implementBatch } from "./run-batch.ts";
+import { parentClosureReconciliation } from "./write-reconciliation.ts";
 export type { RunInput, RunOutcome, RunSummary } from "./run-input.ts";
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
@@ -452,12 +453,16 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
         action: () =>
           input.tracker.closeParent(input.repository, input.parentTicket),
         audit: input.audit,
-        event: () =>
+        clock: input.clock,
+        automaticRetry: {
+          reconcile: parentClosureReconciliation(input, event),
+        },
+        event: (attempt) =>
           event(
             "close_parent",
             "close_parent",
             `parent:${input.parentTicket}`,
-          )(1),
+          )(attempt),
         operator: input.operator,
       });
       return summary("succeeded");

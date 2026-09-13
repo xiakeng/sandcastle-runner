@@ -85,7 +85,9 @@ function stopped(
   };
 }
 
-async function ensureLabel(input: MaintenanceInput): Promise<void> {
+async function maintenanceLabelExists(
+  input: MaintenanceInput,
+): Promise<boolean> {
   let page: number | null = 1;
   while (page !== null) {
     const current: number = page;
@@ -97,9 +99,13 @@ async function ensureLabel(input: MaintenanceInput): Promise<void> {
       clock: input.clock,
       operator: input.operator,
     });
-    if (labels.labels.includes(input.maintenanceTicket.label)) return;
+    if (labels.labels.includes(input.maintenanceTicket.label)) return true;
     page = labels.nextPage;
   }
+  return false;
+}
+
+async function ensureLabel(input: MaintenanceInput): Promise<void> {
   await workflowWrite({
     action: () =>
       input.tracker.createLabel(
@@ -107,12 +113,20 @@ async function ensureLabel(input: MaintenanceInput): Promise<void> {
         input.maintenanceTicket.label,
       ),
     audit: input.audit,
-    event: () =>
+    clock: input.clock,
+    automaticRetry: {
+      async reconcile() {
+        return (await maintenanceLabelExists(input))
+          ? { outcome: "completed" as const }
+          : { outcome: "pending" as const };
+      },
+    },
+    event: (attempt) =>
       input.event(
         "maintenance",
         "create_label",
         input.maintenanceTicket.label,
-      )(1),
+      )(attempt),
     operator: input.operator,
   });
 }
@@ -145,8 +159,21 @@ async function closeNoChange(
     await workflowWrite({
       action: () => input.tracker.closeTicket(input.repository, ticket),
       audit: input.audit,
-      event: () =>
-        input.event("maintenance", "close_no_change", `ticket:${ticket}`)(1),
+      clock: input.clock,
+      automaticRetry: {
+        async reconcile() {
+          const changed = await boundary.afterMerge(ticket);
+          return changed.outcome === "terminal"
+            ? { outcome: "completed" as const }
+            : { outcome: "pending" as const };
+        },
+      },
+      event: (attempt) =>
+        input.event(
+          "maintenance",
+          "close_no_change",
+          `ticket:${ticket}`,
+        )(attempt),
       operator: input.operator,
     });
     const confirmation = await boundary.afterMerge(ticket);
@@ -233,6 +260,7 @@ export async function runDocumentationMaintenance(
       parseOverride: (value) =>
         createdTicket(value, input.maintenanceTicket.label),
       audit: input.audit,
+      clock: input.clock,
       event: () =>
         input.event(
           "maintenance",

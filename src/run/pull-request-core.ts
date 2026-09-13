@@ -26,6 +26,10 @@ import {
   recordOperatorOverride,
   workflowWrite,
 } from "./operations.ts";
+import {
+  remoteBranchReconciliation,
+  remoteHeadOverride,
+} from "./write-reconciliation.ts";
 import { type RepairState, type PublicationIntent } from "../recovery.ts";
 
 export interface PullRequestObservation extends PullRequestIdentity {
@@ -142,13 +146,6 @@ export interface RecoveredPublicationResult extends PublicationResult {
   restarted: number[];
 }
 
-export function remoteHeadOverride(value: string): string | null {
-  const parsed = JSON.parse(value) as { headSha?: unknown };
-  if (parsed.headSha !== null && typeof parsed.headSha !== "string")
-    throw new Error("override has invalid remote branch head");
-  return parsed.headSha ?? null;
-}
-
 export function stopped(
   result: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>,
   pullRequests: PullRequestObservation[],
@@ -227,6 +224,7 @@ export async function freshRepairHandoff(
         base,
       }),
     audit: input.audit,
+    clock: input.clock,
     event: () =>
       input.event(
         `${purpose}_repair`,
@@ -378,6 +376,8 @@ export async function pushRepair(
           operator: input.operator,
         });
   if (typeof input.codeHost.getRemoteBranchHead !== "function") return null;
+  const expectedHead = handoff.commits.at(-1)?.sha ?? handoff.base;
+  if (remoteHead === expectedHead) return null;
   if (
     handoff.remoteBranch !== undefined &&
     (remoteHead === null || remoteHead !== handoff.base)
@@ -401,12 +401,22 @@ export async function pushRepair(
         }
       },
       audit: input.audit,
-      event: () =>
+      clock: input.clock,
+      automaticRetry: {
+        reconcile: remoteBranchReconciliation(
+          input,
+          phase,
+          remoteBranch,
+          expectedHead,
+          `branch:${remoteBranch}`,
+        ),
+      },
+      event: (attemptNumber) =>
         input.event(
           phase,
           "push_repair",
           `pull_request:${pullRequest.number}`,
-        )(attempt),
+        )(attemptNumber),
       operator: input.operator,
     });
     return null;
@@ -439,12 +449,24 @@ export async function confirmCompletion(
             }
           },
           audit: input.audit,
-          event: () =>
+          clock: input.clock,
+          automaticRetry: {
+            async reconcile() {
+              const changed = await revalidateMergedTicket(
+                input,
+                handoff.ticket,
+              );
+              return changed.outcome === "terminal"
+                ? { outcome: "completed" as const }
+                : { outcome: "pending" as const };
+            },
+          },
+          event: (attempt) =>
             input.event(
               "ticket_closure",
               "close_ticket",
               `ticket:${handoff.ticket}`,
-            )(1),
+            )(attempt),
           operator: input.operator,
         });
       } catch (error) {
