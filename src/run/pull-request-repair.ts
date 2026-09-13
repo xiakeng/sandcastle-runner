@@ -19,7 +19,6 @@ import {
   pauseForOperator,
   recordOperatorOverride,
 } from "./operations.ts";
-import {} from "../recovery.ts";
 import {
   freshRepairHandoff,
   observePullRequestForIntegration,
