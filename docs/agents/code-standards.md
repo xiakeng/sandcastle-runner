@@ -13,7 +13,6 @@ src/
   config.ts       Project configuration, credentials, prompt paths
   audit.ts        Diagnostic JSONL serialization and filesystem writes
   recovery.ts     Durable recovery snapshot I/O
-  recovery-lock.ts Per-Parent process lock lifecycle
   run/            Workflow decisions and in-memory Run state
   adapters/       GitHub, Git, Sandcastle, clock, and terminal operations
 tests/
