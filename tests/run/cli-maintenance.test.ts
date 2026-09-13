@@ -260,7 +260,10 @@ test("Maintenance Ticket label reads and writes use normal supervised failure ha
     );
 
     assert.equal(result.summary.outcome, "cancelled");
-    assert.equal(labelReads, failure === "read" ? 5 : 1);
+    assert.equal(
+      labelReads,
+      failure === "read" ? 5 : failure === "label" ? 2 : 1,
+    );
     assert.equal(labelWrites, failure === "label" ? 1 : 0);
     assert.equal(ticketWrites, failure === "ticket" ? 1 : 0);
     assert.deepEqual(result.summary.completedTickets, [9]);

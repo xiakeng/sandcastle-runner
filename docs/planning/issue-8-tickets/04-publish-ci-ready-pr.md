@@ -11,7 +11,7 @@ Publish an independently verified local change as its non-draft GitHub PR and de
 ## Acceptance criteria
 
 - [ ] The Runner pushes the existing ticket branch and creates a non-draft PR using nonempty AI-authored title/body unchanged. Do not synthesize metadata/closing keywords, deduplicate PRs, or implement lost-create-response recovery.
-- [ ] Push/create failures enter Operator Pause without automatic write replay. Trusted overrides and repeated uncertain writes retain #8's explicit operator responsibility.
+- [ ] Push failures use remote-head reconciliation before the first attempt and after failures, retrying only while the expected head is not already present. Pull Request creation enters Operator Pause without automatic write replay. Trusted overrides and repeated uncertain writes retain #8's explicit operator responsibility.
 - [ ] Apply existing Parent/child/blocker revalidation before subsequent publication/readiness operations; Parent cancellation stops work without mutating children. Reuse audit and operation-failure handling for every new external operation.
 - [ ] Wait 30 seconds after creation before polling required checks using authoritative GitHub CLI required-check semantics. An empty or all-passing set is ready; pending checks continue waiting; terminal failed/cancelled checks produce CI-repair evidence, never readiness.
 - [ ] Required-check evidence includes failing names, states, and log links. Associate observations with the PR being processed and retain the existing branch/PR identity for later repair.

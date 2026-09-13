@@ -44,7 +44,8 @@ Place these modules under `src/run/`. Each owns a cohesive workflow responsibili
 | `pull-request-recovery.ts` / `pull-request-repair.ts` | Durable publication recovery, required-check polling, and CI/conflict repair budgets. |
 | `maintenance.ts` | One maintenance occurrence: ticket creation, documentation attempt, ordinary PR lifecycle reuse, or direct no-change closure. Scheduling and completion credit stay in `run.ts`. |
 | `cleanup.ts` | Terminal Worktree enumeration, exact ownership matching, removal, and retry evidence. |
-| `operations.ts` | Shared external-read retry and Operator Pause control, cancellation, and operation audit events. Preserve separate normal-result validation and trusted-override handling. |
+| `operations.ts` | Shared external-read retry, safe state-confirmed workflow-write retry, and Operator Pause control, cancellation, and operation audit events. Preserve separate normal-result validation and trusted-override handling. |
+| `write-reconciliation.ts` | Shared state parsers and pre/post-write reconciliation for Parent closure and remote branch writes. It does not perform writes or own workflow state. |
 | `contracts.ts` | The six injected interfaces and cross-module input/result types. Keep operation-specific types beside their owner. |
 
 Keep audit serialization and file writes in `audit.ts`; workflow policy for audit

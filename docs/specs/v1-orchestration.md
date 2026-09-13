@@ -57,15 +57,17 @@ Execution failures enter an Operator Pause after any applicable automatic retry 
 39. As an operator, I want Documentation Maintenance to finish before the next Batch or Parent closeout, so that maintenance is a delivery barrier within the current Run.
 40. As an operator, I want a valid clean no-change maintenance result to close its Maintenance Ticket directly, so that a successful review need not manufacture a commit or PR.
 41. As an operator, I want transient external reads retried within fixed limits, so that temporary failures do not immediately require my input.
-42. As an operator, I want failed writes paused without automatic replay, so that I choose whether to repeat an operation with uncertain effects.
-43. As a trusted operator, I want to retry, abort, or override a failed operation, so that I can supervise exceptional states without a restart-recovery subsystem.
-44. As an operator, I want abort and EOF to close active Agent/Sandcastle resources, so that cancellation follows the supported execution lifecycle.
-45. As an operator, I want diagnostic events that exclude credentials, raw Agent streams, and raw overrides, so that I can inspect a Run without those values being copied into its audit log.
-46. As an operator, I want distinct terminal outcomes and exit codes, so that successful delivery, no work, incomplete work, cancellation, and unrecoverable failure remain distinguishable.
-47. As a Runner maintainer, I want the complete orchestration exercised through scripted fakes and a controlled clock, so that tests are deterministic and require no live service mutations.
-48. As a Runner maintainer, I want the option to run focused Git integration checks in temporary local repositories, so that I can verify actual Worktree and commit behavior without touching a live repository.
-49. As an operator, I want each new Run to ignore earlier recovery state and report ineligible residual work, so that the V1 recovery limitation is explicit.
-50. As a Runner maintainer, I want Tracker and CodeHost boundaries separated, so that a future implemented Plane tracker can coexist with GitHub hosting without changing delivery orchestration.
+42. As an operator, I want safe set-like writes retried within fixed limits, so that temporary failures do not immediately require my input or duplicate resources.
+43. As an operator, I want state-confirmed writes reconciled before the first attempt and after failures, so that an already-completed write is not replayed.
+44. As an operator, I want resource-creating writes paused without automatic replay, so that uncertain responses cannot create duplicates.
+45. As a trusted operator, I want to retry, abort, or override a failed operation, so that I can supervise exceptional states without a restart-recovery subsystem.
+46. As an operator, I want abort and EOF to close active Agent/Sandcastle resources, so that cancellation follows the supported execution lifecycle.
+47. As an operator, I want diagnostic events that exclude credentials, raw Agent streams, and raw overrides, so that I can inspect a Run without those values being copied into its audit log.
+48. As an operator, I want distinct terminal outcomes and exit codes, so that successful delivery, no work, incomplete work, cancellation, and unrecoverable failure remain distinguishable.
+49. As a Runner maintainer, I want the complete orchestration exercised through scripted fakes and a controlled clock, so that tests are deterministic and require no live service mutations.
+50. As a Runner maintainer, I want the option to run focused Git integration checks in temporary local repositories, so that I can verify actual Worktree and commit behavior without touching a live repository.
+51. As an operator, I want each new Run to ignore earlier recovery state and report ineligible residual work, so that the V1 recovery limitation is explicit.
+52. As a Runner maintainer, I want Tracker and CodeHost boundaries separated, so that a future implemented Plane tracker can coexist with GitHub hosting without changing delivery orchestration.
 
 ## Implementation Decisions
 
@@ -159,7 +161,7 @@ Execution failures enter an Operator Pause after any applicable automatic retry 
 - The phase flow covers discovery, reservation, Worktree preparation, implementation, publication, CI wait/repair, merge/conflict repair, completion verification, documentation maintenance, rescan, Parent closeout, and terminal outcome. Operator Pause is an execution event, not a resumable persisted phase.
 - A new Run never adopts or automatically removes Reservations, Worktrees, branches, commits, PRs, or Maintenance Tickets from another Run. Residual artifacts making children ineligible are reported as incomplete work; the operator must finish or remove them before another Run can own that work.
 - Failed external reads have at most five calls total, separated by fixed five-second delays. This includes GitHub/API reads, remote Git queries, and fetch, but excludes ordinary local Git/filesystem reads. Each external command/API invocation has a fixed 60-second timeout. Exhaustion enters Operator Pause; retry resets the five-call budget.
-- Failed external or local workflow writes receive no automatic retry and immediately enter Operator Pause. Other execution-time failures, including local Git/Worktree operations, Agent execution/timeout/handoff failures, exhausted repair, CI or merge waiting timeout, merge or completion failure, and audit failure, also enter Operator Pause.
+- Safe set-like external workflow writes may retry automatically up to four times with 10, 20, 40, and 80 second delays. State-confirmed writes reconcile their target state before the first attempt and after each failure; an already-achieved target is treated as success. Resource-creating writes, including Pull Request and Maintenance Ticket creation, receive no automatic replay. Other failed external or local workflow writes, including local Worktree operations, enter Operator Pause.
 - An Operator Pause has no timeout. Empty input retries the current operation with its complete automatic budget reset. Exactly `q`, or EOF, aborts, closes active Agent/Sandcastle resources, and ends `cancelled`. Any other input is treated as the current operation's successful output.
 - Any nonempty write override suffices. Read or Agent overrides are parsed only enough to obtain downstream-required fields and receive no schema validation or Verified Handoff validation. If necessary fields cannot be extracted, pause again. Do not interpret a non-`q` value as an abort.
 - The Runner does not inspect operator changes, reconcile external state, deduplicate effects, or prove override success. Correctness after override belongs to the trusted operator. Repeating a successful-but-unobserved write can produce duplicate/conflicting artifacts; this is an accepted V1 limitation.

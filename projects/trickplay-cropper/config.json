@@ -55,7 +55,7 @@
     "requiredChecksMinutes": 60,
     "mergeQueueMinutes": 60
   },
-  "ticketClosure": "code_host",
+  "ticketClosure": "runner",
   "maintenanceTicket": {
     "title": "Maintain project documentation",
     "body": "Sync project documents up to the latest code changes.",

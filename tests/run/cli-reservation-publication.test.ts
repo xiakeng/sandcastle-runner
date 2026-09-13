@@ -449,6 +449,7 @@ test("a CI-ready Pull Request is delivered only after its merge and completed cl
   assert.deepEqual(result.summary.completedTickets, [9]);
   assert.deepEqual(operations, [
     "observe:false",
+    "observe:false",
     `merge:1:${commit.sha}:false`,
     "observe:true",
     "close:9",
