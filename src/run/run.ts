@@ -1,16 +1,5 @@
-import type { AuditLog } from "../audit.ts";
-import type { AgentConfig } from "../config.ts";
 import path from "node:path";
-import { implementReservedBatch, type VerifiedHandoff } from "./attempt.ts";
-import type {
-  AgentExecutor,
-  Clock,
-  CodeHost,
-  GitWorkspace,
-  OperatorIO,
-  TicketClosurePolicy,
-  Tracker,
-} from "./contracts.ts";
+import { type VerifiedHandoff } from "./attempt.ts";
 import { discoverAndReserve, releaseTerminalReservation } from "./discovery.ts";
 import {
   externalRead,
@@ -29,84 +18,17 @@ import {
 } from "./pull-request.ts";
 import type { MaintenanceState, PublicationIntent } from "../recovery.ts";
 import { cleanupTicketWorktrees, type CleanupRecord } from "./cleanup.ts";
-
-export type RunOutcome =
-  "succeeded" | "no_work" | "incomplete" | "cancelled" | "failed";
-
-export interface RunSummary {
-  outcome: RunOutcome;
-  project: string;
-  parentTicket: number;
-  targetBranch: string;
-  reasons: string[];
-  batch?: number[];
-  handoffs?: VerifiedHandoff[];
-  pullRequests?: PullRequestObservation[];
-  completedTickets?: number[];
-}
-
-interface RunInput {
-  project: string;
-  parentTicket: number;
-  repository: string;
-  configuredTargetBranch?: string;
-  runId: string;
-  audit: AuditLog;
-  tracker: Tracker;
-  codeHost: CodeHost;
-  clock: Clock;
-  operator: OperatorIO;
-  runnerAccount: string;
-  reservationLabel: string;
-  checkout: string;
-  projectDirectory: string;
-  implementationPrompt: string;
-  implementationAgent: AgentConfig;
-  review: boolean;
-  reviewPrompt: string;
-  reviewAgent?: AgentConfig;
-  ciRepairPrompt: string;
-  ciRepairAgent: AgentConfig;
-  conflictRepairPrompt: string;
-  conflictRepairAgent: AgentConfig;
-  documentationMaintenance: boolean;
-  documentationPrompt: string;
-  documentationAgent?: AgentConfig;
-  maintenanceTicket: { title: string; body: string; label: string };
-  agentTimeoutMs: number;
-  requiredChecksTimeoutMs: number;
-  mergeQueueTimeoutMs: number;
-  adminMerge: boolean;
-  ticketClosure: TicketClosurePolicy;
-  gitWorkspace: GitWorkspace;
-  agentExecutor: AgentExecutor;
-  persistPublication?: (
-    ticket: number,
-    intent: PublicationIntent | null,
-  ) => Promise<void>;
-  persistBatch?: (batch: number[], completed: number[]) => Promise<void>;
-  recoveredPublications?: PublicationIntent[];
-  recoveredBatch?: number[];
-  recoveredCompletedDeliveries?: number[];
-  persistCleanup?: (ticket: number, record: CleanupRecord) => Promise<void>;
-  recoveredCleanup?: Record<string, CleanupRecord>;
-  persistMaintenance?: (state: MaintenanceState) => Promise<void>;
-  recoveredMaintenance?: MaintenanceState;
-}
+import {
+  createEvent,
+  type RunInput,
+  type RunOutcome,
+  type RunSummary,
+} from "./run-input.ts";
+import { implementBatch } from "./run-batch.ts";
+export type { RunInput, RunOutcome, RunSummary } from "./run-input.ts";
 
 export async function runProject(input: RunInput): Promise<RunSummary> {
-  const event =
-    (phase: string, operation: string, target: string) =>
-    (attempt: number) => ({
-      timestamp: input.clock.now().toISOString(),
-      runId: input.runId,
-      project: input.project,
-      parentTicket: input.parentTicket,
-      phase,
-      operation,
-      target,
-      attempt,
-    });
+  const event = createEvent(input);
   const targetBranch =
     input.configuredTargetBranch ??
     (await externalRead({
@@ -347,34 +269,6 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       : { persistPublication: input.persistPublication }),
   });
 
-  const implementBatch = (batch: number[]) =>
-    implementReservedBatch({
-      repository: input.repository,
-      parentTicket: input.parentTicket,
-      tracker: input.tracker,
-      audit: input.audit,
-      clock: input.clock,
-      operator: input.operator,
-      event,
-      runnerAccount: input.runnerAccount,
-      reservationLabel: input.reservationLabel,
-      batch,
-      runId: input.runId,
-      checkout: input.checkout,
-      targetBranch,
-      projectDirectory: input.projectDirectory,
-      promptFile: input.implementationPrompt,
-      agent: input.implementationAgent,
-      review: input.review,
-      reviewPrompt: input.reviewPrompt,
-      ...(input.reviewAgent === undefined
-        ? {}
-        : { reviewAgent: input.reviewAgent }),
-      timeoutMs: input.agentTimeoutMs,
-      gitWorkspace: input.gitWorkspace,
-      agentExecutor: input.agentExecutor,
-    });
-
   const integratePublication = async (
     publication: PublicationResult,
     batchComplete: boolean,
@@ -488,7 +382,12 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     handoffs.push(...publication.published.map(({ handoff }) => handoff));
     let batchComplete = recoveredPublication.restarted.length === 0;
     if (recoveredPublication.restarted.length > 0) {
-      const attempts = await implementBatch(recoveredPublication.restarted);
+      const attempts = await implementBatch(
+        input,
+        targetBranch,
+        event,
+        recoveredPublication.restarted,
+      );
       handoffs.push(...attempts.handoffs);
       batchComplete =
         attempts.handoffs.length === recoveredPublication.restarted.length &&
@@ -570,7 +469,12 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     hadChildren = true;
     batches.push(...discovery.batch);
     await input.persistBatch?.(discovery.batch, completedTickets);
-    const attempts = await implementBatch(discovery.batch);
+    const attempts = await implementBatch(
+      input,
+      targetBranch,
+      event,
+      discovery.batch,
+    );
     handoffs.push(...attempts.handoffs);
     const batchComplete =
       attempts.handoffs.length === discovery.batch.length &&

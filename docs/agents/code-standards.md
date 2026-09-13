@@ -12,7 +12,8 @@ src/
   cli.ts          Command parsing, production wiring, exit status
   config.ts       Project configuration, credentials, prompt paths
   audit.ts        Diagnostic JSONL serialization and filesystem writes
-  recovery.ts     Per-Parent lock and durable recovery snapshot I/O
+  recovery.ts     Durable recovery snapshot I/O
+  recovery-lock.ts Per-Parent process lock lifecycle
   run/            Workflow decisions and in-memory Run state
   adapters/       GitHub, Git, Sandcastle, clock, and terminal operations
 tests/
@@ -36,9 +37,11 @@ Place these modules under `src/run/`. Each owns a cohesive workflow responsibili
 | Module | Code that belongs here |
 | --- | --- |
 | `run.ts` | Public Run entry point; Run-local state; Batch concurrency, all-ready barrier, ordered integration, rescans, maintenance scheduling, and terminal outcomes. |
-| `discovery.ts` | Eligibility, Reservations, Parent/child/blocker revalidation, exhaustion, and Parent closeout eligibility. |
-| `attempt.ts` | Worktree preparation, per-Attempt Git configuration, prompt metadata, Agent Attempt Result parsing/correction, and Verified Handoff decisions using observed Git state. Reused for implementation, repairs, and maintenance. |
-| `pull-request.ts` | Separate publication/readiness and integration operations; push, required-check polling, CI/conflict repair budgets, merge confirmation, and Ticket Closure Policy. It never decides Batch order. |
+| `run-input.ts` / `run-batch.ts` | Run contracts and the wiring from a reserved Batch into Agent Attempts. |
+| `discovery.ts` / `discovery-state.ts` | Eligibility, Reservations, Parent/child/blocker reads and revalidation, exhaustion, and Parent closeout eligibility. |
+| `attempt.ts` / `agent-operation.ts` / `review-attempt.ts` | Worktree preparation, per-Attempt Git configuration, prompt metadata, Agent and Review Attempt execution, and Verified Handoff decisions using observed Git state. Reused for implementation, repairs, and maintenance. |
+| `pull-request.ts` / `pull-request-core.ts` | Publication/readiness, integration, merge confirmation, and Ticket Closure Policy. It never decides Batch order. |
+| `pull-request-recovery.ts` / `pull-request-repair.ts` | Durable publication recovery, required-check polling, and CI/conflict repair budgets. |
 | `maintenance.ts` | One maintenance occurrence: ticket creation, documentation attempt, ordinary PR lifecycle reuse, or direct no-change closure. Scheduling and completion credit stay in `run.ts`. |
 | `cleanup.ts` | Terminal Worktree enumeration, exact ownership matching, removal, and retry evidence. |
 | `operations.ts` | Shared external-read retry and Operator Pause control, cancellation, and operation audit events. Preserve separate normal-result validation and trusted-override handling. |
@@ -58,6 +61,7 @@ Under `src/adapters/`, implement only operations the current implementation need
 | `github-code-host.ts` / `CodeHost` | Repository metadata, PRs, required checks, merge requests, and queue observations. |
 | `git-workspace.ts` / `GitWorkspace` | Fetch, Worktree creation/inspection/closure, commits, working-tree evidence, and push. |
 | `sandcastle.ts` / `AgentExecutor` | Sandcastle invocation, streaming, session continuation, timeout/abort, and settlement. Delegate process lifecycle to Sandcastle. |
+| `sandcastle-output.ts` | Agent and Review Attempt output schemas, validation, and prompt placeholder replacement. |
 | `clock.ts` / `Clock` | Time, delays, and timeouts. |
 | `terminal.ts` / `OperatorIO` | Display and input/EOF; workflow code interprets operator decisions. |
 
