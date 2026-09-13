@@ -210,6 +210,75 @@ test("SandcastleAgentExecutor recovers a missing output tag with continue", asyn
   assert.equal(prompts[2]?.resumeSession, "session-id");
 });
 
+test("SandcastleAgentExecutor recovers a process failure with continue", async () => {
+  const prompts: RunOptions[] = [];
+  const waits: number[] = [];
+  let calls = 0;
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      prompts.push(options);
+      if (options.prompt === "Reply with exactly: SESSION_READY")
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      calls += 1;
+      if (calls === 1) throw new Error("codex exited with code 1");
+      return result(
+        `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
+        committed,
+      );
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+    async () => {},
+    async () => {},
+  );
+
+  await executor.execute(input());
+  assert.deepEqual(waits, [10_000]);
+  assert.equal(prompts[2]?.prompt, "continue");
+  assert.equal(prompts[2]?.resumeSession, "probe-session");
+});
+
+test("SandcastleAgentExecutor stops process recovery when total timeout expires", async () => {
+  const prompts: RunOptions[] = [];
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      prompts.push(options);
+      if (options.prompt === "Reply with exactly: SESSION_READY")
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      throw new Error("codex exited with code 1");
+    },
+    async () => new Promise((resolve) => setTimeout(resolve, 5)),
+    async () => {},
+    async () => {},
+  );
+
+  await assert.rejects(
+    executor.execute({ ...input(), timeoutMs: 1 }),
+    (error) => {
+      const failure = error as Error & {
+        diagnostics?: { sessionId?: string };
+      };
+      assert.match(failure.message, /Agent Attempt timed out/u);
+      assert.equal(failure.diagnostics?.sessionId, "probe-session");
+      return true;
+    },
+  );
+  assert.equal(prompts.length, 2);
+});
+
 test("missing output tag recovery exhausts after four continues", async () => {
   const prompts: string[] = [];
   const waits: number[] = [];
@@ -752,7 +821,14 @@ test("SandcastleAgentExecutor aborts a continuously active run at the configured
 
   await assert.rejects(
     executor.execute({ ...input(), timeoutMs: 5 }),
-    /Agent Attempt timed out/u,
+    (error) => {
+      const failure = error as Error & {
+        diagnostics?: { sessionId?: string };
+      };
+      assert.match(failure.message, /Agent Attempt timed out/u);
+      assert.equal(failure.diagnostics?.sessionId, "probe-session");
+      return true;
+    },
   );
 });
 
@@ -773,7 +849,9 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
           "abort",
           () => {
             clearTimeout(keepAlive);
-            reject(new Error("caller aborted"));
+            reject(
+              (options.signal?.reason ?? new Error("caller aborted")) as Error,
+            );
           },
           { once: true },
         );
@@ -786,7 +864,14 @@ test("SandcastleAgentExecutor forwards caller cancellation", async () => {
   });
   controller.abort();
 
-  await assert.rejects(execution, /caller aborted/u);
+  await assert.rejects(execution, (error) => {
+    const failure = error as Error & {
+      diagnostics?: { sessionId?: string };
+    };
+    assert.match(failure.message, /aborted/u);
+    assert.equal(failure.diagnostics?.sessionId, "probe-session");
+    return true;
+  });
   assert.equal(receivedSignal?.aborted, true);
 });
 

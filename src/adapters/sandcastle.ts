@@ -21,6 +21,7 @@ import type {
   ReviewAttemptResult,
   ReviewVerdict,
 } from "../run/contracts.ts";
+import { OperatorCancelled } from "../run/operations.ts";
 
 type SandcastleRun = (
   options: RunOptions,
@@ -66,6 +67,13 @@ const logPrompt: PromptLogger = (logFile, prompt) =>
   appendFile(logFile, `${promptSeparator}\n${prompt}\n`, "utf8");
 const logStatus: StatusLogger = (logFile, message) =>
   appendFile(logFile, `${message}\n`, "utf8");
+
+function isAgentProcessFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /^codex exited with code \d+(?::|$)/u.test(error.message)
+  );
+}
 
 function pullRequestMetadataRule(
   metadata: AgentAttemptInput["pullRequestMetadata"],
@@ -346,6 +354,63 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     this.logStatus = statusLogger;
   }
 
+  private async waitForContinuation(
+    input: ReviewAttemptInput,
+    recoveryAttempt: number,
+    timeoutSignal: AbortSignal,
+  ): Promise<number | undefined> {
+    const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
+    await this.logStatus(
+      input.logFile,
+      `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+    );
+    let resolveTimeout!: () => void;
+    const timeout = new Promise<void>((resolve) => {
+      resolveTimeout = () => resolve();
+      if (timeoutSignal.aborted) resolve();
+      else
+        timeoutSignal.addEventListener("abort", resolveTimeout, {
+          once: true,
+        });
+    });
+    try {
+      await Promise.race([this.wait(backoff, input.signal), timeout]);
+    } catch (error) {
+      if (error instanceof OperatorCancelled) throw error;
+      if (input.signal.aborted) return undefined;
+      throw error;
+    } finally {
+      timeoutSignal.removeEventListener("abort", resolveTimeout);
+    }
+    return timeoutSignal.aborted ? undefined : recoveryAttempt + 1;
+  }
+
+  private agentFailure(
+    input: ReviewAttemptInput,
+    resumeSession: string | undefined,
+    error: unknown,
+  ): AgentOutputError {
+    const diagnostics: AgentDiagnostics = {
+      errorCategory: "agent_attempt",
+      attemptOrdinal: 1,
+      retryable: input.resumePrompt !== undefined ? false : true,
+      provider: "codex",
+      model: input.model,
+      workingDirectory: input.worktree,
+      ...(resumeSession === undefined ? {} : { sessionId: resumeSession }),
+      diagnosticLogPath: input.logFile,
+      raw: error instanceof Error ? error.message : String(error),
+    };
+    return new AgentOutputError(
+      input.resumePrompt !== undefined
+        ? "Provider session unavailable or unrecoverable for continuation"
+        : error instanceof Error
+          ? error.message
+          : String(error),
+      diagnostics,
+    );
+  }
+
   private async prepareSession(input: ReviewAttemptInput): Promise<string> {
     const existing = this.sessions.get(input.logFile);
     if (existing !== undefined) return existing;
@@ -519,21 +584,36 @@ export class SandcastleAgentExecutor implements AgentExecutor {
               formatStructuredCause(error.cause) || error.message;
             throw new AgentOutputError(error.message, diagnostics);
           }
-          if (input.resumePrompt !== undefined) {
-            throw new AgentOutputError(
-              "Provider session unavailable or unrecoverable for continuation",
-              {
-                errorCategory: "agent_attempt",
-                retryable: false,
-                provider: "codex",
-                model: input.model,
-                workingDirectory: input.worktree,
-                diagnosticLogPath: input.logFile,
-                raw: error instanceof Error ? error.message : String(error),
-              },
+          if (
+            input.signal.aborted &&
+            error === input.signal.reason &&
+            error instanceof OperatorCancelled
+          )
+            throw error;
+          if (
+            !controller.signal.aborted &&
+            !input.signal.aborted &&
+            isAgentProcessFailure(error) &&
+            resumeSession !== undefined &&
+            recoveryAttempt < 4
+          ) {
+            const nextRecoveryAttempt = await this.waitForContinuation(
+              input,
+              recoveryAttempt,
+              controller.signal,
             );
+            if (nextRecoveryAttempt === undefined)
+              throw this.agentFailure(
+                input,
+                resumeSession,
+                controller.signal.reason ?? error,
+              );
+            recoveryAttempt = nextRecoveryAttempt;
+            prompt = "continue";
+            resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
+            continue;
           }
-          throw error;
+          throw this.agentFailure(input, resumeSession, error);
         }
         const sessionId = result.iterations.at(-1)?.sessionId;
         if (sessionId) this.sessions.set(input.logFile, sessionId);
@@ -541,13 +621,18 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         const closingTags = result.stdout.split(`</${tag}>`).length - 1;
         if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
           break;
-        const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
-        await this.logStatus(
-          input.logFile,
-          `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+        const nextRecoveryAttempt = await this.waitForContinuation(
+          input,
+          recoveryAttempt,
+          controller.signal,
         );
-        await this.wait(backoff, input.signal);
-        recoveryAttempt += 1;
+        if (nextRecoveryAttempt === undefined)
+          throw this.agentFailure(
+            input,
+            resumeSession,
+            controller.signal.reason,
+          );
+        recoveryAttempt = nextRecoveryAttempt;
         prompt = "continue";
         resumeSession = this.sessions.get(input.logFile) ?? resumeSession;
       }
