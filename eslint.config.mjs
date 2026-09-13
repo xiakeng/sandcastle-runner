@@ -7,6 +7,15 @@ export default defineConfig(
     ignores: ["coverage/**", "dist/**"],
   },
   {
+    files: ["**/*.{js,mjs,cjs,ts,tsx,mts,cts}"],
+    rules: {
+      "max-lines": [
+        "error",
+        { max: 500, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  {
     files: ["**/*.{ts,tsx,mts,cts}"],
     extends: [
       js.configs.recommended,
