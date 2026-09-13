@@ -259,7 +259,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     let structuredRetryRemaining = 1;
     try {
       for (;;) {
-        await this.logPrompt(input.logFile, prompt);
+        const normalizedPrompt = prompt.trimEnd();
+        const runPrompt = normalizedPrompt.endsWith(outputPrompt)
+          ? prompt
+          : `${normalizedPrompt}\n\n${outputPrompt}`;
+        await this.logPrompt(input.logFile, runPrompt);
         try {
           result = await this.run({
             agent: codex(input.model, { effort: input.effort }),
@@ -267,7 +271,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
               env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
             }),
             cwd: input.worktree,
-            prompt,
+            prompt: runPrompt,
             maxIterations: 1,
             completionSignal: [],
             idleTimeoutSeconds: input.timeoutMs / 1000,

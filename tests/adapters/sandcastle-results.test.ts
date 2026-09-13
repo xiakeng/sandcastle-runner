@@ -403,12 +403,45 @@ test("SandcastleAgentExecutor resumes the captured session for continuation", as
   });
   await executor.execute(input());
   await executor.execute({ ...input(), resumePrompt: "continue" });
-  assert.equal(prompts[1]?.prompt, "continue");
+  assert.match(String(prompts[1]?.prompt), /^continue\n\n/u);
+  assert.match(String(prompts[1]?.prompt), /<agent_attempt_result>/u);
   assert.equal(prompts[1]?.resumeSession, "session-id");
   assert.equal(
     prompts[1]?.logging && JSON.stringify(prompts[1].logging),
     JSON.stringify(prompts[0]?.logging),
   );
+});
+
+test("SandcastleAgentExecutor appends the review output protocol to human continuation prompts", async () => {
+  const review = {
+    outcome: "passed" as const,
+    summary: "Both axes pass.",
+    standards: { verdict: "passed" as const, unresolved_findings: [] },
+    spec: { verdict: "passed" as const, unresolved_findings: [] },
+    checks: [{ command: "npm test", status: "passed" as const, details: "ok" }],
+    blocker: null,
+  };
+  const prompts: RunOptions[] = [];
+  const executor = createExecutor(async (options) => {
+    prompts.push(options);
+    return {
+      iterations: [{ sessionId: "session-id" }],
+      stdout: `<review_attempt_result>${JSON.stringify(review)}</review_attempt_result>`,
+      commits: [],
+      branch: input().branch,
+      output: review,
+    };
+  });
+
+  await executor.executeReview(reviewInput());
+  await executor.executeReview({
+    ...reviewInput(),
+    resumePrompt: "rerun the live verification",
+  });
+
+  assert.match(String(prompts[1]?.prompt), /^rerun the live verification\n\n/u);
+  assert.match(String(prompts[1]?.prompt), /<review_attempt_result>/u);
+  assert.equal(prompts[1]?.resumeSession, "session-id");
 });
 
 test("SandcastleAgentExecutor reports an unavailable continuation session", async () => {

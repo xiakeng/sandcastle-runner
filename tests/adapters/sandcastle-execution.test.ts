@@ -125,7 +125,7 @@ test("SandcastleAgentExecutor recovers a missing output tag with continue", asyn
   assert.deepEqual(statuses, [
     "Waiting 10 seconds before automatic prompt continuation (retry 1/4).",
   ]);
-  assert.equal(prompts[2]?.prompt, "continue");
+  assert.match(String(prompts[2]?.prompt), /^continue\n\n/u);
   assert.equal(prompts[2]?.resumeSession, "session-id");
 });
 
@@ -160,7 +160,7 @@ test("SandcastleAgentExecutor recovers a process failure with continue", async (
 
   await executor.execute(input());
   assert.deepEqual(waits, [10_000]);
-  assert.equal(prompts[2]?.prompt, "continue");
+  assert.match(String(prompts[2]?.prompt), /^continue\n\n/u);
   assert.equal(prompts[2]?.resumeSession, "probe-session");
 });
 
@@ -225,7 +225,10 @@ test("missing output tag recovery exhausts after four continues", async () => {
     /Agent Attempt output must contain exactly one result tag/u,
   );
   assert.deepEqual(waits, [10_000, 20_000, 40_000, 80_000]);
-  assert.equal(prompts.filter((prompt) => prompt === "continue").length, 4);
+  assert.equal(
+    prompts.filter((prompt) => prompt.startsWith("continue\n\n")).length,
+    4,
+  );
 });
 
 test("SandcastleAgentExecutor logs every prompt it sends", async () => {
@@ -254,7 +257,8 @@ test("SandcastleAgentExecutor logs every prompt it sends", async () => {
   await executor.execute({ ...input(), resumePrompt: "operator instruction" });
   assert.equal(logged[0], "Reply with exactly: SESSION_READY");
   assert.match(logged[1]!, /<agent_attempt_result>/u);
-  assert.equal(logged[2], "operator instruction");
+  assert.match(logged[2]!, /^operator instruction\n\n/u);
+  assert.match(logged[2]!, /<agent_attempt_result>/u);
 });
 
 test("prompt logs separate probe and real prompts", async () => {
