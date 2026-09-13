@@ -52,6 +52,10 @@ _Avoid_: Claim
 A Delivery Ticket closed as `not_planned`. It is handled but not delivered, and it satisfies downstream blockers.
 _Avoid_: Completion, delivery
 
+**Run cancellation**:
+A Run ended by the operator entering `q` or by EOF, producing the existing `cancelled` outcome; operating-system termination is not Run cancellation.
+_Avoid_: Abrupt termination, interruption
+
 **Completed Delivery Ticket**:
 A Delivery Ticket whose pull request is merged and whose tracker state is confirmed closed with the completed reason.
 _Avoid_: Handled ticket, terminal ticket
