@@ -12,7 +12,6 @@ import { AuditLog } from "./audit.ts";
 import { loadProject } from "./config.ts";
 import {
   InvalidRecoverySnapshot,
-  ParentLock,
   readRecoverySnapshot,
   recoverySchemaVersion,
   recoveryPaths,
@@ -112,15 +111,8 @@ export async function executeCli(
   const runId = randomUUID();
   const timestamp = dependencies.clock.now().toISOString();
   const paths = recoveryPaths(loaded.directory, parentTicket);
-  let lock: ParentLock | undefined;
   let previous: RecoverySnapshot | null;
   try {
-    lock = await ParentLock.acquire(paths.lock, {
-      project,
-      parentTicket,
-      runId,
-      acquiredAt: timestamp,
-    });
     previous = await readRecoverySnapshot(paths.snapshot);
     if (
       previous !== null &&
@@ -132,15 +124,9 @@ export async function executeCli(
     }
   } catch (error) {
     if (error instanceof InvalidRecoverySnapshot) {
-      try {
-        await dependencies.operator.pause(
-          `Recovery state is invalid: ${error.message}. Fix the snapshot and retry.`,
-        );
-      } finally {
-        await lock?.release();
-      }
-    } else {
-      await lock?.release();
+      await dependencies.operator.pause(
+        `Recovery state is invalid: ${error.message}. Fix the snapshot and retry.`,
+      );
     }
     const summary: RunSummary = {
       outcome: "failed",
@@ -183,12 +169,7 @@ export async function executeCli(
     }
     currentSnapshot = next;
   }
-  try {
-    await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
-  } catch (error) {
-    await lock.release();
-    throw error;
-  }
+  await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
   const audit = new AuditLog(loaded.directory, timestamp, parentTicket, runId);
   const tracker =
     dependencies.tracker ?? new GitHubTracker(loaded.trackerToken);
@@ -350,16 +331,12 @@ export async function executeCli(
       ],
     };
   }
-  try {
-    await writeRecoverySnapshot(paths.snapshot, {
-      ...currentSnapshot,
-      phase: summary.outcome,
-      targetBranch: summary.targetBranch,
-      updatedAt: dependencies.clock.now().toISOString(),
-    });
-  } finally {
-    await lock.release();
-  }
+  await writeRecoverySnapshot(paths.snapshot, {
+    ...currentSnapshot,
+    phase: summary.outcome,
+    targetBranch: summary.targetBranch,
+    updatedAt: dependencies.clock.now().toISOString(),
+  });
   dependencies.operator.write(JSON.stringify(summary));
   return {
     exitCode:
