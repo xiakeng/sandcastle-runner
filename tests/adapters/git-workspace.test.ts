@@ -73,16 +73,13 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
   assert.deepEqual(calls.slice(0, 3), [
     {
       cwd: root,
-      args: [
-        "-c",
-        "credential.helper=!gh auth git-credential",
-        "fetch",
-        "--no-tags",
-        "origin",
-        "trunk",
-      ],
+      args: ["fetch", "--no-tags", "origin", "trunk"],
       timeout: 60_000,
-      env: { GH_TOKEN: "configured-token" },
+      env: {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.extraHeader",
+        GIT_CONFIG_VALUE_0: "Authorization: Bearer configured-token",
+      },
     },
     { cwd: root, args: ["rev-parse", "FETCH_HEAD"], timeout: 60_000 },
     {
@@ -119,15 +116,13 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
   );
   assert.deepEqual(calls.at(-1), {
     cwd: worktree,
-    args: [
-      "-c",
-      "credential.helper=!gh auth git-credential",
-      "push",
-      "origin",
-      "sandcastle/run-id/ticket-9",
-    ],
+    args: ["push", "origin", "sandcastle/run-id/ticket-9"],
     timeout: 60_000,
-    env: { GH_TOKEN: "configured-token" },
+    env: {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: "Authorization: Bearer configured-token",
+    },
   });
 });
 

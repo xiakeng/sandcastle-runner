@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 
+import { formatToolError } from "./process-errors.ts";
+
 export interface GitHubCommandOptions {
   token: string;
   timeout: number;
@@ -21,6 +23,7 @@ const runGitHubCommand: GitHubCommand = (
       args,
       {
         encoding: "utf8",
+        shell: false,
         env: { ...process.env, GH_TOKEN: token },
         maxBuffer: 10 * 1024 * 1024,
         timeout,
@@ -46,10 +49,9 @@ const runGitHubCommand: GitHubCommand = (
           resolve("[]");
           return;
         }
-        const detail = (stderr.trim() || error.message).replaceAll(
-          token,
-          "[redacted]",
-        );
+        const detail = (
+          stderr.trim() || formatToolError("gh", error)
+        ).replaceAll(token, "[redacted]");
         reject(new Error(`gh command failed: ${detail}`));
       },
     );

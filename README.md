@@ -19,7 +19,11 @@ flowchart TD
 
 ## Prerequisites and limitations
 
-- Linux with Node.js, npm, Git, GitHub CLI (`gh`), and Codex available to Sandcastle.
+- macOS, Windows, or Linux with Node.js 22.18.0+, npm, Git, GitHub CLI (`gh`),
+  and Codex installed and available on `PATH`.
+- Install the tools using their native installers or package managers, then
+  verify `node`, `npm`, `git`, `gh`, and `codex` are directly runnable in the
+  same terminal used for the Runner. Missing tools are reported when first used.
 - A GitHub repository checkout at an absolute path.
 - A credential environment variable configured in the project file (for example, `GH_TOKEN`). Interactive `gh auth` is not used.
 - The configured repository and tracker must use GitHub. The runner mutates issues, branches, worktrees, pull requests, and merges; use a test repository when experimenting.
