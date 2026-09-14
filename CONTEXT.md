@@ -16,6 +16,10 @@ _Avoid_: Main branch, base branch, default branch
 One CLI invocation that processes one Project and one supplied Parent Ticket to a terminal outcome.
 _Avoid_: Job, session
 
+**Recovery Snapshot**:
+The canonical persisted record a Run uses to resume processing its Parent Ticket after an interruption.
+_Avoid_: Checkpoint, state file
+
 **Operator Pause**:
 A point at which a Run waits for a trusted operator to retry, abort, or supply a successful result for a failed operation.
 _Avoid_: Terminal pause, human intervention

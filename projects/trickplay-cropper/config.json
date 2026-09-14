@@ -2,7 +2,7 @@
   "$comment": "Replace repository, checkout, runnerAccount, and targetBranch for your Project. checkout must be absolute. ticketClosure is runner or code_host.",
   "repository": "xiakeng/trickplay-cropper",
   "checkout": "/home/xiakeng/Desktop/workspace/trickplay-cropper/",
-  "targetBranch": "sand-test",
+  "targetBranch": "main",
   "tracker": {
     "$comment": "GitHub tracker settings. tokenEnv names an environment variable; reservationLabel marks Runner-owned Delivery Tickets.",
     "type": "github",
@@ -58,7 +58,7 @@
   "ticketClosure": "runner",
   "maintenanceTicket": {
     "title": "Maintain project documentation",
-    "body": "Sync project documents up to the latest code changes.",
+    "body": "Sync project documents under `docs/business` and `docs/code-maps` up to the latest code changes.",
     "label": "doc-maintain"
   }
 }
