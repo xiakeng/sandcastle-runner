@@ -2,6 +2,42 @@
 
 This directory is a project template for Sandcastle Runner. Copy it to `projects/<project-key>` and adapt `config.json` and the prompts.
 
+## Checkout installation contract
+
+The Runner is used from a checkout only. Follow the root [installation
+contract](../../README.md#installation-contract), including the native
+[macOS](../../README.md#macos), [Windows](../../README.md#windows-native-powershell),
+and [Linux](../../README.md#linux) prerequisite, `PATH`, and credential
+guidance. From the repository root, run:
+
+```sh
+npm ci
+npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>
+```
+
+The root contract requires Node.js **>=22.18.0** with its bundled npm, Git,
+GitHub CLI (`gh`), an installed and authenticated Codex CLI, and an absolute
+checkout path. Keep all executables on `PATH` in the terminal that invokes the
+Runner; no Codex version floor is claimed here.
+
+Set the environment variable named by both `tracker.tokenEnv` and
+`codeHost.tokenEnv` in this template's `config.json` before invoking the Runner:
+
+```sh
+export GH_TOKEN='your-github-token'       # macOS/Linux
+```
+
+```powershell
+$env:GH_TOKEN = 'your-github-token'       # Windows PowerShell
+```
+
+The token must be present in the process environment; never commit it. The
+Runner uses non-interactive GitHub operations, so interactive `gh auth login` is
+not used. Missing tools fail on first use through the existing logical-command
+error path. Registry/global/remote-`npx` installation, a native Runner
+installer, bundled prerequisites, broader OS/tool-version guarantees, and
+permanent cross-platform CI are unsupported; see the root contract for details.
+
 ## `config.json`
 
 - `repository`: GitHub repository in `owner/name` form.
