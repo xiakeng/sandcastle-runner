@@ -2,6 +2,67 @@
 
 This directory is a project template for Sandcastle Runner. Copy it to `projects/<project-key>` and adapt `config.json` and the prompts.
 
+## Checkout installation contract
+
+The Runner is used from a checkout only. From the repository root, run:
+
+```sh
+npm ci
+npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>
+```
+
+This repository is not published for registry installation, global installation,
+remote `npx`, or a native Runner installer, and it does not bundle Node.js, npm,
+Git, GitHub CLI, or Codex. Install those prerequisites separately and keep
+their executables on `PATH` in the terminal that invokes the Runner.
+
+### Required tools on every native OS
+
+- Node.js **>=22.18.0**, with its bundled npm.
+- Git, GitHub CLI (`gh`), and an installed, authenticated Codex CLI.
+- An absolute checkout path for the target repository.
+
+Install prerequisites with the native vendor installer or maintained package
+manager for your host: [Node.js](https://nodejs.org/en/download), [Git for
+Windows](https://git-scm.com/install/windows) / [Git for macOS](https://git-scm.com/install/mac) /
+[Git for Linux](https://git-scm.com/install/linux), [GitHub CLI](https://github.com/cli/cli#installation),
+and [Codex CLI](https://learn.chatgpt.com/docs/codex/cli). On macOS, Xcode
+Command Line Tools also provide Git; on Windows, reopen native PowerShell
+after installation so `PATH` changes apply. No Codex version floor is claimed
+by this project.
+
+Check the tools before a Run. Use `command -v node npm git gh codex` on macOS
+and Linux, or `Get-Command node, npm, git, gh, codex` in PowerShell, and verify
+that `node --version` is `v22.18.0` or newer. `npm --version`, `git --version`,
+`gh --version`, and `codex --version` must also succeed.
+Authenticate Codex with the [Codex CLI instructions](https://learn.chatgpt.com/docs/codex/cli)
+and verify `codex login status`. API-key authentication may use
+`OPENAI_API_KEY` in the process environment; ChatGPT authentication uses
+Codex's supported local sign-in. Keep these credentials out of `config.json`.
+
+### Credentials
+
+Set the environment variable named by both `tracker.tokenEnv` and
+`codeHost.tokenEnv` in `config.json` (this template uses `GH_TOKEN`) before
+invoking the Runner:
+
+```sh
+export GH_TOKEN='your-github-token'       # macOS/Linux
+```
+
+```powershell
+$env:GH_TOKEN = 'your-github-token'       # Windows PowerShell
+```
+
+The token must be present in the process environment; never commit it. The
+Runner uses non-interactive GitHub operations, so interactive `gh auth login` is
+not used. Missing tools fail on first use through the existing logical-command
+error path.
+
+These instructions cover native macOS, Windows, and Linux checkout use. They
+do not promise a broader OS/tool-version matrix, permanent cross-platform CI
+coverage, WSL-specific behavior, or a real Codex/Sandcastle integration.
+
 ## `config.json`
 
 - `repository`: GitHub repository in `owner/name` form.
