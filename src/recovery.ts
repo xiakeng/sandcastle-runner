@@ -474,7 +474,7 @@ export async function writeRecoverySnapshot(
   parseSnapshot(snapshot);
   await mkdir(path.dirname(filename), { recursive: true });
   const temporary = `${filename}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", 0o600);
+  const handle = await open(temporary, "wx");
   try {
     await handle.writeFile(`${JSON.stringify(snapshot)}\n`, "utf8");
     await handle.sync();

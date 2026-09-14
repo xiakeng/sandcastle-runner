@@ -11,10 +11,6 @@ function installExitCleanup(): void {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   };
   process.once("exit", cleanup);
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () =>
-      process.exit(128 + (signal === "SIGINT" ? 2 : 15)),
-    );
 }
 
 export function registerTempRoot(root: string): string {
