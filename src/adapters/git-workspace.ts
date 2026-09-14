@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { formatToolError } from "./process-errors.ts";
 import type {
   CommitEvidence,
   GitWorkspace,
@@ -25,6 +26,7 @@ const runGitCommand: GitCommand = (cwd, args, { timeout, env = {} }) =>
       {
         cwd,
         encoding: "utf8",
+        shell: false,
         env: { ...process.env, ...env },
         maxBuffer: 10 * 1024 * 1024,
         timeout,
@@ -32,7 +34,7 @@ const runGitCommand: GitCommand = (cwd, args, { timeout, env = {} }) =>
       (error, stdout, stderr) => {
         if (!error) resolve(stdout);
         else {
-          let detail = (stderr.trim() || error.message).trim();
+          let detail = (stderr.trim() || formatToolError("git", error)).trim();
           for (const value of Object.values(env))
             detail = detail.replaceAll(value, "[redacted]");
           reject(new Error(detail));
@@ -86,11 +88,14 @@ export class LocalGitWorkspace implements GitWorkspace {
   }
 
   private remote(cwd: string, args: string[]): Promise<string> {
-    return this.command(
-      cwd,
-      ["-c", "credential.helper=!gh auth git-credential", ...args],
-      { timeout: 60_000, env: { GH_TOKEN: this.token } },
-    );
+    return this.command(cwd, args, {
+      timeout: 60_000,
+      env: {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.extraHeader",
+        GIT_CONFIG_VALUE_0: `Authorization: Bearer ${this.token}`,
+      },
+    });
   }
 
   async fetchTargetBranch(

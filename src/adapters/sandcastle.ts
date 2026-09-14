@@ -6,7 +6,6 @@ import {
   type RunOptions,
   type RunResult,
 } from "@ai-hero/sandcastle";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
 import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -25,6 +24,7 @@ import type {
   ReviewAttemptInput,
 } from "../run/contracts.ts";
 import { OperatorCancelled } from "../run/operations.ts";
+import { noShellSandbox } from "./no-shell-sandbox.ts";
 
 type SandcastleRun = (
   options: RunOptions,
@@ -161,7 +161,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         );
         const result = await this.run({
           agent: codex(input.model, { effort: input.effort }),
-          sandbox: noSandbox({
+          sandbox: noShellSandbox({
             env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
           }),
           cwd: input.worktree,
@@ -267,7 +267,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         try {
           result = await this.run({
             agent: codex(input.model, { effort: input.effort }),
-            sandbox: noSandbox({
+            sandbox: noShellSandbox({
               env: { GIT_CONFIG_GLOBAL: input.gitConfigGlobal },
             }),
             cwd: input.worktree,
