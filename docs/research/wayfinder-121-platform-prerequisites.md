@@ -8,8 +8,6 @@ Checked: 2026-09-14.
 
 The Runner can present the same user-facing workflow on native Linux, macOS, and Windows when its external prerequisites are installed and on `PATH`: Node.js (minimum `22.18.0`), npm, Git, GitHub CLI (`gh`), and an authenticated Codex CLI. Node's v22.18.0 release includes official binaries for all three OS families, and Node 22.18.0 enables built-in TypeScript type stripping, which is relevant because this package executes `.ts` entrypoints directly. These vendor support statements do not prove the Runner's complete workflow on every OS.
 
-One internal Linux-only assumption remains visible in the current source: [`src/recovery-lock.ts`](../../src/recovery-lock.ts#L27) starts the external `flock` command. `flock` is not a Node, npm, Git, GitHub CLI, or Codex prerequisite documented for Windows or macOS. The lock path therefore cannot be called OS-neutral until it is replaced or given an explicitly tested platform implementation.
-
 Codex's official CLI pages document installation and sign-in flows but do **not** state a minimum Node.js version, a complete OS-version matrix, or a guarantee that every Runner/Sandcastle mode works on each host. Treat Codex availability as an operator prerequisite that must be checked locally, not as a version claim supplied by this project.
 
 ## First-party facts
@@ -52,7 +50,6 @@ Codex's official CLI pages document installation and sign-in flows but do **not*
 | Git/worktrees | Git executable on `PATH`; worktree operations available | same | same; use native Windows paths | `git --version`; add/list/remove a temporary linked worktree; verify clean removal |
 | GitHub API and Git transport | `gh` on `PATH`; non-interactive `GH_TOKEN`/`GITHUB_TOKEN` | same | same | `gh --version`; `gh auth status` or a read-only `gh api` call without printing token; `git fetch/push` through the configured credential helper |
 | Codex execution | `codex` on `PATH`, authenticated; default sandbox may need `bubblewrap` | `codex` on `PATH`, authenticated; Seatbelt is built in for default sandbox | `codex` on `PATH`, authenticated; PowerShell uses native Windows sandbox | `codex --version`; `codex login status`; any real agent run remains an opt-in integration check |
-| Runner lock | **Currently blocked:** source invokes `flock` | **Currently blocked:** no documented `flock` prerequisite | **Currently blocked:** no documented `flock` prerequisite | Replace/port the lock and run contention/release tests on all native hosts |
 
 ## Cross-platform proof plan
 
@@ -68,4 +65,3 @@ Codex's official CLI pages document installation and sign-in flows but do **not*
 - Node's support table describes Node itself, not this Runner's use of Sandcastle, GitHub APIs, or Codex. Node 22.x patch releases can change platform tiers; retain the v22.18.0 source link for the stated floor and re-check when changing the floor.
 - Git and GitHub CLI installation pages do not define a single minimum Git/`gh` version for this project. Do not add one without a tested feature requirement.
 - OpenAI's Codex pages do not promise a minimum OS/Node version for the CLI or parity for the Runner's no-sandbox mode. Availability depends on installation, account/workspace policy, network, and authentication.
-- No official source was found that makes `flock` portable. Its current use is a repository implementation constraint, not a user prerequisite to copy into README.

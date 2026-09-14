@@ -8,7 +8,6 @@ import { cleanupTempRoots, registerTempRoot } from "./support/temp-cleanup.ts";
 
 import {
   InvalidRecoverySnapshot,
-  ParentLock,
   readRecoverySnapshot,
   recoveryPaths,
   writeRecoverySnapshot,
@@ -247,21 +246,6 @@ test("recovery snapshots reject inconsistent unfinished maintenance state", asyn
     "utf8",
   );
   await assert.rejects(readRecoverySnapshot(filename), InvalidRecoverySnapshot);
-});
-
-test("a Parent lock is nonblocking and released explicitly", async () => {
-  const root = registerTempRoot(
-    await mkdtemp(path.join(tmpdir(), "sandcastle-lock-")),
-  );
-  const filename = recoveryPaths(root, 8).lock;
-  const first = await ParentLock.acquire(filename, { runId: "one" });
-  await assert.rejects(
-    ParentLock.acquire(filename, { runId: "two" }),
-    /already held/u,
-  );
-  await first.release();
-  const second = await ParentLock.acquire(filename, { runId: "three" });
-  await second.release();
 });
 
 test("publication reconciliation adopts only exact remote evidence", () => {

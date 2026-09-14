@@ -4,8 +4,6 @@ import path from "node:path";
 
 export const recoverySchemaVersion = 1;
 
-export { ParentLock } from "./recovery-lock.ts";
-
 export type MaintenancePhase =
   | "scheduled"
   | "ticket_created"
@@ -189,7 +187,6 @@ export function recoveryPaths(projectDirectory: string, parentTicket: number) {
   return {
     stateDirectory,
     snapshot: path.join(stateDirectory, `parent-${parentTicket}.json`),
-    lock: path.join(stateDirectory, `parent-${parentTicket}.lock`),
   };
 }
 
