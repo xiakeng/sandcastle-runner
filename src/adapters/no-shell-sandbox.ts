@@ -11,16 +11,6 @@ import type {
 
 import { formatToolError } from "./process-errors.ts";
 
-function shouldEscapeCommandCharacter(character: string | undefined): boolean {
-  return (
-    character !== undefined &&
-    (character === '"' ||
-      character === "'" ||
-      character === "\\" ||
-      /\s/u.test(character))
-  );
-}
-
 function commandArgs(command: string): [string, ...string[]] {
   const trimmed = command.trim();
   const args: string[] = [];
@@ -34,11 +24,11 @@ function commandArgs(command: string): [string, ...string[]] {
       value += character;
       escaped = false;
     } else if (character === "\\" && quote !== "'") {
-      const next = trimmed[index + 1];
       if (windowsPath) {
         value += "\\";
-      } else if (shouldEscapeCommandCharacter(next)) escaped = true;
-      else value += "\\";
+      } else {
+        escaped = true;
+      }
     } else if (quote !== "" && character === quote) {
       quote = "";
     } else if (quote === "") {
@@ -91,12 +81,12 @@ function environmentValue(
   env: Record<string, string | undefined>,
   name: string,
 ): string | undefined {
-  const exact = env[name];
-  if (exact !== undefined) return exact;
-  const entry = Object.entries(env).find(
-    ([key]) => key.toLowerCase() === name.toLowerCase(),
-  );
-  return entry?.[1];
+  const entries = Object.entries(env);
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const [key, value] = entries[index]!;
+    if (key.toLowerCase() === name.toLowerCase()) return value;
+  }
+  return undefined;
 }
 
 function resolveWindowsCommand(
