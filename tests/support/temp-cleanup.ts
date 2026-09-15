@@ -11,6 +11,7 @@ function installExitCleanup(): void {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
   };
   process.once("exit", cleanup);
+  // Forced termination cannot run JavaScript; clean up every signal Node delivers here.
   for (const [signal, code] of [
     ["SIGINT", 130],
     ["SIGTERM", 143],

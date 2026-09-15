@@ -27,10 +27,9 @@ test("registered roots are removed when the test process receives SIGTERM", asyn
   );
   const stdout = child.stdout;
   assert.ok(stdout);
-  const exit = once(child, "exit") as Promise<[
-    number | null,
-    NodeJS.Signals | null,
-  ]>;
+  const exit = once(child, "exit") as Promise<
+    [number | null, NodeJS.Signals | null]
+  >;
   const timer = setTimeout(() => {
     child.kill();
   }, 5000);
