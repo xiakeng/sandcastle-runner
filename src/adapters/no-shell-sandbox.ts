@@ -35,13 +35,7 @@ function commandArgs(command: string): [string, ...string[]] {
       escaped = false;
     } else if (character === "\\" && quote !== "'") {
       const next = trimmed[index + 1];
-      const nextNext = trimmed[index + 2];
-      if (
-        windowsPath ||
-        (next === '"' &&
-          quote === '"' &&
-          (nextNext === undefined || /\s/u.test(nextNext)))
-      ) {
+      if (windowsPath) {
         value += "\\";
       } else if (shouldEscapeCommandCharacter(next)) escaped = true;
       else value += "\\";
@@ -57,9 +51,11 @@ function commandArgs(command: string): [string, ...string[]] {
         }
       } else {
         value += character;
-        windowsPath ||= /^[A-Za-z]:$/.test(value);
       }
-    } else value += character;
+    } else {
+      value += character;
+      windowsPath ||= quote === '"' && /^[A-Za-z]:$/.test(value);
+    }
   }
   if (escaped) throw new Error("invalid Codex command quoting");
   if (quote !== "") throw new Error("invalid Codex command quoting");
@@ -73,6 +69,8 @@ function isWindowsShim(file: string): boolean {
 }
 
 function quoteWindowsCommandArg(value: string): string {
+  if (/["%!\r\n]/u.test(value))
+    throw new Error("unsupported Windows shim argument");
   let result = '"';
   let backslashes = 0;
   for (const character of value) {
