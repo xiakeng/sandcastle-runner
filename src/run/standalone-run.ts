@@ -1,5 +1,8 @@
 import type { VerifiedHandoff } from "./attempt.ts";
-import { discoverAndReserveStandalone } from "./discovery.ts";
+import {
+  discoverAndReserveStandalone,
+  discoverAndReserveStandaloneBatch,
+} from "./discovery.ts";
 import {
   publishVerifiedHandoffs,
   type PublicationInput,
@@ -31,20 +34,36 @@ export async function runStandaloneIssue(
   context: StandaloneRunContext,
 ): Promise<RunSummary> {
   const { input } = context;
-  const discovery = await discoverAndReserveStandalone({
-    repository: input.repository,
-    parentTicket: input.parentTicket,
-    standaloneIssue: input.issueTicket!,
-    tracker: input.tracker,
-    audit: input.audit,
-    clock: input.clock,
-    operator: input.operator,
-    retryPolicy: input.retryPolicy,
-    event: context.event,
-    runnerAccount: input.runnerAccount,
-    reservationLabel: input.reservationLabel,
-    cleanupTerminal: context.cleanupTerminal,
-  });
+  const selected = input.standaloneIssueList ?? [input.issueTicket!];
+  const discovery = input.standaloneIssueList
+    ? await discoverAndReserveStandaloneBatch({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        standaloneIssues: selected,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        retryPolicy: input.retryPolicy,
+        event: context.event,
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+        cleanupTerminal: context.cleanupTerminal,
+      })
+    : await discoverAndReserveStandalone({
+        repository: input.repository,
+        parentTicket: input.parentTicket,
+        standaloneIssue: input.issueTicket!,
+        tracker: input.tracker,
+        audit: input.audit,
+        clock: input.clock,
+        operator: input.operator,
+        retryPolicy: input.retryPolicy,
+        event: context.event,
+        runnerAccount: input.runnerAccount,
+        reservationLabel: input.reservationLabel,
+        cleanupTerminal: context.cleanupTerminal,
+      });
   if (discovery.outcome !== "incomplete" || discovery.batch.length === 0)
     return context.summary(
       discovery.outcome === "close_parent" ? "succeeded" : discovery.outcome,

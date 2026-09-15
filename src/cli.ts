@@ -51,29 +51,38 @@ export interface CliResult {
 
 function parseArguments(argv: string[]): {
   project: string;
-  parentTicket: number;
+  parentTicket?: number;
+  selector: "parent" | "issue";
   issueTicket?: number;
 } {
-  if (argv.length !== 5 || argv[0] !== "run" || argv[1] !== "--project")
+  if (
+    (argv.length !== 4 && argv.length !== 5) ||
+    argv[0] !== "run" ||
+    argv[1] !== "--project"
+  )
     throw new Error(
-      "usage: sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)",
+      "usage: sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue [<issue-number>])",
     );
   const project = argv[2];
-  const selector = argv[3];
-  const ticket = Number(argv[4]);
-  if (
-    !project ||
-    (selector !== "--parent" && selector !== "--issue") ||
-    !Number.isSafeInteger(ticket) ||
-    ticket <= 0
-  ) {
+  const rawSelector = argv[3];
+  if (!project || (rawSelector !== "--parent" && rawSelector !== "--issue")) {
     throw new Error(
       "project and a positive Parent Ticket or issue number are required",
     );
   }
-  return selector === "--issue"
-    ? { project, parentTicket: ticket, issueTicket: ticket }
-    : { project, parentTicket: ticket };
+  const selector = rawSelector === "--issue" ? "issue" : "parent";
+  if (argv.length === 4) {
+    if (selector !== "issue") throw new Error("a Parent Ticket is required");
+    return { project, selector };
+  }
+  const ticket = Number(argv[4]);
+  if (!Number.isSafeInteger(ticket) || ticket <= 0)
+    throw new Error(
+      "project and a positive Parent Ticket or issue number are required",
+    );
+  return selector === "issue"
+    ? { project, selector, parentTicket: ticket, issueTicket: ticket }
+    : { project, selector, parentTicket: ticket };
 }
 
 export async function executeCli(
@@ -81,10 +90,11 @@ export async function executeCli(
   dependencies: CliDependencies,
 ): Promise<CliResult> {
   let project: string;
-  let parentTicket: number;
+  let parentTicket: number | undefined;
+  let selector: "parent" | "issue";
   let issueTicket: number | undefined;
   try {
-    ({ project, parentTicket, issueTicket } = parseArguments(argv));
+    ({ project, parentTicket, selector, issueTicket } = parseArguments(argv));
   } catch (error) {
     const summary: RunSummary = {
       outcome: "failed",
@@ -101,7 +111,7 @@ export async function executeCli(
   let loaded: Awaited<ReturnType<typeof loadProject>>;
   try {
     loaded = await loadProject(dependencies.root, project, dependencies.env, {
-      ...(issueTicket === undefined
+      ...(selector !== "issue"
         ? {}
         : { disableDocumentationMaintenance: true }),
     });
@@ -109,7 +119,7 @@ export async function executeCli(
     const summary: RunSummary = {
       outcome: "failed",
       project,
-      parentTicket,
+      parentTicket: parentTicket ?? 0,
       targetBranch: "unresolved",
       reasons: [
         error instanceof Error ? error.message : "startup validation failed",
@@ -118,19 +128,45 @@ export async function executeCli(
     dependencies.operator.write(JSON.stringify(summary));
     return { exitCode: 1, summary, logPath: null };
   }
+  const standaloneIssueList =
+    selector === "issue" && issueTicket === undefined
+      ? loaded.config.issueList
+      : undefined;
+  if (standaloneIssueList?.length === 0) {
+    const summary: RunSummary = {
+      outcome: "failed",
+      project,
+      parentTicket: 0,
+      targetBranch: "unresolved",
+      reasons: ["issueList must not be empty for value-less --issue"],
+    };
+    dependencies.operator.write(JSON.stringify(summary));
+    return { exitCode: 1, summary, logPath: null };
+  }
+  const effectiveParentTicket = parentTicket ?? standaloneIssueList?.[0] ?? 0;
   const runId = randomUUID();
   const timestamp = dependencies.clock.now().toISOString();
-  const runKind = issueTicket === undefined ? "parent" : "issue";
-  const paths = recoveryPaths(loaded.directory, parentTicket, runKind);
+  const runKind = selector;
+  const selectionIssueList =
+    selector === "parent" ? loaded.config.issueList : standaloneIssueList;
+  const paths = recoveryPaths(
+    loaded.directory,
+    effectiveParentTicket,
+    runKind,
+    selectionIssueList ?? [],
+  );
   let previous: RecoverySnapshot | null;
   try {
     previous = await readRecoverySnapshot(paths.snapshot);
     if (
       previous !== null &&
       (previous.project !== project ||
-        previous.parentTicket !== parentTicket ||
+        previous.parentTicket !== effectiveParentTicket ||
         (previous.runKind ?? "parent") !== runKind ||
-        previous.issueTicket !== issueTicket)
+        previous.issueTicket !== issueTicket ||
+        (selectionIssueList !== undefined &&
+          JSON.stringify(previous.issueList ?? []) !==
+            JSON.stringify(selectionIssueList)))
     ) {
       throw new InvalidRecoverySnapshot(
         "recovery snapshot identity does not match this Run",
@@ -145,7 +181,7 @@ export async function executeCli(
     const summary: RunSummary = {
       outcome: "failed",
       project,
-      parentTicket,
+      parentTicket: effectiveParentTicket,
       targetBranch: loaded.config.targetBranch ?? "unresolved",
       reasons: [
         error instanceof Error ? error.message : "recovery startup failed",
@@ -160,9 +196,12 @@ export async function executeCli(
     project,
     repository: loaded.config.repository,
     checkout: loaded.config.checkout,
-    parentTicket,
+    parentTicket: effectiveParentTicket,
     runKind,
     ...(issueTicket === undefined ? {} : { issueTicket }),
+    ...(selectionIssueList === undefined || selectionIssueList.length === 0
+      ? {}
+      : { issueList: selectionIssueList }),
     runId,
     phase: "running",
     targetBranch: loaded.config.targetBranch ?? null,
@@ -186,7 +225,12 @@ export async function executeCli(
     currentSnapshot = next;
   }
   await writeRecoverySnapshot(paths.snapshot, currentSnapshot);
-  const audit = new AuditLog(loaded.directory, timestamp, parentTicket, runId);
+  const audit = new AuditLog(
+    loaded.directory,
+    timestamp,
+    effectiveParentTicket,
+    runId,
+  );
   const tracker =
     dependencies.tracker ?? new GitHubTracker(loaded.trackerToken);
   const codeHost =
@@ -260,8 +304,10 @@ export async function executeCli(
     await supervisedAuditWrite(() => audit.create(), dependencies.operator);
     summary = await runProject({
       project,
-      parentTicket,
+      parentTicket: effectiveParentTicket,
+      issueList: loaded.config.issueList,
       ...(issueTicket === undefined ? {} : { issueTicket }),
+      ...(standaloneIssueList === undefined ? {} : { standaloneIssueList }),
       repository: loaded.config.repository,
       ...(loaded.config.targetBranch === undefined
         ? {}
@@ -296,7 +342,7 @@ export async function executeCli(
       ),
       conflictRepairAgent: loaded.config.agents.conflictRepair,
       documentationMaintenance:
-        issueTicket === undefined &&
+        selector === "parent" &&
         loaded.config.workflow.documentationMaintenance,
       maintenanceTicket: loaded.config.maintenanceTicket,
       documentationPrompt: path.join(
@@ -345,7 +391,7 @@ export async function executeCli(
     summary = {
       outcome: error instanceof OperatorCancelled ? "cancelled" : "failed",
       project,
-      parentTicket,
+      parentTicket: effectiveParentTicket,
       targetBranch: loaded.config.targetBranch ?? "unresolved",
       reasons: [
         error instanceof OperatorCancelled

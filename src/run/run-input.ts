@@ -34,7 +34,9 @@ export interface RunSummary {
 export interface RunInput {
   project: string;
   parentTicket: number;
+  issueList: number[];
   issueTicket?: number;
+  standaloneIssueList?: number[];
   repository: string;
   configuredTargetBranch?: string;
   runId: string;

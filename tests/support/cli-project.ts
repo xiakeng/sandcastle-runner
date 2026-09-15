@@ -11,6 +11,7 @@ import { registerTempRoot } from "../support/temp-cleanup.ts";
 export const validConfig = {
   repository: "owner/repo",
   checkout: "/tmp/repo",
+  issueList: [],
   targetBranch: "main",
   tracker: {
     type: "github",

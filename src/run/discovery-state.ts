@@ -14,6 +14,8 @@ export interface DiscoveryInput {
   repository: string;
   parentTicket: number;
   standaloneIssue?: number;
+  standaloneIssues?: number[];
+  issueList?: number[];
   tracker: Tracker;
   audit: AuditLog;
   clock: Clock;
@@ -39,6 +41,7 @@ export interface Selection {
   blocked: number[];
   externallyOwned: number[];
   reservations: string[];
+  missing: number[];
 }
 
 function record(value: unknown, message: string): Record<string, unknown> {
@@ -280,6 +283,10 @@ export async function inspect(
   const blocked: number[] = [];
   const externallyOwned: number[] = [];
   const reservations: { number: number; state: string }[] = [];
+  const allowed =
+    input.issueList && input.issueList.length > 0
+      ? new Set(input.issueList)
+      : undefined;
   for (const child of children) {
     const blockers = await readBlockers(input, child.number, phase);
     const invalidBlocker = blockers.find(
@@ -313,6 +320,7 @@ export async function inspect(
     if (hasOpenBlocker) blocked.push(child.number);
     if (
       !excluded.has(child.number) &&
+      (allowed === undefined || allowed.has(child.number)) &&
       !hasExternalOwner &&
       !hasOpenBlocker &&
       readyForAgent &&
@@ -330,6 +338,14 @@ export async function inspect(
     reservations: reservations
       .sort((left, right) => left.number - right.number)
       .map(({ number, state }) => `${number} (${state})`),
+    missing:
+      allowed === undefined
+        ? []
+        : [...allowed]
+            .filter(
+              (number) => !children.some((child) => child.number === number),
+            )
+            .sort((left, right) => left - right),
   };
 }
 
@@ -339,8 +355,12 @@ export async function revalidateTicket(
 ): Promise<
   { inScope: false } | { inScope: true; ticket: Ticket; blocked: boolean }
 > {
-  if (input.standaloneIssue !== undefined) {
-    if (input.standaloneIssue !== ticketNumber) return { inScope: false };
+  if (
+    input.standaloneIssue !== undefined ||
+    input.standaloneIssues !== undefined
+  ) {
+    const selected = input.standaloneIssues ?? [input.standaloneIssue!];
+    if (!selected.includes(ticketNumber)) return { inScope: false };
     const ticket = await externalRead({
       action: () => input.tracker.getTicket(input.repository, ticketNumber),
       parseOverride: (value) =>

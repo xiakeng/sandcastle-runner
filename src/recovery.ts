@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+/* eslint-disable max-lines */
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 
@@ -188,11 +189,25 @@ export function recoveryPaths(
   projectDirectory: string,
   ticket: number,
   kind: "parent" | "issue" = "parent",
+  issueList: number[] = [],
 ) {
   const stateDirectory = path.join(projectDirectory, "state");
+  const normalized = [...issueList].sort((left, right) => left - right);
+  const hash = createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex")
+    .slice(0, 12);
+  const filename =
+    kind === "issue"
+      ? issueList.length > 0
+        ? `issue-${hash}.json`
+        : `issue-${ticket}.json`
+      : issueList.length > 0
+        ? `parent-${ticket}-${hash}.json`
+        : `parent-${ticket}.json`;
   return {
     stateDirectory,
-    snapshot: path.join(stateDirectory, `${kind}-${ticket}.json`),
+    snapshot: path.join(stateDirectory, filename),
   };
 }
 
