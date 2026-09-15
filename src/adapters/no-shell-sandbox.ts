@@ -33,7 +33,15 @@ function commandArgs(command: string): [string, ...string[]] {
       value += character;
       escaped = false;
     } else if (character === "\\" && quote !== "'") {
-      if (shouldEscapeCommandCharacter(trimmed[index + 1])) escaped = true;
+      const next = trimmed[index + 1];
+      const nextNext = trimmed[index + 2];
+      if (
+        next === '"' &&
+        quote === '"' &&
+        (nextNext === undefined || /\s/u.test(nextNext))
+      ) {
+        value += "\\";
+      } else if (shouldEscapeCommandCharacter(next)) escaped = true;
       else value += "\\";
     } else if (quote !== "" && character === quote) {
       quote = "";
@@ -47,7 +55,7 @@ function commandArgs(command: string): [string, ...string[]] {
       } else value += character;
     } else value += character;
   }
-  if (escaped) value += "\\";
+  if (escaped) throw new Error("invalid Codex command quoting");
   if (quote !== "") throw new Error("invalid Codex command quoting");
   if (value !== "") args.push(value);
   if (args.length === 0) throw new Error("empty Codex command");
@@ -56,6 +64,10 @@ function commandArgs(command: string): [string, ...string[]] {
 
 function isWindowsShim(file: string): boolean {
   return /\.(?:bat|cmd)$/iu.test(file);
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function resolveWindowsCommand(
@@ -85,9 +97,10 @@ function spawnCommand(
   const executable = resolveWindowsCommand(file, env);
   if (!isWindowsShim(executable)) return { file: executable, args };
   const comspec = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+  const command = [executable, ...args].map(quoteWindowsCommandArg).join(" ");
   return {
     file: comspec,
-    args: ["/d", "/s", "/c", executable, ...args],
+    args: ["/d", "/s", "/c", command],
   };
 }
 

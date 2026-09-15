@@ -44,6 +44,12 @@ test("noShellSandbox preserves Windows path separators and spaces", async () => 
   );
   assert.equal(result.stdout, path);
   assert.equal(result.exitCode, 0);
+  const trailingSeparator = "C:\\work repo\\";
+  const trailingResult = await handle.exec(
+    `node -e 'process.stdout.write(process.argv[1])' "${trailingSeparator}"`,
+  );
+  assert.equal(trailingResult.stdout, trailingSeparator);
+  assert.equal(trailingResult.exitCode, 0);
   await handle.close();
 });
 
