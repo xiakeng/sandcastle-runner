@@ -191,14 +191,21 @@ export async function discoverAndReserveStandaloneBatch(
   }
   if (reasons.length > 0) return { outcome: "incomplete", batch: [], reasons };
   const reserved: number[] = [];
-  for (const issue of eligible) {
+  for (const issue of eligible.slice(0, 3)) {
     const result = await discoverAndReserveStandalone({
       ...input,
       standaloneIssue: issue,
       standaloneIssues: [issue],
     });
-    if (result.outcome !== "incomplete" || result.batch.length === 0)
-      return result;
+    if (result.outcome !== "incomplete" || result.batch.length === 0) {
+      return reserved.length === 0
+        ? result
+        : {
+            outcome: "incomplete",
+            batch: reserved,
+            reasons: [...reasons, ...result.reasons],
+          };
+    }
     reserved.push(...result.batch);
   }
   return reserved.length === 0
