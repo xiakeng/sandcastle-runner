@@ -1,0 +1,9 @@
+# Repair merge conflict for Pull Request {{PULL_REQUEST_NUMBER}}
+
+Work only in the supplied Worktree `{{WORKTREE_PATH}}` on delivery branch `{{SOURCE_BRANCH}}`, based on `{{BASE_SHA}}` for Project Target Branch `{{PROJECT_TARGET_BRANCH}}`. The freshly fetched Target Branch SHA is `{{TARGET_BRANCH_SHA}}`. The authoritative ticket is `{{TICKET_REFERENCE}}` (Delivery Ticket {{TICKET_NUMBER}}), and the existing Pull Request is {{PULL_REQUEST_URL}}.
+
+Reported merge conflict:
+
+{{MERGE_CONFLICT}}
+
+Diagnose the failures and resolve the conflict while preserving both accepted intents.  

@@ -3,3 +3,4 @@ dist/
 node_modules/
 projects/**/logs
 projects/**/state
+projects/**/worktrees
