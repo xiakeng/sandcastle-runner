@@ -30,6 +30,7 @@ function commandArgs(command: string): [string, ...string[]] {
       }
     } else if (quote !== "" && character === quote) {
       quote = "";
+      windowsPath = false;
     } else if (quote === "") {
       if (character === "'" || character === '"') quote = character;
       else if (/\s/u.test(character)) {
