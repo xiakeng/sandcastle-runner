@@ -7,6 +7,7 @@ import type {
   CodeHost,
   GitWorkspace,
   OperatorIO,
+  RetryPolicy,
   TicketClosurePolicy,
   Tracker,
 } from "./contracts.ts";
@@ -64,6 +65,7 @@ export interface RunInput {
   mergeQueueTimeoutMs: number;
   adminMerge: boolean;
   ticketClosure: TicketClosurePolicy;
+  retryPolicy: RetryPolicy;
   gitWorkspace: GitWorkspace;
   agentExecutor: AgentExecutor;
   persistPublication?: (

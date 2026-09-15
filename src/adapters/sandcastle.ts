@@ -95,10 +95,14 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     recoveryAttempt: number,
     timeoutSignal: AbortSignal,
   ): Promise<number | undefined> {
-    const backoff = [10_000, 20_000, 40_000, 80_000][recoveryAttempt]!;
+    const policy = input.retryPolicy;
+    const backoff =
+      policy.agentRetryDelay[
+        Math.min(recoveryAttempt, policy.agentRetryDelay.length - 1)
+      ]! * 1000;
     await this.logStatus(
       input.logFile,
-      `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/4).`,
+      `Waiting ${backoff / 1000} seconds before automatic prompt continuation (retry ${recoveryAttempt + 1}/${policy.agentRetry}).`,
     );
     let resolveTimeout!: () => void;
     const timeout = new Promise<void>((resolve) => {
@@ -127,7 +131,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     error: unknown,
   ): AgentOutputError {
     const diagnostics: AgentDiagnostics = {
-      errorCategory: "agent_attempt",
+      errorCategory: "agent_retry",
       attemptOrdinal: 1,
       retryable: input.resumePrompt !== undefined ? false : true,
       provider: "codex",
@@ -152,8 +156,8 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     if (existing !== undefined) return existing;
 
     let lastError: unknown;
-    const backoffs = [10_000, 20_000, 40_000, 80_000];
-    for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+    const policy = input.retryPolicy;
+    for (let attempt = 0; attempt <= policy.operationRetry; attempt++) {
       try {
         await this.logPrompt(
           input.logFile,
@@ -180,19 +184,26 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         return sessionId;
       } catch (error) {
         lastError = error;
-        if (attempt === backoffs.length) break;
-        await this.wait(backoffs[attempt]!, input.signal);
+        if (attempt === policy.operationRetry) break;
+        const delaySeconds =
+          policy.operationRetryDelay[
+            Math.min(attempt, policy.operationRetryDelay.length - 1)
+          ]!;
+        await this.wait(delaySeconds * 1000, input.signal);
       }
     }
-    throw new AgentOutputError("Agent session probe failed after 4 retries", {
-      errorCategory: "operator_pause",
-      retryable: false,
-      provider: "codex",
-      model: input.model,
-      workingDirectory: input.worktree,
-      diagnosticLogPath: input.logFile,
-      raw: lastError instanceof Error ? lastError.message : String(lastError),
-    });
+    throw new AgentOutputError(
+      `Agent session probe failed after ${policy.operationRetry} retries`,
+      {
+        errorCategory: "operation_retry",
+        retryable: false,
+        provider: "codex",
+        model: input.model,
+        workingDirectory: input.worktree,
+        diagnosticLogPath: input.logFile,
+        raw: lastError instanceof Error ? lastError.message : String(lastError),
+      },
+    );
   }
 
   private async runOutput<T>(
@@ -237,7 +248,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       throw new AgentOutputError(
         "Provider session unavailable for continuation",
         {
-          errorCategory: "agent_attempt",
+          errorCategory: "agent_retry",
           retryable: false,
           provider: "codex",
           model: input.model,
@@ -256,7 +267,9 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     );
     let result: Awaited<ReturnType<SandcastleRun>>;
     let recoveryAttempt = 0;
-    let structuredRetryRemaining = 1;
+    const policy = input.retryPolicy;
+    let structuredRetryRemaining = policy.agentRetry;
+    let structuredRetryAttempt = 0;
     try {
       for (;;) {
         const normalizedPrompt = prompt.trimEnd();
@@ -293,6 +306,14 @@ export class SandcastleAgentExecutor implements AgentExecutor {
             );
             if (structuredRetryRemaining > 0 && error.sessionId !== undefined) {
               structuredRetryRemaining -= 1;
+              const nextRecoveryAttempt = await this.waitForContinuation(
+                input,
+                structuredRetryAttempt,
+                controller.signal,
+              );
+              if (nextRecoveryAttempt === undefined)
+                throw this.agentFailure(input, error.sessionId, error);
+              structuredRetryAttempt = nextRecoveryAttempt;
               prompt = [
                 `The previous structured output failed validation. Specific validation errors: ${formatStructuredCause(error.cause)}`,
                 "Re-emit exactly one corrected result using the complete output protocol below.",
@@ -335,7 +356,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
             !input.signal.aborted &&
             isAgentProcessFailure(error) &&
             resumeSession !== undefined &&
-            recoveryAttempt < 4
+            recoveryAttempt < policy.agentRetry
           ) {
             const nextRecoveryAttempt = await this.waitForContinuation(
               input,
@@ -359,7 +380,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         if (sessionId) this.sessions.set(input.logFile, sessionId);
         const openingTags = result.stdout.split(`<${tag}>`).length - 1;
         const closingTags = result.stdout.split(`</${tag}>`).length - 1;
-        if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
+        if (
+          openingTags !== 0 ||
+          closingTags !== 0 ||
+          recoveryAttempt === policy.agentRetry
+        )
           break;
         const nextRecoveryAttempt = await this.waitForContinuation(
           input,
@@ -391,7 +416,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
       ...(input.promptArgs.OPERATION === undefined
         ? {}
         : { operation: input.promptArgs.OPERATION.toString() }),
-      errorCategory: "agent_attempt",
+      errorCategory: "agent_retry",
       attemptOrdinal: 1,
       retryable: true,
       ...(input.promptArgs.RUN_ID === undefined

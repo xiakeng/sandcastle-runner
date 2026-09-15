@@ -98,6 +98,7 @@ async function maintenanceLabelExists(
       event: input.event("maintenance", "read_labels", `page:${current}`),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     if (labels.labels.includes(input.maintenanceTicket.label)) return true;
     page = labels.nextPage;
@@ -128,6 +129,7 @@ async function ensureLabel(input: MaintenanceInput): Promise<void> {
         input.maintenanceTicket.label,
       )(attempt),
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
 }
 
@@ -175,6 +177,7 @@ async function closeNoChange(
           `ticket:${ticket}`,
         )(attempt),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     const confirmation = await boundary.afterMerge(ticket);
     if (confirmation.outcome === "terminal") {
@@ -268,6 +271,7 @@ export async function runDocumentationMaintenance(
           input.maintenanceTicket.label,
         )(1),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     if (
       ticket.state !== "open" ||

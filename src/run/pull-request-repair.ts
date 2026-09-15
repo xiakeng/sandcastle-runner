@@ -83,6 +83,7 @@ export async function observeRequiredChecks(
         ),
         clock: input.clock,
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
       const result = checkResult(checks);
       if (result.readiness !== "pending") return result;
@@ -306,6 +307,7 @@ export async function repairMergeConflict(
         ),
         clock: input.clock,
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
       const preparedRepair = await freshRepairHandoff(
         input,

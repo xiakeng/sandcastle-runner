@@ -185,6 +185,7 @@ export async function revalidateStandaloneMaintenanceTicket(
     ),
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
   if (ticket.state === "closed") {
     if (
@@ -289,6 +290,7 @@ async function reserve(
             `ticket:${candidate.number}`,
           )(attempt),
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
     }
 
@@ -329,6 +331,7 @@ async function reserve(
             `ticket:${candidate.number}`,
           )(attempt),
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
     }
 

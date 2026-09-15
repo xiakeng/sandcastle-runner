@@ -1,5 +1,5 @@
 import type { AuditEvent, AuditLog } from "../audit.ts";
-import type { Clock, OperatorIO } from "./contracts.ts";
+import type { Clock, OperatorIO, RetryPolicy } from "./contracts.ts";
 
 export class OperatorCancelled extends Error {}
 
@@ -58,6 +58,7 @@ interface ReadOperation<T> {
   event: (attempt: number) => Omit<AuditEvent, "result" | "error">;
   clock: Clock;
   operator: OperatorIO;
+  retryPolicy: RetryPolicy;
 }
 
 export type WriteReconciliation<T> =
@@ -68,6 +69,7 @@ interface WriteOperation<T> {
   clock: Clock;
   event: (attempt: number) => Omit<AuditEvent, "result" | "error">;
   operator: OperatorIO;
+  retryPolicy: RetryPolicy;
   beforeRetry?: () => Promise<void>;
   automaticRetry?: {
     reconcile?: () => Promise<WriteReconciliation<T>>;
@@ -168,8 +170,14 @@ export async function pauseForOperator(
 }
 
 export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
+  const policy = operation.retryPolicy;
+  const maxAttempts = policy.operationRetry + 1;
+  const delayFor = (retryIndex: number) =>
+    policy.operationRetryDelay[
+      Math.min(retryIndex, policy.operationRetryDelay.length - 1)
+    ]! * 1000;
   for (;;) {
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const event = operation.event(attempt);
       await supervisedAuditWrite(
         () =>
@@ -190,7 +198,8 @@ export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
             }),
           operation.operator,
         );
-        if (attempt < 5) await operation.clock.sleep(5000);
+        if (attempt < maxAttempts)
+          await operation.clock.sleep(delayFor(attempt - 1));
         continue;
       }
       await supervisedAuditWrite(
@@ -206,7 +215,7 @@ export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
     }
 
     for (;;) {
-      const pauseEvent = operation.event(5);
+      const pauseEvent = operation.event(maxAttempts);
       const response = await pauseForOperator(
         operation.audit,
         pauseEvent,
@@ -254,7 +263,8 @@ export function workflowWrite<T>(
 export async function workflowWrite<T>(
   operation: VoidWriteOperation | ResultWriteOperation<T>,
 ): Promise<T | void> {
-  const retryDelays = [10_000, 20_000, 40_000, 80_000];
+  const policy = operation.retryPolicy;
+  const maxAutomaticRetries = policy.operationRetry;
   let attempt = 1;
   for (;;) {
     const event = operation.event(attempt);
@@ -309,8 +319,12 @@ export async function workflowWrite<T>(
         }
       }
       const delay =
-        operation.automaticRetry && transientWriteFailure(error)
-          ? retryDelays[attempt - 1]
+        operation.automaticRetry &&
+        transientWriteFailure(error) &&
+        attempt <= maxAutomaticRetries
+          ? policy.operationRetryDelay[
+              Math.min(attempt - 1, policy.operationRetryDelay.length - 1)
+            ]! * 1000
           : undefined;
       if (delay !== undefined) {
         await operation.clock.sleep(delay);

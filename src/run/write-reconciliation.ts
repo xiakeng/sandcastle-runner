@@ -53,6 +53,7 @@ export function parentClosureReconciliation(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     if (parent.state === "closed" && parent.stateReason === "not_planned")
       throw new OperatorCancelled("Parent Ticket is cancelled");
@@ -85,6 +86,7 @@ export function remoteBranchReconciliation(
       event: input.event(phase, "remote_branch_head", target),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     return currentHead === expectedHead
       ? { outcome: "completed" }

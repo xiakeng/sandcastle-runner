@@ -147,6 +147,7 @@ export async function recoverPublishedHandoffs(
         ),
         clock: input.clock,
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
     const remoteHead = await readRemoteHead();
     const pendingRepair = intent.repairState?.pendingPush;
@@ -201,6 +202,7 @@ export async function recoverPublishedHandoffs(
         ),
         clock: input.clock,
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
       const reconciliation = reconcilePullRequest(intent, candidates);
       if (reconciliation.outcome === "restart") {
@@ -241,6 +243,7 @@ export async function recoverPublishedHandoffs(
               `ticket:${intent.ticket}`,
             )(1),
           operator: input.operator,
+          retryPolicy: input.retryPolicy,
         });
       } else if (reconciliation.outcome === "adopt") {
         pullRequest = reconciliation.pullRequest;

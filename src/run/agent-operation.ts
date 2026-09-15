@@ -280,6 +280,7 @@ export async function runAgentOperation(
             `agent-${operation.ticket}-${attemptId}.log`,
           ),
           timeoutMs: input.timeoutMs,
+          retryPolicy: input.retryPolicy,
           signal: operation.signal,
           ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });
@@ -349,6 +350,7 @@ export async function runAgentOperation(
               `ticket:${operation.ticket}`,
             )(attempt),
           operator: input.operator,
+          retryPolicy: input.retryPolicy,
         });
         return {
           outcome: "no_change",

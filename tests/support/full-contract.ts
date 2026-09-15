@@ -48,6 +48,10 @@ export async function createProject(recovery: boolean): Promise<string> {
       requiredChecksMinutes: 60,
       mergeQueueMinutes: 60,
     },
+    operationRetry: 4,
+    agentRetry: 4,
+    operationRetryDelay: [10, 20, 40, 80],
+    agentRetryDelay: [10, 20, 40, 80],
     ticketClosure: "runner",
     maintenanceTicket: {
       title: "Maintain project documentation",

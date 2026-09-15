@@ -13,6 +13,7 @@ This directory is a project template for Sandcastle Runner. Copy it to `projects
 - `workflow.documentationMaintenance`: enable or disable Documentation Maintenance.
 - `agents`: model and reasoning effort for `implement`, `review`, `ciRepair`, `conflictRepair`, and `documentation` attempts. `review` and `documentation` are needed only when enabled.
 - `timeouts`: positive minute limits for agent attempts, required checks, and merge queue confirmation.
+- `operationRetry` and `agentRetry`: non-negative automatic retry counts; the corresponding `*Delay` arrays are positive delays in seconds.
 - `ticketClosure`: `runner` or `code_host`.
 - `maintenanceTicket`: title, body, and `doc-maintain` label for maintenance tickets.
 

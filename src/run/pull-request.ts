@@ -110,6 +110,7 @@ export async function integratePullRequest(
             `pull_request:${pullRequest.number}`,
           )(attempt),
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
     } catch (error) {
       if (!(error instanceof DeliveryBoundaryChanged)) throw error;
@@ -200,6 +201,7 @@ export async function publishVerifiedHandoffs(
             `ticket:${handoff.ticket}`,
           )(attempt),
         operator: concurrentInput.operator,
+        retryPolicy: concurrentInput.retryPolicy,
       });
       await input.persistPublication?.(handoff.ticket, {
         ...intent,
@@ -239,6 +241,7 @@ export async function publishVerifiedHandoffs(
             `ticket:${handoff.ticket}`,
           )(1),
         operator: concurrentInput.operator,
+        retryPolicy: concurrentInput.retryPolicy,
       });
       await input.persistPublication?.(handoff.ticket, {
         ...intent,
