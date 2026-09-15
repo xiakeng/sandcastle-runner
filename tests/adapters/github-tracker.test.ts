@@ -234,6 +234,8 @@ test("GitHubTracker ensures the documentation label and creates a standalone Mai
       "body=Run the configured documentation-maintenance prompt for the current Target Branch.",
       "-f",
       "labels[]=doc-maintain",
+      "-f",
+      "labels[]=ready-for-agent",
     ],
   ]);
 });

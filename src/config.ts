@@ -95,7 +95,10 @@ function agent(value: unknown, name: string): AgentConfig {
   return { model, reasoningEffort: effort as AgentConfig["reasoningEffort"] };
 }
 
-function parseConfig(value: unknown): ProjectConfig {
+function parseConfig(
+  value: unknown,
+  options: { disableDocumentationMaintenance?: boolean } = {},
+): ProjectConfig {
   const input = record(value, "config");
   const tracker = record(input.tracker, "tracker");
   const codeHost = record(input.codeHost, "codeHost");
@@ -123,10 +126,12 @@ function parseConfig(value: unknown): ProjectConfig {
   if (input.ticketClosure !== "runner" && input.ticketClosure !== "code_host") {
     throw new Error("ticketClosure is unsupported");
   }
-  const documentationMaintenance = switchValue(
-    workflow.documentationMaintenance,
-    "workflow.documentationMaintenance",
-  );
+  const documentationMaintenance = options.disableDocumentationMaintenance
+    ? false
+    : switchValue(
+        workflow.documentationMaintenance,
+        "workflow.documentationMaintenance",
+      );
   const documentation =
     agents.documentation === undefined
       ? undefined
@@ -213,12 +218,14 @@ export async function loadProject(
   root: string,
   projectKey: string,
   env: Record<string, string | undefined>,
+  options: { disableDocumentationMaintenance?: boolean } = {},
 ): Promise<LoadedProject> {
   if (!/^[A-Za-z0-9._-]+$/u.test(projectKey))
     throw new Error("invalid project key");
   const directory = path.join(root, "projects", projectKey);
   const config = parseConfig(
     JSON.parse(await readFile(path.join(directory, "config.json"), "utf8")),
+    options,
   );
   await Promise.all(
     promptNames.map(async (name) => {

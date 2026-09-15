@@ -146,7 +146,11 @@ export async function reviewHandoff(
       const [deliveryTicket, governingSpecification, standardsSources] =
         await Promise.all([
           readReviewSnapshot(input, handoff.ticket, false),
-          readReviewSnapshot(input, input.parentTicket, true),
+          readReviewSnapshot(
+            input,
+            input.standaloneIssue ?? input.parentTicket,
+            input.standaloneIssue === undefined,
+          ),
           input.gitWorkspace.readReviewStandards(
             handoff.worktree,
             handoff.base,

@@ -457,7 +457,7 @@ test("a Run reserves the three lowest-numbered eligible Delivery Tickets", async
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   }));
 
   const result = await executeCli(

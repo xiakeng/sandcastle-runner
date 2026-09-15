@@ -30,7 +30,7 @@ export function createFiveTicketScenario(
         stateReason: null,
         repository: "owner/repo",
         assignees: [],
-        labels: [],
+        labels: ["ready-for-agent"],
       },
     ]),
   );

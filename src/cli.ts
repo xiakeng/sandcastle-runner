@@ -52,23 +52,28 @@ export interface CliResult {
 function parseArguments(argv: string[]): {
   project: string;
   parentTicket: number;
+  issueTicket?: number;
 } {
+  if (argv.length !== 5 || argv[0] !== "run" || argv[1] !== "--project")
+    throw new Error(
+      "usage: sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)",
+    );
+  const project = argv[2];
+  const selector = argv[3];
+  const ticket = Number(argv[4]);
   if (
-    argv.length !== 5 ||
-    argv[0] !== "run" ||
-    argv[1] !== "--project" ||
-    argv[3] !== "--parent"
+    !project ||
+    (selector !== "--parent" && selector !== "--issue") ||
+    !Number.isSafeInteger(ticket) ||
+    ticket <= 0
   ) {
     throw new Error(
-      "usage: sandcastle-runner run --project <project-key> --parent <issue-number>",
+      "project and a positive Parent Ticket or issue number are required",
     );
   }
-  const project = argv[2];
-  const parentTicket = Number(argv[4]);
-  if (!project || !Number.isSafeInteger(parentTicket) || parentTicket <= 0) {
-    throw new Error("project and a positive Parent Ticket number are required");
-  }
-  return { project, parentTicket };
+  return selector === "--issue"
+    ? { project, parentTicket: ticket, issueTicket: ticket }
+    : { project, parentTicket: ticket };
 }
 
 export async function executeCli(
@@ -77,8 +82,9 @@ export async function executeCli(
 ): Promise<CliResult> {
   let project: string;
   let parentTicket: number;
+  let issueTicket: number | undefined;
   try {
-    ({ project, parentTicket } = parseArguments(argv));
+    ({ project, parentTicket, issueTicket } = parseArguments(argv));
   } catch (error) {
     const summary: RunSummary = {
       outcome: "failed",
@@ -94,7 +100,11 @@ export async function executeCli(
   }
   let loaded: Awaited<ReturnType<typeof loadProject>>;
   try {
-    loaded = await loadProject(dependencies.root, project, dependencies.env);
+    loaded = await loadProject(dependencies.root, project, dependencies.env, {
+      ...(issueTicket === undefined
+        ? {}
+        : { disableDocumentationMaintenance: true }),
+    });
   } catch (error) {
     const summary: RunSummary = {
       outcome: "failed",
@@ -110,13 +120,17 @@ export async function executeCli(
   }
   const runId = randomUUID();
   const timestamp = dependencies.clock.now().toISOString();
-  const paths = recoveryPaths(loaded.directory, parentTicket);
+  const runKind = issueTicket === undefined ? "parent" : "issue";
+  const paths = recoveryPaths(loaded.directory, parentTicket, runKind);
   let previous: RecoverySnapshot | null;
   try {
     previous = await readRecoverySnapshot(paths.snapshot);
     if (
       previous !== null &&
-      (previous.project !== project || previous.parentTicket !== parentTicket)
+      (previous.project !== project ||
+        previous.parentTicket !== parentTicket ||
+        (previous.runKind ?? "parent") !== runKind ||
+        previous.issueTicket !== issueTicket)
     ) {
       throw new InvalidRecoverySnapshot(
         "recovery snapshot identity does not match this Run",
@@ -147,6 +161,8 @@ export async function executeCli(
     repository: loaded.config.repository,
     checkout: loaded.config.checkout,
     parentTicket,
+    runKind,
+    ...(issueTicket === undefined ? {} : { issueTicket }),
     runId,
     phase: "running",
     targetBranch: loaded.config.targetBranch ?? null,
@@ -245,6 +261,7 @@ export async function executeCli(
     summary = await runProject({
       project,
       parentTicket,
+      ...(issueTicket === undefined ? {} : { issueTicket }),
       repository: loaded.config.repository,
       ...(loaded.config.targetBranch === undefined
         ? {}
@@ -278,7 +295,9 @@ export async function executeCli(
         "conflict-repair.md",
       ),
       conflictRepairAgent: loaded.config.agents.conflictRepair,
-      documentationMaintenance: loaded.config.workflow.documentationMaintenance,
+      documentationMaintenance:
+        issueTicket === undefined &&
+        loaded.config.workflow.documentationMaintenance,
       maintenanceTicket: loaded.config.maintenanceTicket,
       documentationPrompt: path.join(
         loaded.directory,

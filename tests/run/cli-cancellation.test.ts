@@ -180,7 +180,7 @@ test("Parent cancellation after Worktree preparation starts no Agent and preserv
   assert.equal(result.summary.outcome, "cancelled");
   assert.equal(agentCalls, 0);
   assert.equal(releases, 0);
-  assert.deepEqual(child.labels, ["sandcastle:reserved"]);
+  assert.deepEqual(child.labels, ["ready-for-agent", "sandcastle:reserved"]);
   assert.deepEqual(child.assignees, ["runner"]);
 });
 

@@ -21,7 +21,7 @@ test("a successful Batch rescans added work and an emptied scope closes the Pare
     stateReason: null,
     repository: "owner/repo",
     assignees: [] as string[],
-    labels: [] as string[],
+    labels: ["ready-for-agent"] as string[],
   };
   const merged = new Set<number>();
   const attempts: number[] = [];

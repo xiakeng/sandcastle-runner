@@ -26,7 +26,7 @@ locked dependencies, and invoke the local executable through npm:
 git clone https://github.com/xiakeng/sandcastle-runner.git
 cd sandcastle-runner
 npm ci
-npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>
+npm exec -- sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)
 ```
 
 The Runner is not published to a package registry, globally installed, invoked
@@ -164,7 +164,7 @@ Install dependencies and run a parent issue:
 
 ```sh
 npm ci
-npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>
+npm exec -- sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)
 ```
 
 The command prints one JSON summary. `succeeded` and `no_work` exit with status 0; `incomplete`, `cancelled`, and `failed` exit non-zero.
