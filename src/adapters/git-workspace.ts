@@ -88,12 +88,15 @@ export class LocalGitWorkspace implements GitWorkspace {
   }
 
   private remote(cwd: string, args: string[]): Promise<string> {
+    const authorization = Buffer.from(`x-access-token:${this.token}`).toString(
+      "base64",
+    );
     return this.command(cwd, args, {
       timeout: 60_000,
       env: {
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "http.extraHeader",
-        GIT_CONFIG_VALUE_0: `Authorization: Bearer ${this.token}`,
+        GIT_CONFIG_VALUE_0: `Authorization: Basic ${authorization}`,
       },
     });
   }

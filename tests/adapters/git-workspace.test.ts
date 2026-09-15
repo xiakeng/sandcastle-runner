@@ -78,7 +78,8 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
       env: {
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "http.extraHeader",
-        GIT_CONFIG_VALUE_0: "Authorization: Bearer configured-token",
+        GIT_CONFIG_VALUE_0:
+          "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Y29uZmlndXJlZC10b2tlbg==",
       },
     },
     { cwd: root, args: ["rev-parse", "FETCH_HEAD"], timeout: 60_000 },
@@ -121,7 +122,8 @@ test("LocalGitWorkspace fetches an exact base and creates and inspects only the 
     env: {
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "http.extraHeader",
-      GIT_CONFIG_VALUE_0: "Authorization: Bearer configured-token",
+      GIT_CONFIG_VALUE_0:
+        "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Y29uZmlndXJlZC10b2tlbg==",
     },
   });
 });
