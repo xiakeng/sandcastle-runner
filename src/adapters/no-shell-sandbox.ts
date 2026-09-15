@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 
 import type {
@@ -9,17 +11,30 @@ import type {
 
 import { formatToolError } from "./process-errors.ts";
 
+function shouldEscapeCommandCharacter(character: string | undefined): boolean {
+  return (
+    character !== undefined &&
+    (character === '"' ||
+      character === "'" ||
+      character === "\\" ||
+      /\s/u.test(character))
+  );
+}
+
 function commandArgs(command: string): [string, ...string[]] {
+  const trimmed = command.trim();
   const args: string[] = [];
   let value = "";
   let quote = "";
   let escaped = false;
-  for (const character of command.trim()) {
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index]!;
     if (escaped) {
       value += character;
       escaped = false;
     } else if (character === "\\" && quote !== "'") {
-      escaped = true;
+      if (shouldEscapeCommandCharacter(trimmed[index + 1])) escaped = true;
+      else value += "\\";
     } else if (quote !== "" && character === quote) {
       quote = "";
     } else if (quote === "") {
@@ -32,10 +47,48 @@ function commandArgs(command: string): [string, ...string[]] {
       } else value += character;
     } else value += character;
   }
-  if (escaped || quote !== "") throw new Error("invalid Codex command quoting");
+  if (escaped) value += "\\";
+  if (quote !== "") throw new Error("invalid Codex command quoting");
   if (value !== "") args.push(value);
   if (args.length === 0) throw new Error("empty Codex command");
   return args as [string, ...string[]];
+}
+
+function isWindowsShim(file: string): boolean {
+  return /\.(?:bat|cmd)$/iu.test(file);
+}
+
+function resolveWindowsCommand(
+  file: string,
+  env: Record<string, string | undefined>,
+): string {
+  if (/[\\/]/u.test(file) || /\.[^\\/]+$/u.test(file)) return file;
+  const path = env.PATH ?? "";
+  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter((extension) => extension !== "");
+  for (const directory of path.split(delimiter)) {
+    for (const extension of extensions) {
+      const candidate = join(directory, `${file}${extension}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return file;
+}
+
+function spawnCommand(
+  file: string,
+  args: string[],
+  env: Record<string, string | undefined>,
+): { file: string; args: string[] } {
+  if (process.platform !== "win32") return { file, args };
+  const executable = resolveWindowsCommand(file, env);
+  if (!isWindowsShim(executable)) return { file: executable, args };
+  const comspec = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+  return {
+    file: comspec,
+    args: ["/d", "/s", "/c", executable, ...args],
+  };
 }
 
 export function noShellSandbox(
@@ -59,7 +112,8 @@ export function noShellSandbox(
         worktreePath,
         exec: (command: string, execOptions: SandboxExecOptions = {}) => {
           const [file, ...args] = commandArgs(command);
-          const child = spawn(file, args, {
+          const launched = spawnCommand(file, args, processEnv);
+          const child = spawn(launched.file, launched.args, {
             cwd: execOptions.cwd ?? worktreePath,
             env: processEnv,
             shell: false,
@@ -96,7 +150,13 @@ export function noShellSandbox(
           execOptions: InteractiveExecOptions,
         ) =>
           new Promise((resolve, reject) => {
-            const child: ChildProcess = spawn(args[0]!, args.slice(1), {
+            const [file, ...commandArgsForSpawn] = args;
+            const launched = spawnCommand(
+              file!,
+              commandArgsForSpawn,
+              processEnv,
+            );
+            const child: ChildProcess = spawn(launched.file, launched.args, {
               cwd: execOptions.cwd ?? worktreePath,
               env: processEnv,
               shell: false,
