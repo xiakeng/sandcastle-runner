@@ -47,6 +47,12 @@ export function input() {
     gitConfigGlobal: "/tmp/attempt/config",
     logFile: "/runner/projects/demo/logs/agent.log",
     timeoutMs: 120_000,
+    retryPolicy: {
+      operationRetry: 4,
+      agentRetry: 4,
+      operationRetryDelay: [10, 20, 40, 80],
+      agentRetryDelay: [10, 20, 40, 80],
+    },
     signal: new AbortController().signal,
   };
 }

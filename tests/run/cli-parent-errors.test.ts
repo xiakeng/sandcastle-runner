@@ -155,7 +155,7 @@ test("an external read succeeds on the fifth call with fixed delays", async () =
 
   assert.equal(result.summary.outcome, "no_work");
   assert.equal(parentCalls, 5);
-  assert.deepEqual(sleeps, [5000, 5000, 5000, 5000]);
+  assert.deepEqual(sleeps, [10_000, 20_000, 40_000, 80_000]);
   assert.equal(pauseCalls, 0);
 });
 

@@ -313,6 +313,12 @@ export async function executeCli(
       mergeQueueTimeoutMs: loaded.config.timeouts.mergeQueueMinutes * 60_000,
       adminMerge: loaded.config.codeHost.adminMerge,
       ticketClosure: loaded.config.ticketClosure,
+      retryPolicy: {
+        operationRetry: loaded.config.operationRetry,
+        agentRetry: loaded.config.agentRetry,
+        operationRetryDelay: loaded.config.operationRetryDelay,
+        agentRetryDelay: loaded.config.agentRetryDelay,
+      },
       gitWorkspace,
       agentExecutor,
       persistPublication,

@@ -39,6 +39,7 @@ export async function runStandaloneIssue(
     audit: input.audit,
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
     event: context.event,
     runnerAccount: input.runnerAccount,
     reservationLabel: input.reservationLabel,

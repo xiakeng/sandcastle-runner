@@ -50,6 +50,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       event: event("startup", "resolve_target_branch", input.repository),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     }));
 
   let hadChildren = false;
@@ -182,6 +183,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       audit: input.audit,
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
       event,
       runnerAccount: input.runnerAccount,
       reservationLabel: input.reservationLabel,
@@ -424,6 +426,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       audit: input.audit,
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
       event,
       runnerAccount: input.runnerAccount,
       reservationLabel: input.reservationLabel,
@@ -457,6 +460,7 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
             `parent:${input.parentTicket}`,
           )(attempt),
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
       return summary("succeeded");
     }

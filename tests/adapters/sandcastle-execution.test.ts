@@ -64,6 +64,45 @@ test("SandcastleAgentExecutor retries session probe with exponential backoff", a
   );
 });
 
+test("SandcastleAgentExecutor uses the configured operation retry policy", async () => {
+  const waits: number[] = [];
+  let probes = 0;
+  const executor = new SandcastleAgentExecutor(
+    async (options) => {
+      if (options.prompt === "Reply with exactly: SESSION_READY") {
+        probes += 1;
+        if (probes < 3) throw new Error("server overloaded");
+        return {
+          iterations: [{ sessionId: "probe-session" }],
+          stdout: "SESSION_READY",
+          commits: [],
+          branch: input().branch,
+          output: undefined,
+        };
+      }
+      return makeResult(
+        `<agent_attempt_result>${JSON.stringify(committed)}</agent_attempt_result>`,
+        committed,
+      );
+    },
+    async (milliseconds) => {
+      waits.push(milliseconds);
+    },
+    async () => {},
+    async () => {},
+  );
+  await executor.execute({
+    ...input(),
+    retryPolicy: {
+      operationRetry: 2,
+      agentRetry: 0,
+      operationRetryDelay: [1],
+      agentRetryDelay: [1],
+    },
+  });
+  assert.deepEqual(waits, [1_000, 1_000]);
+});
+
 test("session probe exhaustion requests a non-agent operator pause", async () => {
   const waits: number[] = [];
   const executor = new SandcastleAgentExecutor(
@@ -81,7 +120,7 @@ test("session probe exhaustion requests a non-agent operator pause", async () =>
         diagnostics?: { errorCategory?: string; retryable?: boolean };
       }
     ).diagnostics;
-    assert.equal(diagnostics?.errorCategory, "operator_pause");
+    assert.equal(diagnostics?.errorCategory, "operation_retry");
     assert.equal(diagnostics?.retryable, false);
     return true;
   });
@@ -416,19 +455,31 @@ test("SandcastleAgentExecutor accepts a valid final retry payload from an output
     },
   );
 
-  const result = await executor.execute(input());
+  const result = await executor.execute({
+    ...input(),
+    retryPolicy: {
+      operationRetry: 4,
+      agentRetry: 1,
+      operationRetryDelay: [10, 20, 40, 80],
+      agentRetryDelay: [10, 20, 40, 80],
+    },
+  });
   assert.equal(result.outcome, "committed");
   assert.deepEqual(result.commits, committed.commits);
-  assert.equal(statuses.length, 4);
+  assert.equal(statuses.length, 5);
   assert.match(statuses[0]!, /Structured output validation failed;/u);
   assert.match(statuses[0]!, /stale first attempt/u);
+  assert.match(
+    statuses[1]!,
+    /Waiting 10 seconds before automatic prompt continuation/u,
+  );
   assert.equal(
-    statuses[1],
+    statuses[2],
     "Starting structured output retry; retryRemaining=0; resumeSession=session-id",
   );
-  assert.match(statuses[2]!, /Structured output validation failed;/u);
+  assert.match(statuses[3]!, /Structured output validation failed;/u);
   assert.equal(
-    statuses[3],
+    statuses[4],
     "Recovered the final structured output from the retry result.",
   );
 });

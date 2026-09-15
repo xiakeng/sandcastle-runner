@@ -4,6 +4,7 @@ import type {
   ChildPage,
   Clock,
   OperatorIO,
+  RetryPolicy,
   Ticket,
   Tracker,
 } from "./contracts.ts";
@@ -17,6 +18,7 @@ export interface DiscoveryInput {
   audit: AuditLog;
   clock: Clock;
   operator: OperatorIO;
+  retryPolicy?: RetryPolicy;
   event: (
     phase: string,
     operation: string,
@@ -145,6 +147,7 @@ export async function readParent(
     event: input.event(phase, "read_parent", `parent:${input.parentTicket}`),
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
 }
 
@@ -172,6 +175,7 @@ export async function readChildren(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     children.push(...page.children);
     pageNumber = page.nextPage;
@@ -208,6 +212,7 @@ export async function readBlockers(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     blockers.push(...page.blockers);
     pageNumber = page.nextPage;
@@ -239,6 +244,7 @@ export async function releaseReservation(
           `ticket:${ticket}`,
         )(attempt),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
   }
   if (removeLabel) {
@@ -259,6 +265,7 @@ export async function releaseReservation(
           `ticket:${ticket}`,
         )(attempt),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
   }
 }
@@ -342,6 +349,7 @@ export async function revalidateTicket(
       event: input.event("revalidate", "read_ticket", `ticket:${ticketNumber}`),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     if (ticket.state === "closed" && ticket.stateReason === null) {
       throw new Error(
@@ -367,6 +375,7 @@ export async function revalidateTicket(
     event: input.event("revalidate", "read_ticket", `ticket:${ticketNumber}`),
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
   if (ticket.state === "closed" && ticket.stateReason === null) {
     throw new Error(

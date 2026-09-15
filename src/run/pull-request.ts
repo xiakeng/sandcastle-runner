@@ -110,6 +110,7 @@ export async function integratePullRequest(
             `pull_request:${pullRequest.number}`,
           )(attempt),
         operator: input.operator,
+        retryPolicy: input.retryPolicy,
       });
     } catch (error) {
       if (!(error instanceof DeliveryBoundaryChanged)) throw error;

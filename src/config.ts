@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { TicketClosurePolicy } from "./run/contracts.ts";
+import type { RetryPolicy, TicketClosurePolicy } from "./run/contracts.ts";
 
 const promptNames = ["implement", "ci-repair", "conflict-repair"] as const;
 const documentationConfigurationError =
@@ -47,6 +47,10 @@ export interface ProjectConfig {
     mergeQueueMinutes: number;
   };
   ticketClosure: TicketClosurePolicy;
+  operationRetry: number;
+  agentRetry: number;
+  operationRetryDelay: number[];
+  agentRetryDelay: number[];
   maintenanceTicket: { title: string; body: string; label: string };
 }
 
@@ -75,6 +79,27 @@ function positive(value: unknown, name: string): number {
     throw new Error(`${name} must be a positive number`);
   }
   return value;
+}
+
+function nonNegativeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function retryDelays(value: unknown, name: string): number[] {
+  const delays = Array.isArray(value) ? (value as unknown[]) : undefined;
+  if (
+    delays === undefined ||
+    delays.length === 0 ||
+    delays.some(
+      (item) => typeof item !== "number" || !Number.isFinite(item) || item <= 0,
+    )
+  ) {
+    throw new Error(`${name} must be a non-empty array of positive numbers`);
+  }
+  return delays.map((item) => item as number);
 }
 
 function switchValue(value: unknown, name: string): boolean {
@@ -113,6 +138,15 @@ function parseConfig(
     throw new Error(`workflow contains unknown field ${unknownWorkflowField}`);
   }
   const timeouts = record(input.timeouts, "timeouts");
+  const retryPolicy: RetryPolicy = {
+    operationRetry: nonNegativeInteger(input.operationRetry, "operationRetry"),
+    agentRetry: nonNegativeInteger(input.agentRetry, "agentRetry"),
+    operationRetryDelay: retryDelays(
+      input.operationRetryDelay,
+      "operationRetryDelay",
+    ),
+    agentRetryDelay: retryDelays(input.agentRetryDelay, "agentRetryDelay"),
+  };
   const repository = text(input.repository, "repository");
   if (!/^[^/\s]+\/[^/\s]+$/u.test(repository))
     throw new Error("repository must be owner/repo");
@@ -200,6 +234,7 @@ function parseConfig(
       ),
     },
     ticketClosure: input.ticketClosure,
+    ...retryPolicy,
     maintenanceTicket: {
       title: documentationMaintenance
         ? text(maintenanceTicket.title, "maintenanceTicket.title")

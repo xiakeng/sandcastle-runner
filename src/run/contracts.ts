@@ -2,6 +2,13 @@ export type TicketState = "open" | "closed";
 export type ClosureReason = "completed" | "not_planned" | null;
 export type TicketClosurePolicy = "runner" | "code_host";
 
+export interface RetryPolicy {
+  operationRetry: number;
+  agentRetry: number;
+  operationRetryDelay: number[];
+  agentRetryDelay: number[];
+}
+
 export interface Ticket {
   number: number;
   state: TicketState;
@@ -263,6 +270,7 @@ export interface AgentAttemptInput {
   gitConfigGlobal: string;
   logFile: string;
   timeoutMs: number;
+  retryPolicy?: RetryPolicy;
   signal: AbortSignal;
   /** Optional same-session continuation prompt. */
   resumePrompt?: string;

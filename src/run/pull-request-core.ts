@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- retry policy stays explicit at each operation seam. */
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AgentConfig } from "../config.ts";
@@ -122,7 +123,6 @@ export function repairIntent(
   input.publicationIntents?.set(ticket, next);
   return input.persistPublication(ticket, next);
 }
-
 export function persistedBudget(
   input: PublicationInput,
   ticket: number,
@@ -134,18 +134,15 @@ export function persistedBudget(
     (intent?.repairState?.purpose === purpose ? intent.repairState : undefined)
   );
 }
-
 export interface PublicationResult {
   outcome: "succeeded" | "incomplete" | "cancelled" | "failed";
   reasons: string[];
   pullRequests: PullRequestObservation[];
   published: PublishedHandoff[];
 }
-
 export interface RecoveredPublicationResult extends PublicationResult {
   restarted: number[];
 }
-
 export function stopped(
   result: Exclude<DeliveryBoundaryResult, { outcome: "ready" }>,
   pullRequests: PullRequestObservation[],
@@ -163,7 +160,6 @@ export function stopped(
     published,
   };
 }
-
 function pullRequestStateOverride(value: string): PullRequestState {
   const parsed = JSON.parse(value) as Partial<PullRequestState>;
   if (
@@ -183,7 +179,6 @@ function pullRequestStateOverride(value: string): PullRequestState {
     mergeFailure: parsed.mergeFailure ?? null,
   };
 }
-
 export async function freshRepairHandoff(
   input: PublicationInput,
   handoff: VerifiedHandoff,
@@ -205,6 +200,7 @@ export async function freshRepairHandoff(
     ),
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
   if (!base) return handoff;
   const id = randomUUID();
@@ -242,7 +238,6 @@ export async function freshRepairHandoff(
     remoteBranch: handoff.remoteBranch ?? handoff.branch,
   };
 }
-
 export async function observePullRequestForIntegration(
   input: ReadinessInput,
   pullRequest: number,
@@ -259,9 +254,9 @@ export async function observePullRequestForIntegration(
     ),
     clock: input.clock,
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
 }
-
 export async function waitForMerge(
   input: PublicationInput,
   handoff: VerifiedHandoff,
@@ -306,7 +301,6 @@ export async function waitForMerge(
     }
   }
 }
-
 type CompletionResult =
   | { outcome: "completed"; ticket: Ticket }
   | Exclude<DeliveryBoundaryResult, { outcome: "ready" }>;
@@ -374,6 +368,7 @@ export async function pushRepair(
           ),
           clock: input.clock,
           operator: input.operator,
+          retryPolicy: input.retryPolicy,
         });
   if (typeof input.codeHost.getRemoteBranchHead !== "function") return null;
   const expectedHead = handoff.commits.at(-1)?.sha ?? handoff.base;
@@ -418,6 +413,7 @@ export async function pushRepair(
           `pull_request:${pullRequest.number}`,
         )(attemptNumber),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     return null;
   } catch (error) {
@@ -468,6 +464,7 @@ export async function confirmCompletion(
               `ticket:${handoff.ticket}`,
             )(attempt),
           operator: input.operator,
+          retryPolicy: input.retryPolicy,
         });
       } catch (error) {
         if (!(error instanceof DeliveryBoundaryChanged)) throw error;

@@ -64,6 +64,7 @@ async function implementTicket(
           `ticket:${ticket}`,
         )(1),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     const result = await runAgentOperation(input, {
       phase: "implement",
@@ -256,6 +257,7 @@ export async function runMaintenanceAttempt(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     const branch = `sandcastle/run-${input.runId}/maintenance-${input.ticket}`;
     const worktree = path.join(
@@ -281,6 +283,7 @@ export async function runMaintenanceAttempt(
           `ticket:${input.ticket}`,
         )(1),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     const result = await runAgentOperation(input, {
       phase: "maintenance",
@@ -352,6 +355,7 @@ export async function implementReservedBatch(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     const controller = new AbortController();
     const concurrentInput = {

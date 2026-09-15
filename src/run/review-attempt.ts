@@ -72,6 +72,7 @@ async function readReviewSnapshot(
       ),
       clock: input.clock,
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     }),
     parent ? "governing specification" : "Delivery Ticket",
   );
@@ -192,6 +193,9 @@ export async function reviewHandoff(
           gitConfigGlobal,
           logFile,
           timeoutMs: input.timeoutMs,
+          ...(input.retryPolicy === undefined
+            ? {}
+            : { retryPolicy: input.retryPolicy }),
           signal,
           ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });

@@ -81,6 +81,7 @@ export async function discoverAndReserveStandalone(
           `ticket:${input.standaloneIssue}`,
         )(attempt),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
     await workflowWrite({
       action: () =>
@@ -99,6 +100,7 @@ export async function discoverAndReserveStandalone(
           `ticket:${input.standaloneIssue}`,
         )(attempt),
       operator: input.operator,
+      retryPolicy: input.retryPolicy,
     });
   }
   const checkpoint = await revalidateTicket(input, input.standaloneIssue);

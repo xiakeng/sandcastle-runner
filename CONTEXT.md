@@ -99,3 +99,12 @@ _Avoid_: Review Handoff, approval
 **Verified Handoff**:
 An Agent Attempt Result accepted after the runner independently validates the actual branch, commits, and worktree state.
 _Avoid_: Agent completion, successful turn
+
+**Operation Retry**: An automatic retry budget for external reads, workflow writes, and agent-session probes.
+_Avoid_: Operator retry
+
+**Agent Retry**: An automatic retry budget for recoverable continuation in the same agent session, including process, output, and structured-output recovery.
+_Avoid_: Operation retry
+
+**Retry Policy**: The Project-configured operation and agent retry counts plus their delay schedules.
+_Avoid_: Retry defaults
