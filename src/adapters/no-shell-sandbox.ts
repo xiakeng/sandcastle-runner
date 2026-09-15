@@ -27,6 +27,7 @@ function commandArgs(command: string): [string, ...string[]] {
   let value = "";
   let quote = "";
   let escaped = false;
+  let windowsPath = false;
   for (let index = 0; index < trimmed.length; index += 1) {
     const character = trimmed[index]!;
     if (escaped) {
@@ -36,9 +37,10 @@ function commandArgs(command: string): [string, ...string[]] {
       const next = trimmed[index + 1];
       const nextNext = trimmed[index + 2];
       if (
-        next === '"' &&
-        quote === '"' &&
-        (nextNext === undefined || /\s/u.test(nextNext))
+        windowsPath ||
+        (next === '"' &&
+          quote === '"' &&
+          (nextNext === undefined || /\s/u.test(nextNext)))
       ) {
         value += "\\";
       } else if (shouldEscapeCommandCharacter(next)) escaped = true;
@@ -51,8 +53,12 @@ function commandArgs(command: string): [string, ...string[]] {
         if (value !== "") {
           args.push(value);
           value = "";
+          windowsPath = false;
         }
-      } else value += character;
+      } else {
+        value += character;
+        windowsPath ||= /^[A-Za-z]:$/.test(value);
+      }
     } else value += character;
   }
   if (escaped) throw new Error("invalid Codex command quoting");
@@ -67,7 +73,32 @@ function isWindowsShim(file: string): boolean {
 }
 
 function quoteWindowsCommandArg(value: string): string {
-  return `"${value.replaceAll('"', '""')}"`;
+  let result = '"';
+  let backslashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      backslashes += 1;
+    } else if (character === '"') {
+      result += "\\".repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+    } else {
+      result += "\\".repeat(backslashes) + character;
+      backslashes = 0;
+    }
+  }
+  return result + "\\".repeat(backslashes * 2) + '"';
+}
+
+function environmentValue(
+  env: Record<string, string | undefined>,
+  name: string,
+): string | undefined {
+  const exact = env[name];
+  if (exact !== undefined) return exact;
+  const entry = Object.entries(env).find(
+    ([key]) => key.toLowerCase() === name.toLowerCase(),
+  );
+  return entry?.[1];
 }
 
 function resolveWindowsCommand(
@@ -75,8 +106,8 @@ function resolveWindowsCommand(
   env: Record<string, string | undefined>,
 ): string {
   if (/[\\/]/u.test(file) || /\.[^\\/]+$/u.test(file)) return file;
-  const path = env.PATH ?? "";
-  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+  const path = environmentValue(env, "PATH") ?? "";
+  const extensions = (environmentValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .filter((extension) => extension !== "");
   for (const directory of path.split(delimiter)) {
@@ -96,7 +127,7 @@ function spawnCommand(
   if (process.platform !== "win32") return { file, args };
   const executable = resolveWindowsCommand(file, env);
   if (!isWindowsShim(executable)) return { file: executable, args };
-  const comspec = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+  const comspec = environmentValue(env, "COMSPEC") ?? "cmd.exe";
   const command = [executable, ...args].map(quoteWindowsCommandArg).join(" ");
   return {
     file: comspec,
