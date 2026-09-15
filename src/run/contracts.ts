@@ -270,7 +270,7 @@ export interface AgentAttemptInput {
   gitConfigGlobal: string;
   logFile: string;
   timeoutMs: number;
-  retryPolicy?: RetryPolicy;
+  retryPolicy: RetryPolicy;
   signal: AbortSignal;
   /** Optional same-session continuation prompt. */
   resumePrompt?: string;

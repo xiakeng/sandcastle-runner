@@ -58,7 +58,7 @@ interface ReadOperation<T> {
   event: (attempt: number) => Omit<AuditEvent, "result" | "error">;
   clock: Clock;
   operator: OperatorIO;
-  retryPolicy?: RetryPolicy | undefined;
+  retryPolicy: RetryPolicy;
 }
 
 export type WriteReconciliation<T> =
@@ -69,19 +69,12 @@ interface WriteOperation<T> {
   clock: Clock;
   event: (attempt: number) => Omit<AuditEvent, "result" | "error">;
   operator: OperatorIO;
-  retryPolicy?: RetryPolicy | undefined;
+  retryPolicy: RetryPolicy;
   beforeRetry?: () => Promise<void>;
   automaticRetry?: {
     reconcile?: () => Promise<WriteReconciliation<T>>;
   };
 }
-
-const defaultRetryPolicy: RetryPolicy = {
-  operationRetry: 4,
-  agentRetry: 4,
-  operationRetryDelay: [10, 20, 40, 80],
-  agentRetryDelay: [10, 20, 40, 80],
-};
 
 interface VoidWriteOperation extends WriteOperation<void> {
   action: () => Promise<void>;
@@ -177,7 +170,7 @@ export async function pauseForOperator(
 }
 
 export async function externalRead<T>(operation: ReadOperation<T>): Promise<T> {
-  const policy = operation.retryPolicy ?? defaultRetryPolicy;
+  const policy = operation.retryPolicy;
   const maxAttempts = policy.operationRetry + 1;
   const delayFor = (retryIndex: number) =>
     policy.operationRetryDelay[
@@ -270,7 +263,7 @@ export function workflowWrite<T>(
 export async function workflowWrite<T>(
   operation: VoidWriteOperation | ResultWriteOperation<T>,
 ): Promise<T | void> {
-  const policy = operation.retryPolicy ?? defaultRetryPolicy;
+  const policy = operation.retryPolicy;
   const maxAutomaticRetries = policy.operationRetry;
   let attempt = 1;
   for (;;) {

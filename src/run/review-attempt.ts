@@ -193,9 +193,7 @@ export async function reviewHandoff(
           gitConfigGlobal,
           logFile,
           timeoutMs: input.timeoutMs,
-          ...(input.retryPolicy === undefined
-            ? {}
-            : { retryPolicy: input.retryPolicy }),
+          retryPolicy: input.retryPolicy,
           signal,
           ...(resumePrompt === undefined ? {} : { resumePrompt }),
         });

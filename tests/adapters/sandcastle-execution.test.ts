@@ -237,7 +237,7 @@ test("SandcastleAgentExecutor stops process recovery when total timeout expires"
   assert.equal(prompts.length, 2);
 });
 
-test("missing output tag recovery exhausts after four continues", async () => {
+test("missing output tag with zero agent retries does not continue", async () => {
   const prompts: string[] = [];
   const waits: number[] = [];
   const executor = new SandcastleAgentExecutor(
@@ -260,13 +260,21 @@ test("missing output tag recovery exhausts after four continues", async () => {
     async () => {},
   );
   await assert.rejects(
-    executor.execute(input()),
+    executor.execute({
+      ...input(),
+      retryPolicy: {
+        operationRetry: 4,
+        agentRetry: 0,
+        operationRetryDelay: [10, 20, 40, 80],
+        agentRetryDelay: [1],
+      },
+    }),
     /Agent Attempt output must contain exactly one result tag/u,
   );
-  assert.deepEqual(waits, [10_000, 20_000, 40_000, 80_000]);
+  assert.deepEqual(waits, []);
   assert.equal(
     prompts.filter((prompt) => prompt.startsWith("continue\n\n")).length,
-    4,
+    0,
   );
 });
 

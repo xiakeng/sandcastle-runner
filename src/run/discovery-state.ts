@@ -18,7 +18,7 @@ export interface DiscoveryInput {
   audit: AuditLog;
   clock: Clock;
   operator: OperatorIO;
-  retryPolicy?: RetryPolicy;
+  retryPolicy: RetryPolicy;
   event: (
     phase: string,
     operation: string,

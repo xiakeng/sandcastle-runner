@@ -7,7 +7,18 @@ import {
   workflowWrite,
   type WriteReconciliation,
 } from "../../src/run/operations.ts";
-import type { Clock, OperatorIO } from "../../src/run/contracts.ts";
+import type {
+  Clock,
+  OperatorIO,
+  RetryPolicy,
+} from "../../src/run/contracts.ts";
+
+const fourRetryPolicy: RetryPolicy = {
+  operationRetry: 4,
+  agentRetry: 4,
+  operationRetryDelay: [10, 20, 40, 80],
+  agentRetryDelay: [10, 20, 40, 80],
+};
 
 function dependencies() {
   const sleeps: number[] = [];
@@ -54,6 +65,7 @@ test("workflowWrite retries directly with bounded exponential backoff", async ()
     }),
     operator,
     automaticRetry: {},
+    retryPolicy: fourRetryPolicy,
   });
 
   assert.equal(calls, 5);
@@ -94,6 +106,7 @@ test("workflowWrite confirms state before the first write and after failure", as
         return reconciliations.shift()!;
       },
     },
+    retryPolicy: fourRetryPolicy,
   });
 
   assert.equal(calls, 1);

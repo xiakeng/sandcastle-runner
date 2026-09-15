@@ -228,6 +228,7 @@ export async function freshRepairHandoff(
         `ticket:${handoff.ticket}`,
       )(1),
     operator: input.operator,
+    retryPolicy: input.retryPolicy,
   });
   return {
     ...handoff,

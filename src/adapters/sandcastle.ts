@@ -22,7 +22,6 @@ import type {
   AgentDiagnostics,
   AgentExecutor,
   ReviewAttemptInput,
-  RetryPolicy,
 } from "../run/contracts.ts";
 import { OperatorCancelled } from "../run/operations.ts";
 import { noShellSandbox } from "./no-shell-sandbox.ts";
@@ -43,13 +42,6 @@ class AgentOutputError extends Error {
 type Delay = (milliseconds: number, signal: AbortSignal) => Promise<void>;
 type PromptLogger = (logFile: string, prompt: string) => Promise<void>;
 type StatusLogger = (logFile: string, message: string) => Promise<void>;
-
-const defaultRetryPolicy: RetryPolicy = {
-  operationRetry: 4,
-  agentRetry: 4,
-  operationRetryDelay: [10, 20, 40, 80],
-  agentRetryDelay: [10, 20, 40, 80],
-};
 
 const delay: Delay = (milliseconds, signal) =>
   new Promise((resolve, reject) => {
@@ -103,7 +95,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     recoveryAttempt: number,
     timeoutSignal: AbortSignal,
   ): Promise<number | undefined> {
-    const policy = input.retryPolicy ?? defaultRetryPolicy;
+    const policy = input.retryPolicy;
     const backoff =
       policy.agentRetryDelay[
         Math.min(recoveryAttempt, policy.agentRetryDelay.length - 1)
@@ -164,7 +156,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     if (existing !== undefined) return existing;
 
     let lastError: unknown;
-    const policy = input.retryPolicy ?? defaultRetryPolicy;
+    const policy = input.retryPolicy;
     for (let attempt = 0; attempt <= policy.operationRetry; attempt++) {
       try {
         await this.logPrompt(
@@ -275,7 +267,7 @@ export class SandcastleAgentExecutor implements AgentExecutor {
     );
     let result: Awaited<ReturnType<SandcastleRun>>;
     let recoveryAttempt = 0;
-    const policy = input.retryPolicy ?? defaultRetryPolicy;
+    const policy = input.retryPolicy;
     let structuredRetryRemaining = policy.agentRetry;
     let structuredRetryAttempt = 0;
     try {
@@ -388,7 +380,11 @@ export class SandcastleAgentExecutor implements AgentExecutor {
         if (sessionId) this.sessions.set(input.logFile, sessionId);
         const openingTags = result.stdout.split(`<${tag}>`).length - 1;
         const closingTags = result.stdout.split(`</${tag}>`).length - 1;
-        if (openingTags !== 0 || closingTags !== 0 || recoveryAttempt === 4)
+        if (
+          openingTags !== 0 ||
+          closingTags !== 0 ||
+          recoveryAttempt === policy.agentRetry
+        )
           break;
         const nextRecoveryAttempt = await this.waitForContinuation(
           input,

@@ -201,6 +201,7 @@ export async function publishVerifiedHandoffs(
             `ticket:${handoff.ticket}`,
           )(attempt),
         operator: concurrentInput.operator,
+        retryPolicy: concurrentInput.retryPolicy,
       });
       await input.persistPublication?.(handoff.ticket, {
         ...intent,
@@ -240,6 +241,7 @@ export async function publishVerifiedHandoffs(
             `ticket:${handoff.ticket}`,
           )(1),
         operator: concurrentInput.operator,
+        retryPolicy: concurrentInput.retryPolicy,
       });
       await input.persistPublication?.(handoff.ticket, {
         ...intent,
