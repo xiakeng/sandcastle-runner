@@ -40,6 +40,10 @@ _Avoid_: Ready PR, merge-ready PR
 A same-repository direct child of the Parent Ticket that a Run may select for coding and integration.
 _Avoid_: Task, work item
 
+**Issue List**:
+A Project-configured list of issue numbers. In a Parent Ticket run it limits processing to listed same-repository direct children; in a value-less `--issue` run it supplies the standalone issues to process.
+_Avoid_: Sub-issue list
+
 **Eligible Delivery Ticket**:
 An open Delivery Ticket with no non-runner assignee, no complete or partial Reservation, and only closed native blockers.
 _Avoid_: Ready ticket, available ticket
