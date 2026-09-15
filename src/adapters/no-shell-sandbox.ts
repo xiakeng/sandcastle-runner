@@ -18,8 +18,7 @@ function commandArgs(command: string): [string, ...string[]] {
   let quote = "";
   let escaped = false;
   let windowsPath = false;
-  for (let index = 0; index < trimmed.length; index += 1) {
-    const character = trimmed[index]!;
+  for (const character of trimmed) {
     if (escaped) {
       value += character;
       escaped = false;
@@ -82,8 +81,7 @@ function environmentValue(
   name: string,
 ): string | undefined {
   const entries = Object.entries(env);
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const [key, value] = entries[index]!;
+  for (const [key, value] of entries.reverse()) {
     if (key.toLowerCase() === name.toLowerCase()) return value;
   }
   return undefined;
