@@ -21,6 +21,7 @@ export interface RunSummary {
   outcome: RunOutcome;
   project: string;
   parentTicket: number;
+  issueTicket?: number;
   targetBranch: string;
   reasons: string[];
   batch?: number[];
@@ -32,6 +33,7 @@ export interface RunSummary {
 export interface RunInput {
   project: string;
   parentTicket: number;
+  issueTicket?: number;
   repository: string;
   configuredTargetBranch?: string;
   runId: string;

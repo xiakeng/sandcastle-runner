@@ -27,7 +27,6 @@ test("final closeout credit triggers one clean no_change Maintenance Ticket with
     state: "open",
     stateReason: null,
     assignees: [],
-    labels: ["doc-maintain"],
   };
   let delivered = false;
   let maintenanceBranch = "";

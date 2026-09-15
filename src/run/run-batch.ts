@@ -10,6 +10,9 @@ export function implementBatch(
   return implementReservedBatch({
     repository: input.repository,
     parentTicket: input.parentTicket,
+    ...(input.issueTicket === undefined
+      ? {}
+      : { standaloneIssue: input.issueTicket }),
     tracker: input.tracker,
     audit: input.audit,
     clock: input.clock,

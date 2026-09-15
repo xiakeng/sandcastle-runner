@@ -6,7 +6,9 @@ import {
   readBlockers,
   readChildren,
   readParent,
+  releaseReservation,
   revalidateTicket,
+  readyForAgentLabel,
   type DiscoveryInput,
   type Selection,
   type DeliveryBoundaryResult,
@@ -18,6 +20,7 @@ export type {
   MergedDeliveryBoundaryResult,
   TicketBoundary,
 } from "./discovery-state.ts";
+export { discoverAndReserveStandalone } from "./standalone-discovery.ts";
 
 export type DiscoveryResult =
   | {
@@ -37,64 +40,18 @@ function boundaryResult(parent: Ticket): DiscoveryResult | null {
       };
 }
 
-async function releaseReservation(
-  input: DiscoveryInput,
-  ticket: number,
-  removeAssignee: boolean,
-  removeLabel: boolean,
-): Promise<void> {
-  if (removeAssignee) {
-    await workflowWrite({
-      action: () =>
-        input.tracker.removeAssignee(
-          input.repository,
-          ticket,
-          input.runnerAccount,
-        ),
-      audit: input.audit,
-      clock: input.clock,
-      automaticRetry: {},
-      event: (attempt) =>
-        input.event(
-          "release",
-          "remove_runner_assignee",
-          `ticket:${ticket}`,
-        )(attempt),
-      operator: input.operator,
-    });
-  }
-  if (removeLabel) {
-    await workflowWrite({
-      action: () =>
-        input.tracker.removeLabel(
-          input.repository,
-          ticket,
-          input.reservationLabel,
-        ),
-      audit: input.audit,
-      clock: input.clock,
-      automaticRetry: {},
-      event: (attempt) =>
-        input.event(
-          "release",
-          "remove_reservation_label",
-          `ticket:${ticket}`,
-        )(attempt),
-      operator: input.operator,
-    });
-  }
-}
-
 async function revalidateReserved(
   input: DiscoveryInput,
   ticketNumber: number,
 ): Promise<MergedDeliveryBoundaryResult> {
-  const parentResult = boundaryResult(await readParent(input, "revalidate"));
-  if (parentResult) {
-    return {
-      outcome: parentResult.outcome === "cancelled" ? "cancelled" : "failed",
-      reason: parentResult.reasons[0] ?? "Parent Ticket changed",
-    };
+  if (input.standaloneIssue === undefined) {
+    const parentResult = boundaryResult(await readParent(input, "revalidate"));
+    if (parentResult) {
+      return {
+        outcome: parentResult.outcome === "cancelled" ? "cancelled" : "failed",
+        reason: parentResult.reasons[0] ?? "Parent Ticket changed",
+      };
+    }
   }
   const result = await revalidateTicket(input, ticketNumber);
   if (!result.inScope)
@@ -121,6 +78,7 @@ async function revalidateReserved(
     };
   }
   if (
+    !(result.ticket.labels ?? []).includes(readyForAgentLabel) ||
     !(result.ticket.assignees ?? []).includes(input.runnerAccount) ||
     !(result.ticket.labels ?? []).includes(input.reservationLabel)
   ) {
@@ -304,6 +262,7 @@ async function reserve(
     if (
       beforeLabel.ticket.state !== "open" ||
       beforeLabel.blocked ||
+      !(beforeLabel.ticket.labels ?? []).includes(readyForAgentLabel) ||
       (beforeLabel.ticket.assignees ?? []).some(
         (assignee) => assignee !== input.runnerAccount,
       ) ||
@@ -383,6 +342,7 @@ async function reserve(
     }
     if (
       checkpoint.blocked ||
+      !(checkpoint.ticket.labels ?? []).includes(readyForAgentLabel) ||
       (checkpoint.ticket.assignees ?? []).some(
         (assignee) => assignee !== input.runnerAccount,
       )

@@ -7,11 +7,12 @@ import type {
   Ticket,
   Tracker,
 } from "./contracts.ts";
-import { externalRead } from "./operations.ts";
+import { externalRead, workflowWrite } from "./operations.ts";
 
 export interface DiscoveryInput {
   repository: string;
   parentTicket: number;
+  standaloneIssue?: number;
   tracker: Tracker;
   audit: AuditLog;
   clock: Clock;
@@ -28,6 +29,8 @@ export interface DiscoveryInput {
   ticketKind?: "Delivery Ticket" | "Maintenance Ticket";
   cleanupTerminal?: (ticket: number) => Promise<void>;
 }
+
+export const readyForAgentLabel = "ready-for-agent";
 
 export interface Selection {
   batch: Ticket[];
@@ -212,6 +215,54 @@ export async function readBlockers(
   return blockers;
 }
 
+export async function releaseReservation(
+  input: DiscoveryInput,
+  ticket: number,
+  removeAssignee: boolean,
+  removeLabel: boolean,
+): Promise<void> {
+  if (removeAssignee) {
+    await workflowWrite({
+      action: () =>
+        input.tracker.removeAssignee(
+          input.repository,
+          ticket,
+          input.runnerAccount,
+        ),
+      audit: input.audit,
+      clock: input.clock,
+      automaticRetry: {},
+      event: (attempt) =>
+        input.event(
+          "release",
+          "remove_runner_assignee",
+          `ticket:${ticket}`,
+        )(attempt),
+      operator: input.operator,
+    });
+  }
+  if (removeLabel) {
+    await workflowWrite({
+      action: () =>
+        input.tracker.removeLabel(
+          input.repository,
+          ticket,
+          input.reservationLabel,
+        ),
+      audit: input.audit,
+      clock: input.clock,
+      automaticRetry: {},
+      event: (attempt) =>
+        input.event(
+          "release",
+          "remove_reservation_label",
+          `ticket:${ticket}`,
+        )(attempt),
+      operator: input.operator,
+    });
+  }
+}
+
 export async function inspect(
   input: DiscoveryInput,
   children: Ticket[],
@@ -240,6 +291,7 @@ export async function inspect(
     if (child.state !== "open") continue;
     const hasRunner = (child.assignees ?? []).includes(input.runnerAccount);
     const hasLabel = (child.labels ?? []).includes(input.reservationLabel);
+    const readyForAgent = (child.labels ?? []).includes(readyForAgentLabel);
     const hasExternalOwner = (child.assignees ?? []).some(
       (assignee) => assignee !== input.runnerAccount,
     );
@@ -256,6 +308,7 @@ export async function inspect(
       !excluded.has(child.number) &&
       !hasExternalOwner &&
       !hasOpenBlocker &&
+      readyForAgent &&
       hasRunner === hasLabel
     ) {
       eligible.push(child);
@@ -279,6 +332,29 @@ export async function revalidateTicket(
 ): Promise<
   { inScope: false } | { inScope: true; ticket: Ticket; blocked: boolean }
 > {
+  if (input.standaloneIssue !== undefined) {
+    if (input.standaloneIssue !== ticketNumber) return { inScope: false };
+    const ticket = await externalRead({
+      action: () => input.tracker.getTicket(input.repository, ticketNumber),
+      parseOverride: (value) =>
+        parseTicket(JSON.parse(value) as unknown, ticketNumber),
+      audit: input.audit,
+      event: input.event("revalidate", "read_ticket", `ticket:${ticketNumber}`),
+      clock: input.clock,
+      operator: input.operator,
+    });
+    if (ticket.state === "closed" && ticket.stateReason === null) {
+      throw new Error(
+        `Delivery Ticket ${ticket.number} has an unsupported terminal state`,
+      );
+    }
+    const blockers = await readBlockers(input, ticketNumber, "revalidate");
+    return {
+      inScope: true,
+      ticket,
+      blocked: blockers.some(({ state }) => state === "open"),
+    };
+  }
   const children = await readChildren(input, "revalidate");
   if (!children.some(({ number }) => number === ticketNumber)) {
     return { inScope: false };

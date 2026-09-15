@@ -66,5 +66,5 @@ From the Sandcastle Runner repository:
 
 ```sh
 npm ci
-npm exec -- sandcastle-runner run --project <project-key> --parent <issue-number>
+npm exec -- sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)
 ```

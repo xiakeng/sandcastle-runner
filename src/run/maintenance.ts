@@ -65,7 +65,7 @@ function createdTicket(value: string, label: string): Ticket {
     state: "open",
     stateReason: null,
     assignees: [],
-    labels: [label],
+    labels: [label, "ready-for-agent"],
   };
 }
 

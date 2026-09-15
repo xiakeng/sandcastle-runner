@@ -159,6 +159,8 @@ export interface RecoverySnapshot {
   repository: string;
   checkout: string;
   parentTicket: number;
+  runKind?: "parent" | "issue";
+  issueTicket?: number;
   runId: string;
   phase: string;
   targetBranch: string | null;
@@ -182,11 +184,15 @@ export interface RecoverySnapshot {
 
 export class InvalidRecoverySnapshot extends Error {}
 
-export function recoveryPaths(projectDirectory: string, parentTicket: number) {
+export function recoveryPaths(
+  projectDirectory: string,
+  ticket: number,
+  kind: "parent" | "issue" = "parent",
+) {
   const stateDirectory = path.join(projectDirectory, "state");
   return {
     stateDirectory,
-    snapshot: path.join(stateDirectory, `parent-${parentTicket}.json`),
+    snapshot: path.join(stateDirectory, `${kind}-${ticket}.json`),
   };
 }
 
@@ -216,6 +222,20 @@ function parseSnapshot(value: unknown): RecoverySnapshot {
     (snapshot.parentTicket as number) <= 0
   ) {
     throw new InvalidRecoverySnapshot("snapshot has no Parent Ticket");
+  }
+  if (
+    snapshot.runKind !== undefined &&
+    snapshot.runKind !== "parent" &&
+    snapshot.runKind !== "issue"
+  ) {
+    throw new InvalidRecoverySnapshot("snapshot has an invalid run kind");
+  }
+  if (
+    snapshot.issueTicket !== undefined &&
+    (!Number.isSafeInteger(snapshot.issueTicket) ||
+      (snapshot.issueTicket as number) <= 0)
+  ) {
+    throw new InvalidRecoverySnapshot("snapshot has an invalid issue ticket");
   }
   if (
     snapshot.targetBranch !== null &&

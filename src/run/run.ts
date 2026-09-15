@@ -25,6 +25,8 @@ import {
   type RunSummary,
 } from "./run-input.ts";
 import { implementBatch } from "./run-batch.ts";
+import { createPublicationInput } from "./publication-input.ts";
+import { runStandaloneIssue } from "./standalone-run.ts";
 import { parentClosureReconciliation } from "./write-reconciliation.ts";
 export type { RunInput, RunOutcome, RunSummary } from "./run-input.ts";
 
@@ -90,6 +92,9 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     outcome,
     project: input.project,
     parentTicket: input.parentTicket,
+    ...(input.issueTicket === undefined
+      ? {}
+      : { issueTicket: input.issueTicket }),
     targetBranch,
     reasons: finalReasons,
     ...(!hasBatchState
@@ -233,42 +238,13 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     return result.outcome;
   };
 
-  const publicationInput = (
-    batchHandoffs: VerifiedHandoff[],
-  ): PublicationInput => ({
-    repository: input.repository,
-    parentTicket: input.parentTicket,
-    tracker: input.tracker,
-    audit: input.audit,
-    clock: input.clock,
-    operator: input.operator,
-    event,
-    runnerAccount: input.runnerAccount,
-    reservationLabel: input.reservationLabel,
+  const publicationInput = createPublicationInput(
+    input,
     targetBranch,
-    checkout: input.checkout,
-    runId: input.runId,
-    projectDirectory: input.projectDirectory,
-    ciRepairPrompt: input.ciRepairPrompt,
-    ciRepairAgent: input.ciRepairAgent,
-    conflictRepairPrompt: input.conflictRepairPrompt,
-    conflictRepairAgent: input.conflictRepairAgent,
-    agentTimeoutMs: input.agentTimeoutMs,
-    requiredChecksTimeoutMs: input.requiredChecksTimeoutMs,
-    mergeQueueTimeoutMs: input.mergeQueueTimeoutMs,
-    adminMerge: input.adminMerge,
-    ticketClosure: input.ticketClosure,
-    ciRepairBudgets: new Map(),
+    event,
     publicationIntents,
-    handoffs: batchHandoffs,
-    gitWorkspace: input.gitWorkspace,
-    codeHost: input.codeHost,
-    agentExecutor: input.agentExecutor,
     cleanupTerminal,
-    ...(input.persistPublication === undefined
-      ? {}
-      : { persistPublication: input.persistPublication }),
-  });
+  );
 
   const integratePublication = async (
     publication: PublicationResult,
@@ -421,6 +397,23 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       inputs,
     );
     if (outcome) return summary(outcome);
+  }
+
+  if (input.issueTicket !== undefined) {
+    hasBatchState = true;
+    return runStandaloneIssue({
+      input,
+      targetBranch,
+      event,
+      cleanupTerminal,
+      publicationInput,
+      integratePublication,
+      summary,
+      batches,
+      handoffs,
+      completedTickets,
+      reasons,
+    });
   }
 
   for (;;) {

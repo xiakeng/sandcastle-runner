@@ -13,16 +13,20 @@ test("eligibility reports ownership and Reservations after complete blocker pagi
   const root = await createProject();
   const writes: string[] = [];
   const children = [
-    { number: 9, assignees: ["developer"], labels: [] },
-    { number: 10, assignees: [], labels: ["sandcastle:reserved"] },
-    { number: 11, assignees: ["runner"], labels: [] },
+    { number: 9, assignees: ["developer"], labels: ["ready-for-agent"] },
+    {
+      number: 10,
+      assignees: [],
+      labels: ["sandcastle:reserved", "ready-for-agent"],
+    },
+    { number: 11, assignees: ["runner"], labels: ["ready-for-agent"] },
     {
       number: 12,
       assignees: ["runner"],
-      labels: ["sandcastle:reserved"],
+      labels: ["sandcastle:reserved", "ready-for-agent"],
     },
-    { number: 13, assignees: [], labels: [] },
-    { number: 14, assignees: [], labels: [] },
+    { number: 13, assignees: [], labels: ["ready-for-agent"] },
+    { number: 14, assignees: [], labels: ["ready-for-agent"] },
   ].map((ticket) => ({
     ...ticket,
     state: "open" as const,
@@ -164,7 +168,7 @@ test("Parent cancellation before Reservation stops without mutating children", a
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(
@@ -212,7 +216,7 @@ test("a terminal Delivery Ticket releases a partial Reservation before the next 
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   await executeCli(
@@ -230,7 +234,7 @@ test("a terminal Delivery Ticket releases a partial Reservation before the next 
                 ...child,
                 state: "closed",
                 stateReason: "completed",
-                labels: ["sandcastle:reserved"],
+                labels: ["sandcastle:reserved", "ready-for-agent"],
               };
         },
         async addLabel() {
@@ -262,7 +266,7 @@ test("a Delivery Ticket removed from Parent scope is not reserved", async () => 
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   await executeCli(
@@ -302,7 +306,7 @@ test("a terminal Delivery Ticket releases a complete Reservation before the chec
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(
@@ -321,7 +325,7 @@ test("a terminal Delivery Ticket releases a complete Reservation before the chec
                 state: "closed",
                 stateReason: "not_planned",
                 assignees: ["runner"],
-                labels: ["sandcastle:reserved"],
+                labels: ["sandcastle:reserved", "ready-for-agent"],
               };
         },
         async addLabel() {
@@ -358,7 +362,7 @@ test("the final complete scan reserves newly eligible work", async () => {
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(
@@ -370,7 +374,10 @@ test("the final complete scan reserves newly eligible work", async () => {
           return {
             children: [
               childScans === 1
-                ? { ...child, labels: ["sandcastle:reserved"] }
+                ? {
+                    ...child,
+                    labels: ["sandcastle:reserved", "ready-for-agent"],
+                  }
                 : child,
             ],
             nextPage: null,
@@ -395,7 +402,7 @@ test("new work in the final closeout scan prevents Parent closure", async () => 
     number: 9,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(

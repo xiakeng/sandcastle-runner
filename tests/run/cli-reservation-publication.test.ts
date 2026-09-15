@@ -24,7 +24,7 @@ test("a failed second Reservation marker keeps the partial write", async () => {
     stateReason: null,
     repository: "owner/repo",
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(
@@ -70,7 +70,7 @@ test("a cross-repository child with the selected number fails revalidation", asy
     state: "open" as const,
     stateReason: null,
     assignees: [],
-    labels: [],
+    labels: ["ready-for-agent"],
   };
 
   const result = await executeCli(
@@ -113,7 +113,7 @@ test("successive revalidation changes cannot hide newly eligible work", async ()
     stateReason: null,
     repository: "owner/repo",
     assignees,
-    labels: [],
+    labels: ["ready-for-agent"],
   });
 
   const result = await executeCli(

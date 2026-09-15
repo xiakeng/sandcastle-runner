@@ -8,6 +8,7 @@ import type {
   Ticket,
   Tracker,
 } from "../../src/run/contracts.ts";
+import { boundedTestOperator } from "./bounded-operator.ts";
 
 export type CliDependencyOverrides = Omit<
   Partial<CliDependencies>,
@@ -57,13 +58,21 @@ export function createCliDependencies(
       return { labels: ["doc-maintain"], nextPage: null };
     },
     async createLabel() {},
-    async addLabel() {},
     async addAssignee() {},
     async removeLabel() {},
     async removeAssignee() {},
     async addComment() {},
     async closeParent() {},
     ...overrides.tracker,
+    async addLabel(repository, ticket, label) {
+      const maintenance = maintenanceTickets.get(ticket);
+      if (maintenance) {
+        maintenance.labels ??= [];
+        if (!maintenance.labels.includes(label)) maintenance.labels.push(label);
+        return;
+      }
+      await overrides.tracker?.addLabel?.(repository, ticket, label);
+    },
     async getTicket(repository, ticket) {
       const maintenance = maintenanceTickets.get(ticket);
       if (maintenance) return maintenance;
@@ -75,6 +84,7 @@ export function createCliDependencies(
               number: ticket,
               state: "open",
               stateReason: null,
+              labels: ["ready-for-agent"],
               title: `Delivery Ticket ${ticket}`,
               body: "Acceptance criteria.",
               source: `https://github.com/owner/repo/issues/${ticket}`,
@@ -102,6 +112,8 @@ export function createCliDependencies(
             assignees: [],
             labels: [label],
           } satisfies Ticket);
+      ticket.labels ??= [];
+      if (!ticket.labels.includes(label)) ticket.labels.push(label);
       nextMaintenanceTicket += 1;
       maintenanceTickets.set(ticket.number, ticket);
       return ticket;
@@ -241,13 +253,13 @@ export function createCliDependencies(
     async sleep() {},
     ...overrides.clock,
   };
-  const operator: OperatorIO = {
+  const operator: OperatorIO = boundedTestOperator({
     write() {},
     async pause() {
       throw new Error("no Operator Pause expected");
     },
     ...overrides.operator,
-  };
+  });
 
   return {
     root,
@@ -292,7 +304,7 @@ export function createAttemptTracker(...numbers: number[]): {
     stateReason: null,
     repository: "owner/repo",
     assignees: [] as string[],
-    labels: [] as string[],
+    labels: ["ready-for-agent"] as string[],
     title: `Delivery Ticket ${number}`,
     body: "Acceptance criteria.",
     source: `https://github.com/owner/repo/issues/${number}`,

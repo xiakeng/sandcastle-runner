@@ -32,7 +32,7 @@ test("restart adopts an exact published Pull Request without rerunning implement
   const intent = publicationIntent("pending_pr");
   const snapshot = await writePublicationState(root, [intent]);
   const { tracker, tickets } = createAttemptTracker(9);
-  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   tickets[0]!.assignees = ["runner"];
   let forbiddenCalls = 0;
   const result = await executeCli(
@@ -105,7 +105,7 @@ test("restart abandons an absent pending push and creates fresh work", async () 
   const intent = publicationIntent("pending_push");
   await writePublicationState(root, [intent]);
   const delivery = createCommittedDelivery();
-  delivery.tickets[0]!.labels = ["sandcastle:reserved"];
+  delivery.tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   delivery.tickets[0]!.assignees = ["runner"];
   const pushed: string[] = [];
   let agentCalls = 0;
@@ -139,7 +139,7 @@ test("restart pauses on an unexpected remote branch head", async () => {
   const intent = publicationIntent("pending_push");
   await writePublicationState(root, [intent]);
   const { tracker, tickets } = createAttemptTracker(9);
-  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   tickets[0]!.assignees = ["runner"];
   let agentCalls = 0;
   let pauses = 0;
@@ -183,7 +183,7 @@ test("restart creates one absent Pull Request after rechecking the remote head",
   const intent = publicationIntent("pending_pr");
   await writePublicationState(root, [intent]);
   const { tracker, tickets } = createAttemptTracker(9);
-  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   tickets[0]!.assignees = ["runner"];
   let remoteReads = 0;
   const creations: object[] = [];
@@ -246,7 +246,7 @@ test("publication recovery exhausts remote reads before Operator Pause", async (
   const intent = publicationIntent("pending_push");
   await writePublicationState(root, [intent]);
   const { tracker, tickets } = createAttemptTracker(9);
-  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   tickets[0]!.assignees = ["runner"];
   let remoteReads = 0;
   let agentCalls = 0;
@@ -284,7 +284,7 @@ test("a recorded Pull Request resumes through ordinary reads without rediscovery
   const intent = publicationIntent("pr_created");
   await writePublicationState(root, [intent]);
   const { tracker, tickets } = createAttemptTracker(9);
-  tickets[0]!.labels = ["sandcastle:reserved"];
+  tickets[0]!.labels = ["ready-for-agent", "sandcastle:reserved"];
   tickets[0]!.assignees = ["runner"];
   let checkReads = 0;
   let forbiddenCalls = 0;

@@ -235,6 +235,8 @@ export class GitHubTracker implements Tracker {
           `body=${body}`,
           "-f",
           `labels[]=${label}`,
+          "-f",
+          "labels[]=ready-for-agent",
         ]),
       ) as unknown,
       false,
