@@ -16,6 +16,8 @@ contract or is identified as unintended scope.
 
 - Verify success, boundary, malformed-input, cancellation, and failure paths
   relevant to the contract.
+- Must not contain any OS-specific coding. This project should be able to run 
+  on any qualified node environment with proper config.
 - Check compatibility, public behavior, state transitions, resource ownership,
   concurrency, exceptions, and performance where affected.
 - Leave deterministic formatting, lint, and type diagnostics to configured
