@@ -57,13 +57,21 @@ export function createCliDependencies(
       return { labels: ["doc-maintain"], nextPage: null };
     },
     async createLabel() {},
-    async addLabel() {},
     async addAssignee() {},
     async removeLabel() {},
     async removeAssignee() {},
     async addComment() {},
     async closeParent() {},
     ...overrides.tracker,
+    async addLabel(repository, ticket, label) {
+      const maintenance = maintenanceTickets.get(ticket);
+      if (maintenance) {
+        maintenance.labels ??= [];
+        if (!maintenance.labels.includes(label)) maintenance.labels.push(label);
+        return;
+      }
+      await overrides.tracker?.addLabel?.(repository, ticket, label);
+    },
     async getTicket(repository, ticket) {
       const maintenance = maintenanceTickets.get(ticket);
       if (maintenance) return maintenance;
@@ -103,6 +111,8 @@ export function createCliDependencies(
             assignees: [],
             labels: [label],
           } satisfies Ticket);
+      ticket.labels ??= [];
+      if (!ticket.labels.includes(label)) ticket.labels.push(label);
       nextMaintenanceTicket += 1;
       maintenanceTickets.set(ticket.number, ticket);
       return ticket;
