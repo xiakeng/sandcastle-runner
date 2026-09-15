@@ -299,6 +299,21 @@ export class GitHubTracker implements Tracker {
     ]);
   }
 
+  async addComment(
+    repository: string,
+    ticket: number,
+    body: string,
+  ): Promise<void> {
+    await this.client.request([
+      "api",
+      "--method",
+      "POST",
+      `repos/${repository}/issues/${ticket}/comments`,
+      "-f",
+      `body=${body}`,
+    ]);
+  }
+
   async closeTicket(repository: string, ticket: number): Promise<void> {
     await this.client.request([
       "api",

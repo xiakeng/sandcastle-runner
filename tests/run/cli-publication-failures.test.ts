@@ -390,6 +390,73 @@ test("valid no_change and blocked results stay unresolved without handoffs", asy
   }
 });
 
+test("Delivery Ticket no_change comments its summary with safe write retry", async () => {
+  const root = await createProject();
+  let branch = "";
+  let commentAttempts = 0;
+  const comments: string[] = [];
+  const sleeps: number[] = [];
+  const { tracker } = createAttemptTracker(9);
+  const result = await executeCli(
+    ["run", "--project", "demo", "--parent", "8"],
+    createCliDependencies(root, {
+      tracker: {
+        ...tracker,
+        async addComment(_repository, ticket, body) {
+          commentAttempts += 1;
+          if (commentAttempts === 1) throw new Error("500 comment failure");
+          comments.push(`${ticket}:${body}`);
+        },
+      },
+      gitWorkspace: {
+        async fetchTargetBranch() {
+          return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        },
+        async createWorktree(input) {
+          branch = input.branch;
+        },
+        async inspect({ worktree, base }) {
+          return {
+            worktree,
+            branch,
+            base,
+            commits: [],
+            clean: true,
+          };
+        },
+      },
+      agentExecutor: {
+        async execute() {
+          return {
+            outcome: "no_change" as const,
+            summary: "the requested behavior already exists",
+            commits: [],
+            checks: [],
+            blocker: null,
+            pr_title: "unused metadata",
+            pr_body: "unused metadata",
+          };
+        },
+      },
+      clock: {
+        async sleep(milliseconds) {
+          sleeps.push(milliseconds);
+        },
+      },
+      operator: {
+        async pause(message) {
+          throw new Error(`unexpected Operator Pause: ${message}`);
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.summary.outcome, "incomplete");
+  assert.deepEqual(comments, ["9:the requested behavior already exists"]);
+  assert.equal(commentAttempts, 2);
+  assert.deepEqual(sleeps, [10_000]);
+});
+
 test("false commit claims enter Operator Pause and q cancels active Sandcastle resources", async () => {
   const root = await createProject();
   let signal: AbortSignal | undefined;
