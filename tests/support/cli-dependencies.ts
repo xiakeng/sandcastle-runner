@@ -8,6 +8,7 @@ import type {
   Ticket,
   Tracker,
 } from "../../src/run/contracts.ts";
+import { boundedTestOperator } from "./bounded-operator.ts";
 
 export type CliDependencyOverrides = Omit<
   Partial<CliDependencies>,
@@ -252,13 +253,13 @@ export function createCliDependencies(
     async sleep() {},
     ...overrides.clock,
   };
-  const operator: OperatorIO = {
+  const operator: OperatorIO = boundedTestOperator({
     write() {},
     async pause() {
       throw new Error("no Operator Pause expected");
     },
     ...overrides.operator,
-  };
+  });
 
   return {
     root,

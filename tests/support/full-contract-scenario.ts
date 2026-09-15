@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { SandcastleAgentExecutor } from "../../src/adapters/sandcastle.ts";
 import type { CliDependencies } from "../../src/cli.ts";
+import { boundedTestOperator } from "./bounded-operator.ts";
 import type {
   CommitEvidence,
   RequiredCheck,
@@ -452,7 +453,7 @@ export function createFiveTicketScenario(
         operations.push(`clock:sleep:${milliseconds}`);
       },
     },
-    operator: {
+    operator: boundedTestOperator({
       write() {},
       async pause(message) {
         operations.push(`operator:pause:${message}`);
@@ -466,7 +467,7 @@ export function createFiveTicketScenario(
         }
         return interrupted ? "q" : "";
       },
-    },
+    }),
   };
 
   return {
