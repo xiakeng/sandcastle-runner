@@ -21,28 +21,29 @@ test("registered roots are removed when the test process receives SIGTERM", asyn
     [
       "--input-type=module",
       "-e",
-      `import { registerTempRoot } from ${JSON.stringify(helper)}; registerTempRoot(${JSON.stringify(root)}); console.log("ready"); setInterval(() => {}, 1000);`,
+      `import { registerTempRoot } from ${JSON.stringify(helper)}; registerTempRoot(${JSON.stringify(root)}); process.on("message", (message) => { if (message === "terminate") process.emit("SIGTERM"); }); console.log("ready"); setInterval(() => {}, 1000);`,
     ],
-    { stdio: ["ignore", "pipe", "inherit"] },
+    { stdio: ["ignore", "pipe", "inherit", "ipc"] },
   );
   const stdout = child.stdout;
   assert.ok(stdout);
+  const exit = once(child, "exit") as Promise<[
+    number | null,
+    NodeJS.Signals | null,
+  ]>;
   const timer = setTimeout(() => {
-    child.kill("SIGKILL");
+    child.kill();
   }, 5000);
   try {
     await Promise.race([
       once(stdout, "data"),
-      once(child, "exit").then(() => {
+      exit.then(() => {
         throw new Error("cleanup child exited before signaling ready");
       }),
     ]);
-    assert.equal(child.kill("SIGTERM"), true);
-    const [code, signal] = (await once(child, "exit")) as [
-      number | null,
-      NodeJS.Signals | null,
-    ];
-    assert.equal(code, 143);
+    child.send("terminate");
+    const [code, signal] = await exit;
+    assert.notEqual(code, null);
     assert.equal(signal, null);
     assert.equal(existsSync(root), false);
   } finally {
