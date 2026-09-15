@@ -20,14 +20,17 @@ export type {
   MergedDeliveryBoundaryResult,
   TicketBoundary,
 } from "./discovery-state.ts";
-export { discoverAndReserveStandalone } from "./standalone-discovery.ts";
+export {
+  discoverAndReserveStandalone,
+  discoverAndReserveStandaloneBatch,
+} from "./standalone-discovery.ts";
 
 export type DiscoveryResult =
   | {
       outcome: "succeeded" | "no_work" | "cancelled" | "failed";
       reasons: string[];
     }
-  | { outcome: "close_parent"; reasons: [] }
+  | { outcome: "close_parent"; reasons: string[] }
   | { outcome: "incomplete"; reasons: string[]; batch: number[] };
 
 function boundaryResult(parent: Ticket): DiscoveryResult | null {
@@ -44,7 +47,10 @@ async function revalidateReserved(
   input: DiscoveryInput,
   ticketNumber: number,
 ): Promise<MergedDeliveryBoundaryResult> {
-  if (input.standaloneIssue === undefined) {
+  if (
+    input.standaloneIssue === undefined &&
+    input.standaloneIssues === undefined
+  ) {
     const parentResult = boundaryResult(await readParent(input, "revalidate"));
     if (parentResult) {
       return {
@@ -241,6 +247,11 @@ function reasons(selection: Selection, batch: number[]): string[] {
     ...(selection.reservations.length > 0
       ? [`existing Reservations: ${selection.reservations.join(", ")}`]
       : []),
+    ...(selection.missing.length > 0
+      ? [
+          `configured Delivery Tickets not found: ${selection.missing.join(", ")}`,
+        ]
+      : []),
   ];
 }
 
@@ -377,7 +388,7 @@ async function finalScan(
           child.stateReason === "not_planned"),
     )
   ) {
-    return { outcome: "close_parent", reasons: [] };
+    return { outcome: "close_parent", reasons: reasons(selection, []) };
   }
   const remainingReasons = reasons(selection, []);
   return {
@@ -417,10 +428,14 @@ export async function discoverAndReserve(
           ],
         };
   }
-  if (children.length === 0)
+  if (children.length === 0) {
+    const missing = input.issueList?.length
+      ? [`configured Delivery Tickets not found: ${input.issueList.join(", ")}`]
+      : [];
     return input.hadChildren
-      ? { outcome: "close_parent", reasons: [] }
-      : { outcome: "no_work", reasons: [] };
+      ? { outcome: "close_parent", reasons: missing }
+      : { outcome: "no_work", reasons: missing };
+  }
 
   let selection = await inspect(input, children, "discover");
   const attempted = new Set<number>();

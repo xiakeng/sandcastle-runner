@@ -38,8 +38,12 @@ async function implementTicket(
   base: string,
   controller: AbortController,
 ): Promise<VerifiedHandoff | string> {
+  const ticketInput =
+    input.standaloneIssues === undefined
+      ? input
+      : { ...input, standaloneIssue: ticket };
   try {
-    await boundary(input, ticket);
+    await boundary(ticketInput, ticket);
     const branch = `sandcastle/run-${input.runId}/ticket-${ticket}`;
     const worktree = path.join(
       input.projectDirectory,
@@ -66,7 +70,7 @@ async function implementTicket(
       operator: input.operator,
       retryPolicy: input.retryPolicy,
     });
-    const result = await runAgentOperation(input, {
+    const result = await runAgentOperation(ticketInput, {
       phase: "implement",
       ticket,
       worktree,

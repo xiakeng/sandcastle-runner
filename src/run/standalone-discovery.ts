@@ -147,3 +147,72 @@ export async function discoverAndReserveStandalone(
     reasons: [`reserved Delivery Tickets: ${input.standaloneIssue}`],
   };
 }
+
+export async function discoverAndReserveStandaloneBatch(
+  input: DiscoveryInput & { standaloneIssues: number[] },
+): Promise<DiscoveryResult> {
+  const eligible: number[] = [];
+  const reasons: string[] = [];
+  for (const issue of input.standaloneIssues) {
+    const result = await revalidateTicket(input, issue);
+    if (!result.inScope) continue;
+    if (result.ticket.state === "closed") {
+      if (
+        result.ticket.stateReason !== "completed" &&
+        result.ticket.stateReason !== "not_planned"
+      ) {
+        return {
+          outcome: "failed",
+          reasons: [`Delivery Ticket ${issue} has no supported closure reason`],
+        };
+      }
+      continue;
+    }
+    if (!(result.ticket.labels ?? []).includes(readyForAgentLabel))
+      reasons.push(`Delivery Ticket ${issue} is missing ready-for-agent`);
+    else if (result.blocked) reasons.push(`blocked Delivery Tickets: ${issue}`);
+    else if (
+      (result.ticket.assignees ?? []).some(
+        (assignee) => assignee !== input.runnerAccount,
+      )
+    ) {
+      reasons.push(`externally owned Delivery Tickets: ${issue}`);
+    } else {
+      const hasRunner = (result.ticket.assignees ?? []).includes(
+        input.runnerAccount,
+      );
+      const hasReservation = (result.ticket.labels ?? []).includes(
+        input.reservationLabel,
+      );
+      if (hasRunner !== hasReservation)
+        reasons.push(`existing Reservations: ${issue} (partial)`);
+      else eligible.push(issue);
+    }
+  }
+  if (reasons.length > 0) return { outcome: "incomplete", batch: [], reasons };
+  const reserved: number[] = [];
+  for (const issue of eligible.slice(0, 3)) {
+    const result = await discoverAndReserveStandalone({
+      ...input,
+      standaloneIssue: issue,
+      standaloneIssues: [issue],
+    });
+    if (result.outcome !== "incomplete" || result.batch.length === 0) {
+      return reserved.length === 0
+        ? result
+        : {
+            outcome: "incomplete",
+            batch: reserved,
+            reasons: [...reasons, ...result.reasons],
+          };
+    }
+    reserved.push(...result.batch);
+  }
+  return reserved.length === 0
+    ? { outcome: "no_work", reasons: [] }
+    : {
+        outcome: "incomplete",
+        batch: reserved,
+        reasons: [`reserved Delivery Tickets: ${reserved.join(", ")}`],
+      };
+}

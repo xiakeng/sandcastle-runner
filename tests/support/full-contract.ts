@@ -25,6 +25,7 @@ export async function createProject(recovery: boolean): Promise<string> {
   const config = {
     repository: "owner/repo",
     checkout: "/tmp/repo",
+    issueList: [],
     ...(!recovery && { targetBranch: "main" }),
     tracker: {
       type: "github",

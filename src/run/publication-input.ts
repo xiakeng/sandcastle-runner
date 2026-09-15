@@ -17,6 +17,9 @@ export function createPublicationInput(
     ...(input.issueTicket === undefined
       ? {}
       : { standaloneIssue: input.issueTicket }),
+    ...(input.standaloneIssueList === undefined
+      ? {}
+      : { standaloneIssues: input.standaloneIssueList }),
     tracker: input.tracker,
     audit: input.audit,
     clock: input.clock,

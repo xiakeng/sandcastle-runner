@@ -12,7 +12,7 @@ guidance. From the repository root, run:
 
 ```sh
 npm ci
-npm exec -- sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue <issue-number>)
+npm exec -- sandcastle-runner run --project <project-key> (--parent <issue-number> | --issue [<issue-number>])
 ```
 
 The root contract requires Node.js **>=22.18.0** with its bundled npm, Git,

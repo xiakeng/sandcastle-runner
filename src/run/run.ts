@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import path from "node:path";
 import { type VerifiedHandoff } from "./attempt.ts";
 import { discoverAndReserve, releaseTerminalReservation } from "./discovery.ts";
@@ -418,6 +419,23 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
     });
   }
 
+  if (input.standaloneIssueList !== undefined) {
+    hasBatchState = true;
+    return runStandaloneIssue({
+      input,
+      targetBranch,
+      event,
+      cleanupTerminal,
+      publicationInput,
+      integratePublication,
+      summary,
+      batches,
+      handoffs,
+      completedTickets,
+      reasons,
+    });
+  }
+
   for (;;) {
     const discovery = await discoverAndReserve({
       repository: input.repository,
@@ -430,11 +448,13 @@ export async function runProject(input: RunInput): Promise<RunSummary> {
       event,
       runnerAccount: input.runnerAccount,
       reservationLabel: input.reservationLabel,
+      issueList: input.issueList,
       hadChildren,
       cleanupTerminal,
     });
     if (discovery.outcome === "incomplete") hasBatchState = true;
     if (discovery.outcome === "close_parent") {
+      reasons.push(...discovery.reasons);
       if (input.documentationMaintenance && maintenanceCredit > 0) {
         await input.persistMaintenance?.({
           phase: "scheduled",

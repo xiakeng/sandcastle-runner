@@ -25,6 +25,7 @@ export interface AgentConfig {
 export interface ProjectConfig {
   repository: string;
   checkout: string;
+  issueList: number[];
   targetBranch?: string;
   tracker: {
     type: "github";
@@ -88,6 +89,20 @@ function nonNegativeInteger(value: unknown, name: string): number {
   return value;
 }
 
+function issueList(value: unknown): number[] {
+  if (!Array.isArray(value)) throw new Error("issueList must be an array");
+  const numbers = value.map((item) => {
+    if (!Number.isSafeInteger(item) || (item as number) <= 0) {
+      throw new Error("issueList entries must be positive safe integers");
+    }
+    return item as number;
+  });
+  if (new Set(numbers).size !== numbers.length) {
+    throw new Error("issueList entries must be unique");
+  }
+  return numbers.sort((left, right) => left - right);
+}
+
 function retryDelays(value: unknown, name: string): number[] {
   const delays = Array.isArray(value) ? (value as unknown[]) : undefined;
   if (
@@ -148,6 +163,7 @@ function parseConfig(
     agentRetryDelay: retryDelays(input.agentRetryDelay, "agentRetryDelay"),
   };
   const repository = text(input.repository, "repository");
+  const configuredIssueList = issueList(input.issueList);
   if (!/^[^/\s]+\/[^/\s]+$/u.test(repository))
     throw new Error("repository must be owner/repo");
   const checkout = text(input.checkout, "checkout");
@@ -194,6 +210,7 @@ function parseConfig(
   return {
     repository,
     checkout,
+    issueList: configuredIssueList,
     ...(input.targetBranch === undefined
       ? {}
       : { targetBranch: text(input.targetBranch, "targetBranch") }),
