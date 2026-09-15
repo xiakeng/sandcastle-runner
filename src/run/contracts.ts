@@ -62,6 +62,7 @@ export interface Tracker {
     ticket: number,
     assignee: string,
   ): Promise<void>;
+  addComment(repository: string, ticket: number, body: string): Promise<void>;
   closeTicket(repository: string, ticket: number): Promise<void>;
   closeParent(repository: string, parentTicket: number): Promise<void>;
 }

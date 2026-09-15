@@ -21,6 +21,7 @@ import {
   OperatorCancelled,
   pauseForOperator,
   supervisedAuditWrite,
+  workflowWrite,
 } from "./operations.ts";
 
 export interface VerifiedHandoff {
@@ -331,6 +332,24 @@ export async function runAgentOperation(
         if (observed.commits.length !== 0)
           throw new Error("no_change left new commits");
         await appendOperation(input, event, "no_change", null);
+        await workflowWrite({
+          action: () =>
+            input.tracker.addComment(
+              input.repository,
+              operation.ticket,
+              result.summary,
+            ),
+          audit: input.audit,
+          clock: input.clock,
+          automaticRetry: {},
+          event: (attempt) =>
+            input.event(
+              operation.phase,
+              "comment_no_change",
+              `ticket:${operation.ticket}`,
+            )(attempt),
+          operator: input.operator,
+        });
         return {
           outcome: "no_change",
           reason: `${input.ticketKind ?? "Delivery Ticket"} ${operation.ticket} no_change: ${result.summary}`,

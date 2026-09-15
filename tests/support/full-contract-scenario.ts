@@ -142,6 +142,9 @@ export function createFiveTicketScenario(
           (value) => value !== assignee,
         );
       },
+      async addComment(_repository, ticket, body) {
+        operations.push(`ticket:comment:${ticket}:${body}`);
+      },
       async closeTicket(_repository, ticket) {
         const found = tickets.get(ticket)!;
         found.state = "closed";

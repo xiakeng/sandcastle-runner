@@ -101,6 +101,7 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
   await tracker.addAssignee("owner/repo", 9, "runner");
   await tracker.removeAssignee("owner/repo", 9, "runner");
   await tracker.removeLabel("owner/repo", 9, "sandcastle:reserved");
+  await tracker.addComment("owner/repo", 9, "No changes were needed.");
   await tracker.closeTicket("owner/repo", 9);
 
   assert.deepEqual(calls, [
@@ -144,6 +145,14 @@ test("GitHubTracker maps blockers and Reservation operations", async () => {
       "--method",
       "DELETE",
       "repos/owner/repo/issues/9/labels/sandcastle%3Areserved",
+    ],
+    [
+      "api",
+      "--method",
+      "POST",
+      "repos/owner/repo/issues/9/comments",
+      "-f",
+      "body=No changes were needed.",
     ],
     [
       "api",

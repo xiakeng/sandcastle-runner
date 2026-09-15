@@ -61,6 +61,7 @@ export function createCliDependencies(
     async addAssignee() {},
     async removeLabel() {},
     async removeAssignee() {},
+    async addComment() {},
     async closeParent() {},
     ...overrides.tracker,
     async getTicket(repository, ticket) {
@@ -321,6 +322,7 @@ export function createAttemptTracker(...numbers: number[]): {
         const found = tickets.find(({ number }) => number === ticket)!;
         found.assignees = found.assignees.filter((value) => value !== assignee);
       },
+      async addComment() {},
       async closeTicket(_repository, ticket) {
         const found = tickets.find(({ number }) => number === ticket)!;
         found.state = "closed";
